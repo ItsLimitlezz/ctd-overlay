@@ -29,6 +29,7 @@
     SK.alerts.render((alert, el) => {
       el.className = alert.probe ? 'alert probe' : 'alert';
       el.textContent = `${alert.user.name} ${alert.kind}`;
+      if (alert.bar) el.appendChild(Object.assign(document.createElement('div'), { className: 'bar' }));
       log.push({ what: 'alert', kind: alert.kind, name: alert.user.name, at: t0() });
     });
   }

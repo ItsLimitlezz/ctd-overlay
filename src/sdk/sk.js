@@ -293,6 +293,7 @@
         const data = env.data || {};
         const key = data.key;
         if (typeof key !== 'string') return;
+        if (restoring) restoring.add(key); // newer than the snapshot restoreViewers is waiting for
         const prev = state.get(key);
         const value = data.value === null ? undefined : data.value; // absent, never null (02 §2.8)
         if (same(prev, value)) return; // a value published again is not a change
@@ -451,7 +452,8 @@
     });
   }
 
-  function cssDuration(el, phase) {
+  // before: the subtree's animations just before the state changed (see flipState).
+  function cssDuration(el, phase, before) {
     const cs = window.getComputedStyle(el);
     const custom = parseFloat(cs.getPropertyValue(phase === 'enter' ? '--skp-enter-ms' : '--skp-exit-ms'));
     if (isFinite(custom)) return Math.max(0, custom);
@@ -470,11 +472,12 @@
     const tDur = msList(cs.transitionDuration);
     const tDelay = msList(cs.transitionDelay);
     tDur.forEach((d, i) => { if (d > 0) longest = Math.max(longest, d + tDelay[i % tDelay.length]); });
-    // Animations the state change just started on descendants count too (a scene whose exit
-    // animates only its cards). Ones already running, and infinite loops, belong to something else.
-    if (el.getAnimations) {
+    // Animations the state change started on descendants count too (a scene whose exit animates
+    // only its cards). Ones that were there before it (a countdown bar, a paused reveal), paused
+    // ones and infinite loops belong to something else.
+    if (before) {
       for (const a of el.getAnimations({ subtree: true })) {
-        if (a.currentTime || !a.effect || !a.effect.getComputedTiming) continue;
+        if (before.has(a) || a.playState === 'paused' || !a.effect || !a.effect.getComputedTiming) continue;
         const end = a.effect.getComputedTiming().endTime;
         if (isFinite(end)) longest = Math.max(longest, end);
       }
@@ -482,10 +485,15 @@
     return longest;
   }
 
-  // Reduced motion is the template's to honour, under [data-skp-reduced-motion] (05 §5.9).
-  function durationOf(el, phase, opts) {
-    if (opts && typeof opts.durationMs === 'number') return Math.max(0, opts.durationMs);
-    return cssDuration(el, phase);
+  // Sets data-skp-state to enter or exit and returns that step's duration: opts.durationMs, or
+  // from CSS. The subtree's animations are listed first (which also brings its styles up to date),
+  // so only what the change itself starts is counted. Reduced motion is the template's to honour,
+  // under [data-skp-reduced-motion] (05 §5.9).
+  function flipState(el, phase, opts) {
+    const fixed = opts && typeof opts.durationMs === 'number';
+    const before = !fixed && el.getAnimations ? new Set(el.getAnimations({ subtree: true })) : null;
+    el.setAttribute('data-skp-state', phase);
+    return fixed ? Math.max(0, opts.durationMs) : cssDuration(el, phase, before);
   }
 
   // Seeks every animation under el forward, so a late arrival lands on the same frame as an on-time
@@ -514,8 +522,7 @@
       life.phase = 'idle';
       return (life.promise = Promise.resolve(el));
     }
-    el.setAttribute('data-skp-state', 'enter');
-    const ms = durationOf(el, 'enter', opts);
+    const ms = flipState(el, 'enter', opts);
     const late = Math.max(0, opts.offsetMs || 0);
     seek(el, late);
     // The deadline is the duration plus 50 ms (05 §5.2): an animation starts on the next frame, so
@@ -547,8 +554,7 @@
       runExitHooks(el);
       return (life.promise = Promise.resolve());
     }
-    el.setAttribute('data-skp-state', 'exit');
-    const ms = durationOf(el, 'exit', opts);
+    const ms = flipState(el, 'exit', opts);
     life.promise = new Promise((resolve) => {
       setTimeout(() => {
         if (lives.get(el) === life) {
@@ -569,8 +575,7 @@
     const custom = parseFloat(window.getComputedStyle(el).getPropertyValue('--skp-exit-ms'));
     if (isFinite(custom)) return Math.max(0, custom);
     const prev = el.getAttribute('data-skp-state');
-    el.setAttribute('data-skp-state', 'exit');
-    const ms = cssDuration(el, 'exit');
+    const ms = flipState(el, 'exit');
     if (prev === null) el.removeAttribute('data-skp-state');
     else el.setAttribute('data-skp-state', prev);
     return ms;
@@ -649,9 +654,17 @@
       if (!id) return;
     }
     if (current && current.id === id && !rebuild) return;
-    finishSwap(); // a stinger still before its cut: the scene it brings in becomes the outgoing one
+    // A stinger still before its cut: the scene it was bringing in becomes the outgoing one. It
+    // was never seen (the video covered it), so it goes at once, whatever this transition is.
+    const unseen = finishSwap();
     transition = transition || 'fade';
     const prev = current;
+    // The stinger's video first: a bad media path falls back to a fade, before anything changed.
+    let sting = env.lite || !prev || transition === 'cut' ? null : (meta.transitions || []).find((t) => t.id === transition && t.media);
+    let video = null;
+    if (sting) {
+      try { video = takeStingerVideo(sting); } catch (err) { reportError('transition "' + sting.id + '" can\'t play', err); sting = null; }
+    }
     const root = document.createElement('section');
     root.setAttribute('data-skp-scene-root', id);
     root.setAttribute('data-skp-transition', transition);
@@ -668,18 +681,17 @@
     html.setAttribute('data-skp-scene', id);
     if (prev) prev.root.setAttribute('data-skp-transition', transition);
 
-    const sting = env.lite ? null : (meta.transitions || []).find((t) => t.id === transition && t.media);
     if (transition === 'cut' || !prev) {
       stage.appendChild(root);
       mount(root, { cut: true });
       if (prev) unmount(prev.root, { cut: true });
       refillChat(root, prev && prev.root);
     } else if (sting) {
-      playStinger(sting, root, prev.root);
+      playStinger(sting, video, root, prev.root);
     } else {
       stage.appendChild(root);
       mount(root); // both overlap: a crossfade by default, styled entirely in CSS
-      unmount(prev.root);
+      unmount(prev.root, unseen ? { cut: true } : undefined);
       refillChat(root, prev.root);
     }
     // For a stinger, onScene runs at the take; its root joins the page at the cut.
@@ -691,7 +703,10 @@
   // taken, so a take never waits for the file (lite mode never plays them).
   const stingerVideos = new Map(); // transition id → the next take's <video>
   function newStingerVideo(sting) {
+    const src = asset(sting.media); // throws on a path outside the package
     const video = document.createElement('video');
+    // A video loading ahead isn't in the document, so the page's error listener never hears it.
+    video.addEventListener('error', () => sendLog('error', 'failed to load ' + src));
     video.setAttribute('data-skp-stinger', sting.id);
     video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
@@ -699,7 +714,7 @@
     video.playsInline = true;
     video.preload = 'auto';
     video.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:2147483647;pointer-events:none';
-    video.src = asset(sting.media);
+    video.src = src;
     return video;
   }
   function takeStingerVideo(sting) {
@@ -709,7 +724,10 @@
   }
   function preloadStingers() {
     if (env.lite) return;
-    for (const t of meta.transitions || []) if (t.media) stingerVideos.set(t.id, newStingerVideo(t));
+    for (const t of meta.transitions || []) {
+      if (!t.media) continue;
+      try { stingerVideos.set(t.id, newStingerVideo(t)); } catch (err) { reportError('transition "' + t.id + '" can\'t play', err); }
+    }
   }
 
   // A stinger plays over both scenes; the swap is a cut under it at cutAtMs (05 §5.4), on the
@@ -718,20 +736,21 @@
   // (finishSwap), so only one scene is ever left on stage. The video is muted (audio belongs in
   // OBS) and is removed when it ends, or by a deadline if 'ended' never fires.
   let swap = null; // { root, oldRoot, video, timer }
+  // Returns true if a pending swap was finished early (its root never showed).
   function finishSwap() {
     const s = swap;
-    if (!s) return;
+    if (!s) return false;
     swap = null;
     clearTimeout(s.timer);
     stage.insertBefore(s.root, s.video.parentNode === stage ? s.video : null);
     mount(s.root, { cut: true });
     unmount(s.oldRoot, { cut: true });
     refillChat(s.root, s.oldRoot);
+    return true;
   }
 
-  function playStinger(sting, root, oldRoot) {
+  function playStinger(sting, video, root, oldRoot) {
     if (stinger) stinger.remove();
-    const video = takeStingerVideo(sting);
     const cutAt = Math.max(0, sting.cutAtMs || 0);
     const t0 = performance.now();
     const s = { root, oldRoot, video, timer: 0 };
@@ -755,11 +774,16 @@
     };
     video.addEventListener('error', failed);
     video.addEventListener('ended', done);
-    // A stinger longer than the 5 s deadline plays to its end.
+    // A stinger longer than the 5 s deadline plays to its end. Some files only learn their length
+    // as they play (durationchange); until then, a video that keeps progressing keeps its place.
     const sized = () => {
       if (isFinite(video.duration)) until(Math.max(cutAt + 5000, video.duration * 1000 + 250) - (performance.now() - t0));
     };
     video.addEventListener('loadedmetadata', sized);
+    video.addEventListener('durationchange', sized);
+    video.addEventListener('timeupdate', () => {
+      if (!isFinite(video.duration) && !video.ended) until(Math.max(1500, cutAt + 5000 - (performance.now() - t0)));
+    });
     until(cutAt + 5000);
     if (video.readyState >= 1) sized(); // preloaded: these already fired
     stage.appendChild(video);
@@ -897,8 +921,12 @@
       // One bad element costs only its own message.
       try {
         const box = chatContainer();
-        if (!el.parentNode && box) box.appendChild(el);
-        if (!lives.has(el)) mount(el, initial ? { cut: true } : undefined); // the template may have mounted it
+        // The template may have mounted it already; one it recycled from an exited message enters
+        // again, at the end.
+        const life = lives.get(el);
+        const recycled = !!life && life.phase === 'exit';
+        if (box && (!el.parentNode || recycled)) box.appendChild(el);
+        if (!life || recycled) mount(el, initial ? { cut: true } : undefined);
         chatEls.push({ id: m.id, userId: m.user && m.user.id, el });
         while (chatEls.length > chatMax) unmount(chatEls.shift().el);
       } catch (err) {
@@ -1069,32 +1097,48 @@
   // SK.log goes to the platform's template log, batched; the server rate-limits per overlay. Errors
   // are never painted on air (only the ?debug=1 HUD shows them).
   const logQueue = [];
-  const logSeen = new Map(); // entry → when it was last sent, so a loop logs it once a minute
+  const logSeen = new Map(); // message → { since, contexts } for its current minute
   let logTimer = null;
   let lastError = '';
 
-  // The context travels as JSON of at most 1000 characters; one that can't be serialised (a cycle,
-  // a BigInt) is replaced by the reason, never thrown.
+  // A loop must not flood the log: each message is sent at most once a minute per context, and with
+  // at most five different contexts (two distinct errors both log; a counter in the context doesn't
+  // make every frame an entry). The context travels as JSON of at most 1000 characters; one that
+  // can't be serialised (a cycle, a BigInt) is replaced by the reason, never thrown.
   function sendLog(level, msg, context) {
     msg = String(msg).slice(0, 500);
     let json;
     try { json = context === undefined ? undefined : JSON.stringify(context); } catch (err) { json = JSON.stringify({ unserializable: String(err && err.message) }); }
     if (json !== undefined && json.length > 1000) json = JSON.stringify({ truncated: json.slice(0, 1000) });
-    const key = msg + ' ' + (json || '');
     const t = Date.now();
-    if (t - (logSeen.get(key) || -Infinity) < 60000) return;
-    logSeen.set(key, t);
-    if (logSeen.size > 200) logSeen.delete(logSeen.keys().next().value);
-    // OBS copies page console errors into its own log file.
-    if (level === 'error' || level === 'warn') (console[level] || console.log).call(console, '[skp] ' + msg);
+    let seen = logSeen.get(msg);
+    if (!seen || !(t - seen.since < 60000)) {
+      logSeen.delete(msg);
+      seen = { since: t, contexts: new Set() };
+      logSeen.set(msg, seen);
+      if (logSeen.size > 200) logSeen.delete(logSeen.keys().next().value);
+    }
+    if (seen.contexts.has(json || '') || seen.contexts.size >= 5) return;
+    seen.contexts.add(json || '');
+    // OBS copies page console errors into its own log file; once a minute per message is plenty.
+    if (seen.contexts.size === 1 && (level === 'error' || level === 'warn')) (console[level] || console.log).call(console, '[skp] ' + msg);
     logQueue.push({ level, msg, context: json === undefined ? undefined : JSON.parse(json) });
     if (logQueue.length > 50) logQueue.splice(0, logQueue.length - 50);
     if (!logTimer && !override.mock) logTimer = setTimeout(flushLog, 1000);
   }
 
+  // Up to 20 entries a request, and under the server's 64 KiB by UTF-8 bytes (03 §3.4).
+  const utf8 = new TextEncoder();
   function flushLog() {
     logTimer = null;
-    const entries = logQueue.splice(0, 20);
+    const entries = [];
+    let bytes = 16;
+    while (logQueue.length && entries.length < 20) {
+      const size = utf8.encode(JSON.stringify(logQueue[0])).length + 1;
+      if (entries.length && bytes + size > 60000) break;
+      entries.push(logQueue.shift());
+      bytes += size;
+    }
     if (!entries.length) return;
     // A string body is a CORS-simple request: no preflight from the sandboxed preview. Never with
     // credentials: OBS's browser could otherwise attach an admin session cookie.
@@ -1159,14 +1203,34 @@
   // page never holds more than one of the browser's six connections per host for streaming.
   let lastContact = performance.now();
   let expired = false;
+  let restoring = null; // keys a live envelope set while the restore was in flight
 
-  // Any answer from the server. After viewer counts were hidden, the next one also fetches a fresh
-  // snapshot: an unchanged count is never published again, so the stream alone wouldn't bring it back.
+  // Any answer from the server. After viewer counts were hidden, the next one also asks for them
+  // again: an unchanged count is never published again, so the stream alone wouldn't bring it back.
   function contact() {
     lastContact = performance.now();
-    if (expired) {
+    if (expired && !restoring) restoreViewers();
+  }
+
+  // Only the hidden counts come back from this snapshot: the cursor, chat and scene stay with the
+  // stream or poll that is delivering, and a count it delivered meanwhile is newer and wins.
+  async function restoreViewers() {
+    restoring = new Set();
+    try {
+      const res = await request(base + '/snapshot?v=1' + keyParam, timing.requestTimeoutMs);
+      if (!res.ok) return;
+      const snap = await res.json();
       expired = false;
-      loadSnapshot();
+      for (const key of Object.keys(snap.state || {})) {
+        const v = snap.state[key];
+        if (key.indexOf('viewers.') !== 0 || state.has(key) || restoring.has(key) || v === null || v === undefined) continue;
+        state.set(key, v);
+        if (isReady) notifyState(key, v, undefined);
+      }
+    } catch (err) {
+      /* the next contact tries again */
+    } finally {
+      restoring = null;
     }
   }
 
@@ -1215,10 +1279,10 @@
         transport.ok = true;
         transport.lastData = Date.now();
         lastContact = performance.now();
-        expired = false;
         // Applying is not a network failure: an error here is reported, never retried in a loop.
         let applied = true;
         try { applied = applySnapshot(snap, asked); } catch (err) { reportError('applying the snapshot failed', err); }
+        if (applied) expired = false; // a whole snapshot brings hidden counts back with the rest
         // Newer envelopes arrived while it was in flight: fetch one that includes them.
         if (applied === false && ++raced < 3) continue;
         return;

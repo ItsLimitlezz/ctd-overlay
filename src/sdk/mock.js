@@ -65,9 +65,14 @@
   };
   const nextMsg = () => msg(people[n % people.length], lines[n % lines.length]);
 
-  // Slots carry server-resolved instants (09 §9.2); `time` is only a display label.
+  // Slots carry server-resolved instants (09 §9.1); `time` is only a display label.
   const t = now();
-  const slot = (offsetMin, name, extra) => Object.assign({ name, startAt: t + offsetMin * MIN }, extra || {});
+  const pad = (n) => String(n).padStart(2, '0');
+  const slot = (offsetMin, name, extra) => {
+    const startAt = t + offsetMin * MIN;
+    const d = new Date(startAt);
+    return Object.assign({ time: pad(d.getHours()) + ':' + pad(d.getMinutes()), name, startAt }, extra || {});
+  };
   const lineup = [
     slot(-90, 'Manzone & strong'),
     slot(-30, 'Trapment'),

@@ -132,6 +132,7 @@ These are settled. An implementation that departs from one is not SKP-conformant
    too. `/sdk/v1/mock.js` is listed. *(03 §3.4, 07 §7.10)*
 3. A take publishes `show.scene.changed` before the `show.scene` state, and takes have no
    `startAt`. *(02 §2.6)*
+4. Published lineup slots carry `startAt`, the instant their `time` resolves to. *(09 §9.1)*
 
 **2026-10-10.** Fixes from the first implementation review:
 

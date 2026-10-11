@@ -18,17 +18,24 @@ const MOCK = readFileSync(new URL('../src/sdk/mock.js', import.meta.url), 'utf8'
 //   futureCursor the next snapshot carries a cursor from the future (a server restarted with its
 //                clock stepped back still holds envelopes "older" than the client's cursor)
 //   offset       ms added to the page's clock (Date), against the server's
+//   hold(url)    ms to hold a request back before it is sent
+//   delay(url)   ms to hold a response back before the page sees it
+//   slowBody(url) true: the response's headers arrive at once, its body 400 ms later
 //   requests     every URL path the page fetched
+//   held, maxHeld   streams being held back now, and at most at once
 // `mock` runs mock.js in the page after the SDK, as ?mock=1 would. `fail` and `futureCursor` can
 // also be given up front, for the requests the page makes as it boots.
-async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock = false, offset = 0, fail = () => false, futureCursor = false } = {}) {
+async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock = false, offset = 0, fail = () => false, futureCursor = false, slowBody = () => false } = {}) {
   const html = await (await fetch(pageUrl)).text();
   const content = /<meta name="skp" content="([^"]*)">/.exec(html)[1]
     .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
   const meta = { ...JSON.parse(content), ...metaOverrides, timing: { reconnectMs: 50, ...timing } };
   const timers = new Set();
   const controllers = new Set();
-  const control = { hangStreams: false, disposed: false, fail, futureCursor, offset, requests: [] };
+  const control = {
+    hangStreams: false, disposed: false, fail, futureCursor, offset, requests: [],
+    hold: () => 0, delay: () => 0, slowBody, held: 0, maxHeld: 0,
+  };
   // The page's clock: off from the server's by control.offset.
   const RealDate = Date;
   class PageDate extends RealDate {
@@ -51,6 +58,7 @@ async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock
     URLSearchParams,
     AbortController,
     TextDecoder,
+    TextEncoder,
     structuredClone,
     performance,
     setTimeout: track(setTimeout),
@@ -66,13 +74,29 @@ async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock
       controllers.add(own);
       const signal = init.signal ? AbortSignal.any([init.signal, own.signal]) : own.signal;
       if (control.hangStreams && url.pathname.endsWith('/stream')) {
-        return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
+        control.maxHeld = Math.max(control.maxHeld, ++control.held);
+        return new Promise((_, reject) => signal.addEventListener('abort', () => { control.held--; reject(new Error('aborted')); }));
       }
+      const before = control.hold(url);
+      if (before > 0) await new Promise((r) => setTimeout(r, before));
       const res = await fetch(url, { ...init, signal }).finally(() => controllers.delete(own));
+      const wait = control.delay(url);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       if (control.futureCursor && url.pathname.endsWith('/snapshot') && res.ok) {
         control.futureCursor = false;
         const snap = await res.json();
         return new Response(JSON.stringify({ ...snap, cursor: '7ZZZZZZZZZZZZZZZZZZZZZZZZZ' }), { status: 200, headers: res.headers });
+      }
+      if (control.slowBody(url)) {
+        const text = await res.text();
+        const body = new ReadableStream({
+          async start(c) {
+            await new Promise((r) => setTimeout(r, 400));
+            c.enqueue(new TextEncoder().encode(text));
+            c.close();
+          },
+        });
+        return new Response(body, { status: res.status, headers: res.headers });
       }
       return res;
     },
@@ -85,7 +109,7 @@ async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock
     for (const id of timers) { clearTimeout(id); clearInterval(id); }
     for (const c of controllers) c.abort();
   });
-  return { SK: sandbox.window.SK, control, window: sandbox.window };
+  return { SK: sandbox.window.SK, control, window: sandbox.window, document: sandbox.document };
 }
 
 // Envelopes from a chat connection (the overlay must be bound to it).
@@ -264,13 +288,36 @@ test('a page whose clock is 90 s off still runs on server time, and follows a cl
   assert.ok(fired >= target - 30 && fired < target + 300, `fired ${fired - target} ms from the server time`);
 });
 
-test('a polling page also follows a clock step at once', async (t) => {
+test('a polling page also follows a clock step at once, even when no later round trip is faster', async (t) => {
   const { base } = await startWithOverlay(t);
   const { SK, control } = await loadSdk(t, base, { timing: { openTimeoutMs: 100, pollMs: 30, retryStreamMs: 60000 } });
   control.hangStreams = true;
   await until(() => SK.transport.mode === 'poll', 4000, 'poll mode');
+  // Every poll from now on is slower than the best sample, so only a sample that disagrees by
+  // more than a second can replace the estimate.
+  control.delay = (url) => (url.pathname.endsWith('/poll') ? 25 : 0);
   control.offset = -3000;
   await until(() => Math.abs(SK.clock.now() - Date.now()) < 150, 1000, 'the step corrected');
+});
+
+test('skew is measured when the response arrives, not after its body is read', async (t) => {
+  const { base } = await startWithOverlay(t);
+  // The snapshot's body takes 400 ms after its headers (a busy page at boot).
+  const { SK } = await loadSdk(t, base, { slowBody: (url) => url.pathname.endsWith('/snapshot') });
+  let ready = false;
+  SK.ready(() => { ready = true; });
+  await until(() => ready, 4000, 'ready');
+  assert.ok(Math.abs(SK.clock.now() - Date.now()) < 150, `off by ${SK.clock.now() - Date.now()} ms`);
+});
+
+test('a page runs at most one stream at a time, however often it retries', async (t) => {
+  const { base } = await startWithOverlay(t);
+  // Streams are held back for a second; the retry from poll mode comes every 100 ms.
+  const { SK, control } = await loadSdk(t, base, { timing: { openTimeoutMs: 1000, pollMs: 30, retryStreamMs: 100, failWindowMs: 60000 } });
+  control.hangStreams = true;
+  await until(() => SK.transport.mode === 'poll', 5000, 'poll mode');
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.equal(control.maxHeld, 1);
 });
 
 test('a stream that goes silent (a half-open connection) is replaced, and nothing arrives twice', async (t) => {
@@ -338,6 +385,80 @@ test('viewer counts are hidden after 120 s without the server, and come back wit
   control.fail = () => false; // the count never changed, so only a fresh snapshot can restore it
   await until(() => seen.length === 3, 4000, 'the count back');
   assert.deepEqual(seen, [1234, undefined, 1234]);
+});
+
+test('bringing viewer counts back never skips an envelope that arrives meanwhile', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  const consumes = { state: ['custom.*', 'viewers.*'], events: ['custom.*'], chat: null };
+  platform.bus.channel(overlay.id, { consumes });
+  platform.bus.setState('viewers.total', 1234);
+  const { SK, control } = await loadSdk(t, base, { meta: { consumes }, timing: { offlineHoldMs: 300, pollMs: 30, failWindowMs: 60000, tickMs: 50 } });
+  const seen = [];
+  SK.on('custom.*', (env) => seen.push(env.type));
+  await until(() => SK.transport.mode === 'stream');
+  control.fail = () => true;
+  platform.server.closeAllConnections();
+  await until(() => SK.state('viewers.total') === undefined, 2000, 'the count hidden');
+  // The server is back. The snapshot that brings the count back is sent late, and polls answer
+  // slowly: an event published in between is in the snapshot's cursor before any poll delivered
+  // it. It must still arrive (a snapshot that moved the cursor would skip it).
+  control.hold = (url) => (url.pathname.endsWith('/snapshot') ? 300 : 0);
+  control.delay = (url) => (url.pathname.endsWith('/poll') ? 600 : 0);
+  control.fail = () => false;
+  await until(() => control.requests.filter((p) => p.endsWith('/snapshot')).length >= 2, 3000, 'the restore requested');
+  platform.bus.publish('custom.during', {});
+  await until(() => SK.state('viewers.total') === 1234, 2000, 'the count back');
+  platform.bus.publish('custom.after', {});
+  await until(() => seen.includes('custom.after'), 2000, 'a later event');
+  assert.deepEqual(seen, ['custom.during', 'custom.after']);
+});
+
+test('a transition with a media path outside the package can\'t stop the page: the take falls back to a fade', async (t) => {
+  const { platform, base } = await startWithOverlay(t);
+  const errors = [];
+  const original = console.error;
+  console.error = (msg) => errors.push(msg);
+  defer(t, () => { console.error = original; });
+  const { SK } = await loadSdk(t, base, {
+    meta: {
+      scenes: [{ id: 'program', core: 'program' }, { id: 'brb', core: 'brb' }],
+      transitions: [{ id: 'sting', media: '/assets/s.webm', cutAtMs: 100 }],
+    },
+  });
+  let ready = false;
+  SK.ready(() => { ready = true; });
+  await until(() => ready, 4000, 'ready');
+  const scenes = [];
+  SK.onScene((scene, prev, transition) => scenes.push(`${scene}:${transition}`));
+  await until(() => SK.transport.mode === 'stream');
+  platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'sting' });
+  await until(() => SK.scene === 'brb', 2000, 'the take');
+  assert.ok(errors.some((e) => /transition "sting" can't play/.test(e)), errors.join('\n'));
+});
+
+test('a chat element the template recycles from an exited message enters again', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  const consumes = { state: ['custom.*'], events: ['custom.*'], chat: { recent: 0, max: 2 } };
+  platform.bus.channel(overlay.id, { consumes, connections: ['con_tw'] });
+  const { SK, document } = await loadSdk(t, base, { meta: { consumes } });
+  const pool = [];
+  const shown = [];
+  SK.chat.onAdd(() => {
+    let el = pool.find((e) => !e.parentNode);
+    if (!el) pool.push((el = document.createElement('div')));
+    shown.push(el);
+    return el;
+  });
+  await until(() => SK.transport.mode === 'stream');
+  for (const id of ['a', 'b', 'c', 'd']) {
+    platform.bus.publish('chat.message', chatMsg(id), { src: twitch });
+    await new Promise((r) => setTimeout(r, 300)); // a frame each, and time for exits to finish
+  }
+  await until(() => shown.length === 4, 2000, 'four messages');
+  assert.ok(pool.length < 4, 'the template reused an element');
+  const last = shown[3];
+  assert.equal(last.parentNode !== null, true);
+  assert.notEqual(last.getAttribute('data-skp-state'), 'exit');
 });
 
 test('a re-sync never takes chat off screen unless the new buffer shows it was deleted', async (t) => {
@@ -457,6 +578,7 @@ describe('mock mode (?mock=1, 08 §8.5)', () => {
       assert.equal(env.data.display.durationMs, 2000);
     }
     assert.deepEqual([...new Set(seen.map((e) => e.type))].sort(), ['alert.follow', 'alert.raid']);
+    assert.ok(rendered.every((kind) => kind === 'follow' || kind === 'raid'), rendered.join());
     assert.ok(window.__skpMock);
   });
 });

@@ -22,6 +22,10 @@ async function open(t, { query = '', width = 1920, height = 1080, settings } = {
 
 const opts = { skip: browserSkip };
 
+// The page's problems, less the one the testbed causes on purpose: its "broken" stinger's file
+// isn't a video, and the runtime reports that once per page.
+const problems = (page) => page.problems.filter((p) => !/\[skp\] failed to load \/o\/[^/]+\/t\/[0-9a-f]+\/template\.css$/.test(p));
+
 describe('stage and page (04 §4.5)', () => {
   test('the stage is the canvas size, scaled to fit and centred', opts, async (t) => {
     const { page, base } = await open(t, { width: 960, height: 540 });
@@ -34,7 +38,7 @@ describe('stage and page (04 §4.5)', () => {
     await page.waitFor('window.__log && window.__log.some((e) => e.what === "ready")');
     assert.deepEqual(await page.eval(box('[data-skp-stage]')), [656, 0, 608, 1080]);
     assert.equal(await page.eval('document.documentElement.getAttribute("data-skp-canvas")'), 'v');
-    assert.deepEqual(page.problems, []);
+    assert.deepEqual(problems(page), []);
   });
 
   test('template content outside scenes moves into the stage; the page stays transparent', opts, async (t) => {
@@ -68,6 +72,7 @@ describe('stage and page (04 §4.5)', () => {
 
   test('a second copy of sk.js in the page changes nothing', opts, async (t) => {
     const { page } = await open(t);
+    await page.waitFor('SK.transport.mode === "stream" && SK.transport.streamsOpened >= 1');
     const before = await page.eval('SK.transport.streamsOpened');
     await page.eval(`new Promise((resolve) => {
       const s = document.createElement('script'); s.src = '/sdk/v1/sk.js'; s.onload = resolve; document.head.appendChild(s);
@@ -75,7 +80,7 @@ describe('stage and page (04 §4.5)', () => {
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(await page.eval('SK.transport.streamsOpened'), before);
     assert.equal(await page.eval('document.querySelectorAll("[data-skp-stage]").length'), 1);
-    assert.deepEqual(page.problems, []);
+    assert.deepEqual(problems(page), []);
   });
 });
 
@@ -128,12 +133,23 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
 
   test('the operator\'s transition wins over the show.scene state that echoes the take, in either order', opts, async (t) => {
     const { page, channel, platform, overlay, logOf } = await open(t);
+    const order = [];
+    defer(t, channel.subscribe((env) => {
+      if (env.type === 'show.scene.changed') order.push(`event:${env.data.scene}`);
+      if (env.type === 'state.changed' && env.data.key === 'show.scene') order.push(`state:${env.data.value}`);
+    }));
+    // Event, then state, in one tick (as a take publishes them).
     platform.bus.publish('show.scene.changed', { scene: 'outro', transition: 'cut' }, { target: overlay.id });
     channel.setLocalState('show.scene', 'outro');
     await page.waitFor('SK.scene === "outro"');
+    // State first, then the event a moment later (but within the settle wait). The state's
+    // coalescing window (100 ms per key) has to pass first, or the bus holds it back.
+    await new Promise((r) => setTimeout(r, 150));
     channel.setLocalState('show.scene', 'brb');
+    await new Promise((r) => setTimeout(r, 15));
     platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
     await page.waitFor('SK.scene === "brb"');
+    assert.deepEqual(order, ['event:outro', 'state:outro', 'state:brb', 'event:brb']);
     assert.deepEqual((await logOf('scene')).slice(1).map((s) => `${s.scene}:${s.transition}`), ['outro:cut', 'brb:cut']);
     assert.equal(await page.eval('document.querySelectorAll("[data-skp-scene-root]").length'), 1);
   });
@@ -158,24 +174,57 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
 
   const rootsOf = 'Array.from(document.querySelectorAll("[data-skp-scene-root]")).map((r) => r.dataset.skpSceneRoot)';
 
-  test('a stinger covers the swap, which happens at cutAtMs on the video\'s clock, then leaves', opts, async (t) => {
+  test('a stinger, loaded ahead, covers the swap, which happens at cutAtMs on the video\'s clock, then leaves', opts, async (t) => {
     const { page, platform, overlay } = await open(t);
+    // The video starts 400 ms late (a busy machine): a cut on the wall clock would show at 200 ms,
+    // before the stinger covers anything.
+    await page.eval(`(() => {
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () { setTimeout(() => play.call(this), 400); return Promise.resolve(); };
+      const seen = window.__stinger = {};
+      new MutationObserver((records) => {
+        for (const m of records) for (const n of m.addedNodes) {
+          if (n.nodeName === 'VIDEO') { seen.video = n; seen.readyState = n.readyState; }
+          if (n.nodeType === 1 && n.dataset.skpSceneRoot === 'brb') seen.cutAt = seen.video ? seen.video.currentTime : -1;
+        }
+      }).observe(document.querySelector('[data-skp-stage]'), { childList: true });
+      return true;
+    })()`);
     platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'stinger' }, { target: overlay.id });
-    await page.waitFor('!!document.querySelector("video[data-skp-stinger=stinger]")');
-    assert.equal(await page.eval('!!document.querySelector("[data-skp-scene-root=brb]")'), false); // not before cutAtMs
-    const swapAt = await page.waitFor('document.querySelector("[data-skp-scene-root=brb]") && !document.querySelector("[data-skp-scene-root=program]") && document.querySelector("video[data-skp-stinger]")?.currentTime', 2000);
-    assert.ok(swapAt >= 0.15, `swapped at ${swapAt} s into the stinger`);
-    await page.waitFor('!document.querySelector("video[data-skp-stinger]")', 3000); // removed when it ends
-    assert.deepEqual(page.problems, []);
+    await page.waitFor('window.__stinger.cutAt !== undefined', 3000);
+    const seen = await page.eval('({ cutAt: window.__stinger.cutAt, readyState: window.__stinger.readyState })');
+    assert.ok(seen.readyState >= 2, `the video had readyState ${seen.readyState} when it was shown (not loaded ahead)`);
+    assert.ok(seen.cutAt >= 0.18, `cut at ${seen.cutAt} s into the stinger`);
+    assert.deepEqual(await page.eval(rootsOf), ['brb']);
+    await page.waitFor('!document.querySelector("video[data-skp-stinger]")', 4000); // removed when it ends
+    assert.deepEqual(problems(page), []);
   });
 
-  test('a stinger whose file fails still cuts on schedule', opts, async (t) => {
-    const { page, platform, overlay } = await open(t);
+  test('a stinger whose file fails still cuts on schedule, and the failure is logged', opts, async (t) => {
+    const { page, platform, overlay, entries } = await open(t);
     const t0 = Date.now();
     platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'broken' }, { target: overlay.id });
     await page.waitFor(`JSON.stringify(${rootsOf}) === '["brb"]'`, 2000);
     assert.ok(Date.now() - t0 < 900, `cut after ${Date.now() - t0} ms`);
     await page.waitFor('!document.querySelector("video[data-skp-stinger]")', 2000);
+    const deadline = Date.now() + 3000;
+    const failed = () => entries.some((e) => e.component === 'template' && /failed to load .*template\.css/.test(e.msg));
+    while (!failed() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(failed(), 'a "failed to load" entry in the template log');
+  });
+
+  test('a re-sync with no show.scene keeps the scene on screen', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
+    await page.waitFor('SK.scene === "brb"');
+    const consumes = platform.templates.get(TESTBED.id, TESTBED.version).manifest.consumes;
+    platform.bus.removeChannel(overlay.id); // a 410 re-sync on the next connect
+    platform.bus.publish('custom.filler', {});
+    platform.bus.channel(overlay.id, { consumes });
+    platform.bus.setState('custom.after', 1);
+    await page.waitFor('SK.state("custom.after") === 1', 4000);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(await page.eval('SK.scene'), 'brb');
   });
 
   test('a take during a stinger\'s pre-cut window leaves exactly one scene on stage', opts, async (t) => {
@@ -193,7 +242,7 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
     await page.waitFor('SK.scene === "outro"');
     await new Promise((r) => setTimeout(r, 1500));
     assert.deepEqual(await page.eval(rootsOf), ['outro']);
-    assert.deepEqual(page.problems, []);
+    assert.deepEqual(problems(page), []);
   });
 });
 
@@ -232,6 +281,21 @@ describe('element lifecycle (05 §5.2)', () => {
     assert.ok(zero.entered < 100, `durationMs 0 entered in ${zero.entered} ms`);
     const transitioned = await page.eval(measure('transitioned'));
     assert.ok(transitioned.entered >= 190, `transition-based enter took ${transitioned.entered} ms (120 + 30 + 50)`);
+  });
+
+  test('a child animation that runs regardless of state (a countdown bar) stretches no step', opts, async (t) => {
+    const { page } = await open(t);
+    const r = await page.eval(`(async () => {
+      const el = document.createElement('div'); el.className = 'msg';
+      const bar = document.createElement('div'); bar.className = 'countdown'; el.appendChild(bar);
+      const t0 = performance.now();
+      await SK.mount(el);
+      const entered = performance.now() - t0, t1 = performance.now();
+      await SK.unmount(el);
+      return { entered: Math.round(entered), exited: Math.round(performance.now() - t1) };
+    })()`);
+    assert.ok(r.entered < 450, `enter took ${r.entered} ms (200 + 50, not the bar's 5 s)`);
+    assert.ok(r.exited < 500, `exit took ${r.exited} ms`);
   });
 
   test('animations the state change starts on children count toward the duration', opts, async (t) => {
@@ -317,7 +381,7 @@ describe('actions (04 §4.6, 05 §5.3)', () => {
     const { page, platform, overlay } = await open(t);
     platform.bus.publish('show.trigger', { name: 'nowPlaying', startAt: Date.now(), durationMs: 1000 }, { target: overlay.id });
     await new Promise((r) => setTimeout(r, 300));
-    assert.deepEqual(page.problems, []);
+    assert.deepEqual(problems(page), []);
   });
 });
 
@@ -350,6 +414,17 @@ describe('alerts (05 §5.5)', () => {
     assert.ok(times.added >= startAt - 50 && times.added < startAt + 150, `added at ${times.added - startAt}`);
     assert.ok(times.exit >= startAt + 750 && times.exit < startAt + 950, `exit at ${times.exit - startAt}`);
     assert.ok(times.removed >= startAt + 1000 && times.removed < startAt + 1400, `removed at ${times.removed - startAt}`);
+  });
+
+  test('an alert with a countdown bar stays for its whole window', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    await page.eval(watchAlerts);
+    const startAt = Date.now() + 200;
+    platform.bus.publish('alert.follow', follow('Barred', { bar: true, probe: true, display: { startAt, durationMs: 1500 } }), { target: overlay.id });
+    const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 4000);
+    // The probed exit is the 300 ms animation, not the bar's 5 s: exit at 1200, removed at 1550.
+    assert.ok(times.exit >= startAt + 1150, `exit at ${times.exit - startAt}`);
+    assert.ok(times.removed >= startAt + 1450 && times.removed < startAt + 1900, `removed at ${times.removed - startAt}`);
   });
 
   test('a late alert lands on the same frame as on-time ones, even when its exit is probed from CSS', opts, async (t) => {
@@ -491,7 +566,7 @@ describe('mock data (?mock=1, 08 §8.5)', () => {
     await page.waitFor('!!document.querySelector("[data-skp-alert]")', 4000);
     await page.waitFor('window.__log.some((e) => e.what === "titleCard")', 4000);
     await page.waitFor('window.__log.filter((e) => e.what === "chat" && !e.initial).length >= 3', 4000);
-    assert.deepEqual(page.problems, []);
+    assert.deepEqual(problems(page), []);
   });
 });
 
@@ -549,6 +624,21 @@ describe('data helpers', () => {
     const logged = entries.filter((e) => e.component === 'template');
     assert.ok(logged.some((e) => e.level === 'warn' && e.msg === 'the poster is missing' && e.context.overlay === 'bed'), JSON.stringify(logged));
     assert.ok(logged.some((e) => e.level === 'error' && e.msg === 'uncaught error' && /template bug/.test(e.context.context.error)), JSON.stringify(logged));
+  });
+
+  test('a template log flood is cut down, but distinct entries get through', opts, async (t) => {
+    const { page, entries } = await open(t);
+    // 60 frames of the same warning with a changing context, and 20 long non-ASCII entries.
+    await page.eval(`(() => {
+      for (let i = 0; i < 60; i++) SK.log.warn('slow frame', { ms: i });
+      for (let i = 0; i < 20; i++) SK.log.info('チャット' + i + 'あ'.repeat(490), { text: 'メッセージ'.repeat(300) });
+      return true;
+    })()`);
+    const template = () => entries.filter((e) => e.component === 'template');
+    const deadline = Date.now() + 5000;
+    while (template().filter((e) => e.msg.startsWith('チャット')).length < 20 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(template().filter((e) => e.msg.startsWith('チャット')).length, 20, 'batches stay under 64 KiB, so none is refused');
+    assert.equal(template().filter((e) => e.msg === 'slow frame').length, 5, 'one message, at most five contexts a minute');
   });
 
   test('the SK object and its parts are frozen', opts, async (t) => {
