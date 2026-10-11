@@ -8,6 +8,10 @@
 [data-skp-alert] { --skp-exit-ms: 200; }
 [data-skp-alert][data-skp-state="enter"] { animation: fadeIn 200ms linear both; }
 [data-skp-alert][data-skp-state="exit"] { animation: fadeOut 200ms linear both; }
+/* No --skp-exit-ms: the runtime has to probe the exit duration. */
+.alert.probe { --skp-exit-ms: initial; }
+.alert.probe[data-skp-state="enter"] { animation: fadeIn 1000ms linear both; }
+.alert.probe[data-skp-state="exit"] { animation: fadeOut 300ms linear both; }
 
 .title[data-skp-state="enter"] { animation: fadeIn 400ms linear both; }
 .title[data-skp-state="exit"] { animation: fadeOut 100ms linear both; }

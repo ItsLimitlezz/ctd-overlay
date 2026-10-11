@@ -17,7 +17,8 @@
     { "id": "brb", "label": "Be Right Back", "core": "brb" },
     { "id": "lineup", "label": "Lineup", "core": "lineup" },
     { "id": "outro", "label": "Outro", "core": "outro" },
-    { "id": "headliner", "label": "Headliner", "durationMs": 1000, "then": "program" }
+    { "id": "headliner", "label": "Headliner", "durationMs": 1000, "then": "program" },
+    { "id": "opener", "label": "Opener", "core": "intro" }
   ],
   "consumes": {
     "state": ["show.*", "viewers.*", "music.nowPlaying", "custom.*"],
@@ -27,8 +28,9 @@
   "actions": [
     { "id": "titleCard", "label": "Title card", "durationMs": 3000 }
   ],
-  "alerts": { "mode": "serial", "durationMs": 1500, "gapMs": 100 },
+  "alerts": { "mode": "serial", "durationMs": 1500, "durationSetting": "alertHold", "gapMs": 100 },
   "transitions": [
-    { "id": "stinger", "media": "assets/missing.webm", "cutAtMs": 200 }
+    { "id": "stinger", "media": "assets/stinger.webm", "cutAtMs": 200 },
+    { "id": "broken", "media": "template.css", "cutAtMs": 200 }
   ]
 }

@@ -124,6 +124,15 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-11.** From building the runtime SDK (plan step 5):
+
+1. `canvas` selects a canvas by its `id` or by `<w>x<h>`. *(01 §1.4)*
+2. `POST /o/{slug}/log` carries `SK.log` and runtime errors to the template log; it is the one
+   overlay endpoint that isn't a `GET`, and it answers with `Access-Control-Allow-Origin: *`
+   too. `/sdk/v1/mock.js` is listed. *(03 §3.4, 07 §7.10)*
+3. A take publishes `show.scene.changed` before the `show.scene` state, and takes have no
+   `startAt`. *(02 §2.6)*
+
 **2026-10-10.** Fixes from the first implementation review:
 
 1. Template files load from `/o/<slug>/t/<build>/` through a `<base>` the runtime inserts, with

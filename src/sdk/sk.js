@@ -12,10 +12,13 @@
    assets · log and errors · debug HUD · connection · mock · the API · start. */
 (() => {
   'use strict';
+  // A template that still includes its own copy of this script gets the one already running.
+  if (window.SK) return;
 
   // ---- page settings ------------------------------------------------------------------------
-  // The server passes the overlay's settings in <meta name="skp"> (the CSP forbids inline script).
-  // The copy is deep-frozen: templates can read SK.meta but can't change what the runtime uses.
+  // The server describes the page in <meta name="skp"> (the CSP forbids inline script): template,
+  // canvas, scenes, consumes, and the overlay's saved settings for mock mode. The copy is
+  // deep-frozen: templates can read SK.meta but can't change what the runtime uses.
   const metaEl = document.querySelector('meta[name="skp"]');
   const meta = deepFreeze(JSON.parse(metaEl ? metaEl.getAttribute('content') : '{}'));
   const canvas = Object.freeze({
@@ -39,6 +42,8 @@
     silenceMs: 45000, // three missed heartbeats: the connection is dead even if the socket says otherwise
     snapshotRetryMs: 1000,
     snapshotRetryMaxMs: 10000,
+    offlineHoldMs: 120000, // viewer counts outlive server contact by this much at most (H6)
+    sceneSettleMs: 50,
     alertRenderWaitMs: 250,
     chatFrameMs: 250,
     chatPerFrame: 4,
@@ -64,8 +69,9 @@
   let framed = true;
   try { framed = window.self !== window.top; } catch (err) { /* cross-origin parent: framed */ }
   // OBS defines window.obsstudio in every page it loads, docks included, so only a top-level page
-  // counts as an OBS source; a preview inside the admin UI (even in an OBS dock) is a preview.
-  const previewParams = override.mock || override.scene !== null || override.settings !== null;
+  // counts as an OBS source; a preview inside the admin UI (even in an OBS dock) is a preview, and
+  // so is any URL with a 04 §4.9 override (URLs generated for OBS never carry one).
+  const previewParams = ['scene', 'bg', 'lite', 'mock', 'debug', 'settings'].some((p) => params.has(p));
   const obs = !framed && !previewParams && typeof window.obsstudio === 'object' && window.obsstudio !== null;
   const preview = !obs && (framed || previewParams);
   const env = Object.freeze({
@@ -109,6 +115,7 @@
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const isNode = (v) => !!v && typeof v === 'object' && typeof v.nodeType === 'number';
+  const isElement = (v) => isNode(v) && v.nodeType === 1;
 
   // Template callbacks are isolated: one that throws, or returns a rejected promise, is reported
   // and the rest still run.
@@ -150,19 +157,20 @@
 
   // ---- server clock and ticker (01 §1.6, 05 §5.3) -------------------------------------------
   // skew = server time − local time, from the request with the shortest round trip seen in the last
-  // minute. Round trips are measured with performance.now(), which a wall-clock step can't bend.
-  // While streaming, every heartbeat carries server time: a local clock step of more than a second
-  // is corrected at once.
+  // minute. Round trips are measured with performance.now(), which a wall-clock step can't bend,
+  // and the local time is read when the response arrives (w1), not after its body is parsed. A
+  // sample that disagrees by more than a second plus its own uncertainty means a clock stepped,
+  // and replaces the estimate at once; while streaming, every heartbeat checks the same.
   let skew = 0;
   let bestSample = null;
-  function sampleClock(serverTs, p0, p1) {
+  function sampleClock(serverTs, p0, p1, w1) {
     if (typeof serverTs !== 'number') return;
     const rtt = p1 - p0;
     if (!(rtt >= 0)) return;
-    const local = Date.now() - (p1 - p0) / 2;
-    if (!bestSample || rtt <= bestSample.rtt || p1 - bestSample.at > 60000) {
+    const estimate = serverTs - (w1 - rtt / 2);
+    if (!bestSample || rtt <= bestSample.rtt || p1 - bestSample.at > 60000 || Math.abs(estimate - skew) > 1000 + rtt / 2) {
       bestSample = { rtt, at: p1 };
-      skew = serverTs - local;
+      skew = estimate;
     }
   }
   function oneWaySample(serverTs) {
@@ -185,7 +193,9 @@
     ticks++;
     const t = now();
     for (const job of scheduled.slice()) if (!job.done && t >= job.ts) runJob(job);
-    for (const fn of tickFns) fn();
+    for (const fn of tickFns) {
+      try { fn(); } catch (err) { reportError('a periodic check failed', err); }
+    }
   }
   function runJob(job) {
     if (job.done) return;
@@ -243,7 +253,8 @@
 
   function notifyState(key, value, prev) {
     if (key === 'overlay.settings') notifySettings();
-    if (key === 'show.scene' && override.scene === null && value !== undefined) requestScene(value, 'fade');
+    // No transition: the show.scene.changed that goes with it names one (requestScene).
+    if (key === 'show.scene' && override.scene === null && value !== undefined) requestScene(value);
     if (!declaredState(key)) return;
     for (const sub of stateSubs.items.slice()) {
       if (!sub.primed || !sub.test(key)) continue;
@@ -260,7 +271,7 @@
     } else if (type === 'show.trigger') {
       runTrigger(d);
     } else if (type.indexOf('alert.') === 0) {
-      queueAlert(env);
+      if (declaredEvent(type)) queueAlert(env); // per kind: mock data isn't filtered by the server
     } else if (type === 'alerts.cut') {
       cutAlert(d.alertId);
     } else if (type.indexOf('chat.') === 0) {
@@ -276,28 +287,36 @@
     cursor = env.id;
     transport.received++;
     transport.lastData = Date.now();
-    if (env.type === 'state.changed') {
-      const data = env.data || {};
-      const key = data.key;
-      if (typeof key !== 'string') return;
-      const prev = state.get(key);
-      const value = data.value === null ? undefined : data.value; // absent, never null (02 §2.8)
-      if (same(prev, value)) return; // a value published again is not a change
-      if (value === undefined) state.delete(key);
-      else state.set(key, value);
-      if (isReady) notifyState(key, value, prev);
-      return;
+    // Nothing one envelope does may stop the next: an exception here would end the stream.
+    try {
+      if (env.type === 'state.changed') {
+        const data = env.data || {};
+        const key = data.key;
+        if (typeof key !== 'string') return;
+        const prev = state.get(key);
+        const value = data.value === null ? undefined : data.value; // absent, never null (02 §2.8)
+        if (same(prev, value)) return; // a value published again is not a change
+        if (value === undefined) state.delete(key);
+        else state.set(key, value);
+        if (isReady) notifyState(key, value, prev);
+        return;
+      }
+      if (isReady) dispatch(env);
+      else early.push(env);
+    } catch (err) {
+      reportError('handling ' + env.type + ' failed', err);
     }
-    if (isReady) dispatch(env);
-    else early.push(env);
   }
 
   // A fresh snapshot replaces state. Once the template is running, every difference is reported
-  // as a change, so a re-sync after 410 updates the screen like any other change. A snapshot older
-  // than what we already applied is ignored: it would roll state back.
-  function applySnapshot(snap) {
-    if (snap.build && meta.build && snap.build !== meta.build) return reloadForBuild();
-    if (isReady && cursor && snap.cursor && snap.cursor < cursor) return;
+  // as a change, so a re-sync after 410 updates the screen like any other change. `asked` is the
+  // cursor when the snapshot was requested: if envelopes newer than the snapshot were applied
+  // while it was in flight, it would roll state back and replay events, so it is refused (and
+  // fetched again). An older cursor alone is no reason to refuse: after a server restart with its
+  // clock stepped back, the old cursor is in the new server's future (channel.js answers 410).
+  function applySnapshot(snap, asked) {
+    if (snap.build && meta.build && snap.build !== meta.build) { reloadForBuild(); return true; }
+    if (isReady && cursor !== asked && cursor && snap.cursor && snap.cursor < cursor) return false;
     const before = new Map(state);
     state.clear();
     for (const key of Object.keys(snap.state || {})) {
@@ -310,13 +329,15 @@
     if (!isReady) {
       snapshotLoaded = true;
       maybeReady();
-      return;
+      return true;
     }
     for (const key of new Set([...before.keys(), ...state.keys()])) {
       if (!same(before.get(key), state.get(key))) notifyState(key, state.get(key), before.get(key));
     }
-    if (override.scene === null) requestScene(state.get('show.scene') || defaultScene(), 'cut');
+    // A missed take converges with a cut. No show.scene keeps the current scene, as it does live.
+    if (override.scene === null && state.has('show.scene')) requestScene(state.get('show.scene'), 'cut');
     resyncChat(oldRecent);
+    return true;
   }
 
   // A template upgraded on the server reloads the page in place: the URL in OBS never changes
@@ -341,8 +362,11 @@
     for (const item of bootQueue.splice(0)) {
       if (item.sub) { if (stateSubs.items.indexOf(item.sub) >= 0) primeState(item.sub); } else safely(item.fn, []);
     }
-    startChat();
-    for (const env of early.splice(0)) dispatch(env);
+    // Neither the chat backlog nor one bad envelope may keep the others from being delivered.
+    try { startChat(); } catch (err) { reportError('showing the chat backlog failed', err); }
+    for (const env of early.splice(0)) {
+      try { dispatch(env); } catch (err) { reportError('handling ' + env.type + ' failed', err); }
+    }
   }
 
   // onState's once-on-ready call. Until it has run, the subscriber gets no changes, so a change in
@@ -375,7 +399,8 @@
       'width:' + canvas.width + 'px;height:' + canvas.height + 'px';
     const body = document.body;
     for (const node of Array.from(body.childNodes)) {
-      if (node.nodeName === 'SCRIPT' || node.nodeName === 'TEMPLATE' || node.nodeName === 'STYLE') continue;
+      // Only what renders moves: re-inserting a <link> would drop and re-apply its stylesheet.
+      if (/^(SCRIPT|TEMPLATE|STYLE|LINK|META|NOSCRIPT|BASE)$/.test(node.nodeName)) continue;
       if (node.nodeType === 1 && node.hasAttribute('data-skp-boot')) continue;
       stage.appendChild(node);
     }
@@ -445,11 +470,20 @@
     const tDur = msList(cs.transitionDuration);
     const tDelay = msList(cs.transitionDelay);
     tDur.forEach((d, i) => { if (d > 0) longest = Math.max(longest, d + tDelay[i % tDelay.length]); });
+    // Animations the state change just started on descendants count too (a scene whose exit
+    // animates only its cards). Ones already running, and infinite loops, belong to something else.
+    if (el.getAnimations) {
+      for (const a of el.getAnimations({ subtree: true })) {
+        if (a.currentTime || !a.effect || !a.effect.getComputedTiming) continue;
+        const end = a.effect.getComputedTiming().endTime;
+        if (isFinite(end)) longest = Math.max(longest, end);
+      }
+    }
     return longest;
   }
 
+  // Reduced motion is the template's to honour, under [data-skp-reduced-motion] (05 §5.9).
   function durationOf(el, phase, opts) {
-    if (env.reducedMotion) return 0;
     if (opts && typeof opts.durationMs === 'number') return Math.max(0, opts.durationMs);
     return cssDuration(el, phase);
   }
@@ -484,6 +518,8 @@
     const ms = durationOf(el, 'enter', opts);
     const late = Math.max(0, opts.offsetMs || 0);
     seek(el, late);
+    // The deadline is the duration plus 50 ms (05 §5.2): an animation starts on the next frame, so
+    // idle at exactly the duration would cut off its last frame.
     life.promise = new Promise((resolve) => {
       setTimeout(() => {
         if (lives.get(el) === life && el.getAttribute('data-skp-state') === 'enter') {
@@ -491,7 +527,7 @@
           life.phase = 'idle';
         }
         resolve(el);
-      }, Math.max(0, ms - late));
+      }, Math.max(0, ms + 50 - late));
     });
     return life.promise;
   }
@@ -527,9 +563,9 @@
 
   // The exit duration an element will have, measured before it exits: a declared --skp-exit-ms,
   // or a probe that flips data-skp-state to exit and back within one task (no frame is drawn in
-  // between, so nothing visible happens).
+  // between, so nothing visible happens). The probe restarts any animation the flip touches, so it
+  // runs before the element is mounted, never while it enters.
   function exitDurationOf(el) {
-    if (env.reducedMotion) return 0;
     const custom = parseFloat(window.getComputedStyle(el).getPropertyValue('--skp-exit-ms'));
     if (isFinite(custom)) return Math.max(0, custom);
     const prev = el.getAttribute('data-skp-state');
@@ -560,7 +596,9 @@
       const id = tpl.getAttribute('data-skp-scene');
       if (!sceneBuilders.has(id)) sceneBuilders.set(id, () => tpl.content.cloneNode(true));
       // Content inside <template> is inert: warm its images now, or the first showing stutters
-      // while they decode mid-animation (v0's first-intro stutter).
+      // while they decode mid-animation (v0's first-intro stutter). Not in lite mode, which exists
+      // to keep phones' GPU memory free.
+      if (env.lite) continue;
       for (const img of tpl.content.querySelectorAll('img[src]')) preload(new URL(img.getAttribute('src'), document.baseURI).href);
     }
   }
@@ -585,21 +623,24 @@
   }
 
   // Scene requests in one burst (a replayed backlog, a poll batch, a re-sync) converge on the
-  // latest: one transition, never the scenes in between.
+  // latest: one transition, never the scenes in between. A take arrives twice, as show.scene.changed
+  // (with the operator's transition) and as the show.scene state; the transition survives in either
+  // order, and a bare state change waits briefly for its event before falling back to a fade.
   function requestScene(name, transition) {
     if (!isReady) return;
     const queued = pendingScene;
+    if (queued && queued.name === name && !transition) return;
     pendingScene = { name, transition };
-    if (!queued) {
-      setTimeout(() => {
-        const p = pendingScene;
-        pendingScene = null;
-        if (p) showScene(p.name, p.transition);
-      }, 0);
-    }
+    if (queued) return;
+    setTimeout(() => {
+      const p = pendingScene;
+      pendingScene = null;
+      if (p) showScene(p.name, p.transition);
+    }, transition ? 0 : timing.sceneSettleMs);
   }
 
-  function showScene(name, transition, initial) {
+  // rebuild: run the scene's builder again even though it is the current scene (defineScene).
+  function showScene(name, transition, initial, rebuild) {
     let id = resolveScene(name);
     if (!id) {
       sendLog('warn', 'this template has no scene "' + name + '"; staying on ' + (current ? current.id : 'the default'));
@@ -607,7 +648,8 @@
       id = resolveScene(defaultScene());
       if (!id) return;
     }
-    if (current && current.id === id) return;
+    if (current && current.id === id && !rebuild) return;
+    finishSwap(); // a stinger still before its cut: the scene it brings in becomes the outgoing one
     transition = transition || 'fade';
     const prev = current;
     const root = document.createElement('section');
@@ -631,22 +673,24 @@
       stage.appendChild(root);
       mount(root, { cut: true });
       if (prev) unmount(prev.root, { cut: true });
+      refillChat(root, prev && prev.root);
     } else if (sting) {
       playStinger(sting, root, prev.root);
     } else {
       stage.appendChild(root);
       mount(root); // both overlap: a crossfade by default, styled entirely in CSS
       unmount(prev.root);
+      refillChat(root, prev.root);
     }
+    // For a stinger, onScene runs at the take; its root joins the page at the cut.
     const t = initial ? 'cut' : transition;
     for (const fn of sceneSubs.items.slice()) safely(fn, [id, prev ? prev.id : undefined, t, root]);
   }
 
-  // A stinger plays over both scenes; the swap is a cut under it at cutAtMs (05 §5.4). The video is
-  // muted (audio belongs in OBS) and is removed when it ends, or by a deadline if 'ended' never
-  // fires (a hidden source, a file that won't load).
-  function playStinger(sting, root, oldRoot) {
-    if (stinger) stinger.remove();
+  // Each take plays its own <video>, loaded ahead: the first at boot, the next as soon as one is
+  // taken, so a take never waits for the file (lite mode never plays them).
+  const stingerVideos = new Map(); // transition id → the next take's <video>
+  function newStingerVideo(sting) {
     const video = document.createElement('video');
     video.setAttribute('data-skp-stinger', sting.id);
     video.setAttribute('muted', '');
@@ -654,22 +698,75 @@
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
-    video.src = asset(sting.media);
     video.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:2147483647;pointer-events:none';
+    video.src = asset(sting.media);
+    return video;
+  }
+  function takeStingerVideo(sting) {
+    const video = stingerVideos.get(sting.id) || newStingerVideo(sting);
+    stingerVideos.set(sting.id, newStingerVideo(sting));
+    return video;
+  }
+  function preloadStingers() {
+    if (env.lite) return;
+    for (const t of meta.transitions || []) if (t.media) stingerVideos.set(t.id, newStingerVideo(t));
+  }
+
+  // A stinger plays over both scenes; the swap is a cut under it at cutAtMs (05 §5.4), on the
+  // video's own clock once it plays. If it never plays (a hidden source) the cut comes a second
+  // late; if the file fails, on schedule. A newer take finishes a pending swap at once
+  // (finishSwap), so only one scene is ever left on stage. The video is muted (audio belongs in
+  // OBS) and is removed when it ends, or by a deadline if 'ended' never fires.
+  let swap = null; // { root, oldRoot, video, timer }
+  function finishSwap() {
+    const s = swap;
+    if (!s) return;
+    swap = null;
+    clearTimeout(s.timer);
+    stage.insertBefore(s.root, s.video.parentNode === stage ? s.video : null);
+    mount(s.root, { cut: true });
+    unmount(s.oldRoot, { cut: true });
+    refillChat(s.root, s.oldRoot);
+  }
+
+  function playStinger(sting, root, oldRoot) {
+    if (stinger) stinger.remove();
+    const video = takeStingerVideo(sting);
+    const cutAt = Math.max(0, sting.cutAtMs || 0);
+    const t0 = performance.now();
+    const s = { root, oldRoot, video, timer: 0 };
+    swap = s;
+    const cutIn = (ms) => {
+      clearTimeout(s.timer);
+      s.timer = setTimeout(() => { if (swap === s) finishSwap(); }, Math.max(0, ms));
+    };
+    cutIn(cutAt + 1000);
+    let deadline = 0;
+    const done = () => {
+      clearTimeout(deadline);
+      if (stinger === video) stinger = null;
+      video.remove();
+    };
+    const until = (ms) => { clearTimeout(deadline); deadline = setTimeout(done, ms); };
+    video.addEventListener('playing', () => { if (swap === s) cutIn(cutAt - video.currentTime * 1000); });
+    const failed = () => {
+      if (swap === s) cutIn(cutAt - (performance.now() - t0));
+      until(Math.max(0, cutAt - (performance.now() - t0)) + 50);
+    };
+    video.addEventListener('error', failed);
+    video.addEventListener('ended', done);
+    // A stinger longer than the 5 s deadline plays to its end.
+    const sized = () => {
+      if (isFinite(video.duration)) until(Math.max(cutAt + 5000, video.duration * 1000 + 250) - (performance.now() - t0));
+    };
+    video.addEventListener('loadedmetadata', sized);
+    until(cutAt + 5000);
+    if (video.readyState >= 1) sized(); // preloaded: these already fired
     stage.appendChild(video);
     stinger = video;
+    if (video.error) failed();
     const p = video.play();
     if (p && p.catch) p.catch(() => {});
-    const cutAt = Math.max(0, sting.cutAtMs || 0);
-    setTimeout(() => {
-      stage.insertBefore(root, video);
-      mount(root, { cut: true });
-      unmount(oldRoot, { cut: true });
-    }, cutAt);
-    const done = () => { if (stinger === video) stinger = null; video.remove(); };
-    video.addEventListener('ended', done);
-    video.addEventListener('error', () => setTimeout(done, cutAt + 50));
-    setTimeout(done, cutAt + 5000);
   }
 
   // ---- actions (04 §4.6, 05 §5.3) -----------------------------------------------------------
@@ -678,12 +775,9 @@
   // A trigger runs at startAt on server time. One arriving late but inside its window runs at once
   // with lateMs, so animations can be offset to land on the same frame as on-time clients; one
   // whose window has passed is dropped, including replays after a reconnect.
+  // The handler is looked up at startAt, so one registered after the trigger arrived still runs.
+  // SK.on('show.trigger') subscribers get the raw envelope, late or not, and check startAt themselves.
   function runTrigger(t) {
-    const handler = actionHandlers.get(t.name);
-    if (!handler) {
-      if (override.debug) sendLog('info', 'no handler for action "' + t.name + '"');
-      return;
-    }
     const declared = (meta.actions || []).find((a) => a.id === t.name);
     const startAt = typeof t.startAt === 'number' ? t.startAt : now();
     const durationMs = typeof t.durationMs === 'number' ? t.durationMs : (declared && declared.durationMs) || 0;
@@ -692,7 +786,9 @@
     at(startAt, () => {
       const lateMs = Math.max(0, now() - startAt);
       if (now() >= end) return;
-      handler({ args: clone(t.args) || {}, startAt, durationMs, lateMs });
+      const handler = actionHandlers.get(t.name);
+      if (handler) handler({ args: clone(t.args) || {}, startAt, durationMs, lateMs });
+      else if (override.debug) sendLog('info', 'no handler for action "' + t.name + '"');
     });
   }
 
@@ -700,9 +796,15 @@
   // The server queues alerts and gives each a display window. The runtime shows it from startAt,
   // starts its exit so it ends with the window, and cuts it on alerts.cut. It never queues alerts
   // itself. An alert without a window (before the server queue, plan step 19) gets one from its
-  // envelope time and the manifest duration, so H and V sources still agree.
+  // envelope time and the alert duration, so H and V sources still agree.
   let alertRenderer = null;
   const activeAlerts = new Map(); // envelope id → { el, cancels: [] }
+
+  // alerts.durationSetting names a numeric setting that overrides durationMs, clamped to 1–60 s.
+  function alertDurationMs() {
+    const v = alertSpec.durationSetting ? Number(settings()[alertSpec.durationSetting]) : NaN;
+    return v > 0 ? Math.min(60000, Math.max(1000, v)) : alertSpec.durationMs;
+  }
 
   function alertContainer() {
     return (current && current.root.querySelector('[data-skp-alerts]')) ||
@@ -714,7 +816,7 @@
     const data = env.data || {};
     const win = data.display && typeof data.display.startAt === 'number'
       ? data.display
-      : { startAt: typeof env.ts === 'number' ? env.ts : now(), durationMs: alertSpec.durationMs };
+      : { startAt: typeof env.ts === 'number' ? env.ts : now(), durationMs: alertDurationMs() };
     if (now() >= win.startAt + win.durationMs) return; // its window has passed
     const entry = { el: null, cancels: [] };
     activeAlerts.set(env.id, entry);
@@ -732,9 +834,10 @@
       if (done || activeAlerts.get(env.id) !== entry) return;
       done = true;
       if (!el.parentNode) container.appendChild(el);
+      const exitMs = exitDurationOf(el); // before mount: the probe would restart the enter
       const late = Math.max(0, now() - win.startAt);
       mount(el, { offsetMs: late });
-      const exitAt = win.startAt + win.durationMs - exitDurationOf(el);
+      const exitAt = win.startAt + win.durationMs - exitMs;
       entry.cancels.push(at(exitAt, () => {
         activeAlerts.delete(env.id);
         unmount(el);
@@ -758,9 +861,10 @@
   }
 
   // ---- chat (02 §2.3, 05 §5.6) --------------------------------------------------------------
-  // Messages are paced into frames of at most 4 per 250 ms. A handler that returns an element hands
-  // it to the runtime, which mounts it, keeps at most chat.max on screen (unmounting the oldest),
-  // and removes it on deletion, ban or clear. onRemove reports moderation removals.
+  // Messages are paced into frames of at most 4 per 250 ms, however they arrive. A handler that
+  // returns an element hands it to the runtime, which mounts it, keeps at most chat.max on screen
+  // (unmounting the oldest), and removes it on deletion, ban or clear. onRemove reports moderation
+  // removals. A scene that brings its own [data-skp-chat] gets the latest messages again, as on load.
   const chatAdd = list();
   const chatRemove = list();
   const chatClear = list();
@@ -769,6 +873,7 @@
   const chatSeen = new Set(); // ids already handed to the template
   let chatTimer = null;
   let chatStarted = false;
+  let lastChatFrame = -Infinity;
 
   function chatContainer() {
     return (current && current.root.querySelector('[data-skp-chat]')) ||
@@ -781,24 +886,32 @@
     for (const m of chatRecent.slice(-chatMax)) addChatMessage(m, true);
   }
 
-  function addChatMessage(m, initial) {
-    if (!m || chatSeen.has(m.id)) return;
+  // again: hand a message to the template a second time (a new scene's chat box).
+  function addChatMessage(m, initial, again) {
+    if (!m || (chatSeen.has(m.id) && !again)) return;
     chatSeen.add(m.id);
     if (chatSeen.size > 1000) chatSeen.delete(chatSeen.values().next().value);
     for (const fn of chatAdd.items.slice()) {
       const el = safely(fn, [clone(m), { initial: !!initial }]);
-      if (!isNode(el)) continue;
-      const box = chatContainer();
-      if (!el.parentNode && box) box.appendChild(el);
-      mount(el, initial ? { cut: true } : undefined);
-      chatEls.push({ id: m.id, userId: m.user && m.user.id, el });
-      while (chatEls.length > chatMax) unmount(chatEls.shift().el);
+      if (!isElement(el)) continue; // only elements are managed (a fragment can't carry state)
+      // One bad element costs only its own message.
+      try {
+        const box = chatContainer();
+        if (!el.parentNode && box) box.appendChild(el);
+        if (!lives.has(el)) mount(el, initial ? { cut: true } : undefined); // the template may have mounted it
+        chatEls.push({ id: m.id, userId: m.user && m.user.id, el });
+        while (chatEls.length > chatMax) unmount(chatEls.shift().el);
+      } catch (err) {
+        reportError('a chat message could not be shown', err);
+      }
     }
   }
 
   function pumpChat() {
     chatTimer = null;
-    for (const m of chatQueue.splice(0, timing.chatPerFrame)) addChatMessage(m, false);
+    const frame = chatQueue.splice(0, timing.chatPerFrame);
+    if (frame.length) lastChatFrame = performance.now();
+    for (const m of frame) addChatMessage(m, false);
     if (chatQueue.length) chatTimer = setTimeout(pumpChat, timing.chatFrameMs);
   }
 
@@ -808,7 +921,20 @@
     // oldest, so a flooded chat stays live instead of drawing messages seconds late.
     const backlog = Math.max(chatMax, (2000 / timing.chatFrameMs) * timing.chatPerFrame);
     if (chatQueue.length > backlog) chatQueue.splice(0, chatQueue.length - backlog);
-    if (!chatTimer) chatTimer = setTimeout(pumpChat, 0);
+    // The next frame comes a full frame after the last one, even if the queue ran dry in between.
+    if (!chatTimer) chatTimer = setTimeout(pumpChat, Math.max(0, lastChatFrame + timing.chatFrameMs - performance.now()));
+  }
+
+  // A new scene root with its own chat box: the messages that left with the old root stop
+  // counting toward chat.max, and the box is filled with the latest ones.
+  function refillChat(root, oldRoot) {
+    if (!chatSpec || !chatStarted || !root.querySelector('[data-skp-chat]')) return;
+    for (let i = chatEls.length - 1; i >= 0; i--) {
+      const el = chatEls[i].el;
+      if (!el.isConnected || (oldRoot && oldRoot.contains(el))) chatEls.splice(i, 1);
+    }
+    const shown = new Set(chatEls.map((item) => item.id));
+    for (const m of chatRecent.slice(-chatMax)) if (!shown.has(m.id)) addChatMessage(m, true, true);
   }
 
   function takeOffScreen(test) {
@@ -850,14 +976,18 @@
     }
   }
 
-  // After a re-sync: messages missing from the new buffer were moderated during the gap and come
-  // off screen (when the new buffer reaches back that far); new ones are added once.
+  // After a re-sync, new messages are added once, and a message missing from the new buffer was
+  // deleted during the gap, but only where the buffer provably reaches: it is the latest messages
+  // in order, so if its oldest is one we had, everything we had after that should be in it. With
+  // no such overlap (a restarted server, a gap longer than the buffer, chat.recent 0) nothing is
+  // taken off screen.
   function resyncChat(oldRecent) {
     if (!chatSpec || !chatStarted) return;
     const ids = new Set(chatRecent.map((m) => m.id));
-    const covers = chatRecent.length < ((chatSpec && chatSpec.recent) || 50);
-    if (covers) {
-      const gone = oldRecent.filter((m) => !ids.has(m.id) && chatSeen.has(m.id)).map((m) => m.id);
+    let from = -1;
+    if (chatRecent.length) for (let i = 0; i < oldRecent.length; i++) if (oldRecent[i].id === chatRecent[0].id) { from = i; break; }
+    if (from >= 0) {
+      const gone = oldRecent.slice(from + 1).filter((m) => !ids.has(m.id) && chatSeen.has(m.id)).map((m) => m.id);
       takeOffScreen((id) => gone.indexOf(id) >= 0);
       for (const id of gone) for (const fn of chatRemove.items.slice()) safely(fn, [id]);
     }
@@ -883,9 +1013,17 @@
   // live edits included, since the admin form holds the whole object).
   const settingsSubs = list();
   let lastSettingsJson = null;
+  let settingsFrom; // the object the cached copy was made from: a new one on every change
+  let settingsCopy = null;
 
+  // The same frozen object until the settings change: templates read it in render loops.
   function settings() {
-    return deepFreeze(clone(override.settings || state.get('overlay.settings') || {}));
+    const from = override.settings || state.get('overlay.settings') || null;
+    if (settingsCopy === null || from !== settingsFrom) {
+      settingsFrom = from;
+      settingsCopy = deepFreeze(clone(from || {}));
+    }
+    return settingsCopy;
   }
 
   function notifySettings() {
@@ -906,18 +1044,24 @@
   }
 
   // Decodes images ahead of their first reveal (05 §5.8). Resolves when all are ready; failures
-  // don't reject.
-  // A hidden OBS source may never finish decoding, so each wait is capped at 3 s.
-  const warm = new Map();
+  // don't reject. A hidden OBS source may never finish decoding, so each wait is capped at 3 s.
+  // The 200 most recently preloaded images are kept decoded: a long show preloads thousands of
+  // avatars, and holding them all would grow without bound.
+  const warm = new Map(); // url → { img, ready }, least recently used first
   function preload(urls) {
     return Promise.all([].concat(urls).filter(Boolean).map((u) => {
-      if (!warm.has(u)) {
+      let w = warm.get(u);
+      if (w) {
+        warm.delete(u);
+      } else {
         const img = new Image();
         img.src = u;
         const decoded = img.decode ? img.decode().catch(() => {}) : Promise.resolve();
-        warm.set(u, { img, ready: Promise.race([decoded, sleep(3000)]) });
+        w = { img, ready: Promise.race([decoded, sleep(3000)]) };
       }
-      return warm.get(u).ready;
+      warm.set(u, w);
+      if (warm.size > 200) warm.delete(warm.keys().next().value);
+      return w.ready;
     })).then(() => undefined);
   }
 
@@ -925,19 +1069,25 @@
   // SK.log goes to the platform's template log, batched; the server rate-limits per overlay. Errors
   // are never painted on air (only the ?debug=1 HUD shows them).
   const logQueue = [];
-  const logSeen = new Map(); // message → when it was last sent, so a loop logs it once a minute
+  const logSeen = new Map(); // entry → when it was last sent, so a loop logs it once a minute
   let logTimer = null;
   let lastError = '';
 
+  // The context travels as JSON of at most 1000 characters; one that can't be serialised (a cycle,
+  // a BigInt) is replaced by the reason, never thrown.
   function sendLog(level, msg, context) {
     msg = String(msg).slice(0, 500);
+    let json;
+    try { json = context === undefined ? undefined : JSON.stringify(context); } catch (err) { json = JSON.stringify({ unserializable: String(err && err.message) }); }
+    if (json !== undefined && json.length > 1000) json = JSON.stringify({ truncated: json.slice(0, 1000) });
+    const key = msg + ' ' + (json || '');
     const t = Date.now();
-    if (t - (logSeen.get(msg) || -Infinity) < 60000) return;
-    logSeen.set(msg, t);
+    if (t - (logSeen.get(key) || -Infinity) < 60000) return;
+    logSeen.set(key, t);
     if (logSeen.size > 200) logSeen.delete(logSeen.keys().next().value);
     // OBS copies page console errors into its own log file.
     if (level === 'error' || level === 'warn') (console[level] || console.log).call(console, '[skp] ' + msg);
-    logQueue.push({ level, msg, context });
+    logQueue.push({ level, msg, context: json === undefined ? undefined : JSON.parse(json) });
     if (logQueue.length > 50) logQueue.splice(0, logQueue.length - 50);
     if (!logTimer && !override.mock) logTimer = setTimeout(flushLog, 1000);
   }
@@ -963,7 +1113,7 @@
   window.addEventListener('error', (ev) => {
     const t = ev.target;
     if (t && t !== window && t.nodeType === 1) {
-      sendLog('error', 'failed to load ' + (t.src || t.href || t.nodeName));
+      sendLog('error', 'failed to load ' + (String(t.src || t.href || '').split(/[?#]/)[0] || t.nodeName)); // never a key= value
       return;
     }
     reportError('uncaught error', ev.error || ev.message);
@@ -991,6 +1141,7 @@
         'scene ' + (current ? current.id : '—') + ' (show ' + (state.get('show.scene') || '—') + ') · tick ' + ticks + '\n' +
         'transport ' + SK.transport.mode + ' · ' + transport.received + ' received · streams ' + transport.opened +
         ' · skew ' + Math.round(skew) + ' ms · data ' + age + '\n' +
+        'cursor ' + (cursor || '—') + (expired ? ' · viewer counts hidden: no server contact' : '') + '\n' +
         'overrides ' + overrides + '\n' +
         (lastError ? 'ERR ' + lastError.slice(0, 240) : 'no errors');
     });
@@ -1003,8 +1154,34 @@
   // 30 s switch to polling every 700 ms (1500 ms in lite mode), with the stream retried later.
   // 429: this browser already holds as many streams as the server allows; poll right away and
   // retry after Retry-After. 410: the cursor is too old; fetch the snapshot again. While the server
-  // is unreachable the last good state stays on screen. Only one snapshot fetch and one polling
-  // loop ever run at a time.
+  // is unreachable the last good state stays on screen (01 §1.7), except viewer counts after
+  // 120 s (H6). Only one snapshot fetch, one stream and one polling loop ever run at a time: a
+  // page never holds more than one of the browser's six connections per host for streaming.
+  let lastContact = performance.now();
+  let expired = false;
+
+  // Any answer from the server. After viewer counts were hidden, the next one also fetches a fresh
+  // snapshot: an unchanged count is never published again, so the stream alone wouldn't bring it back.
+  function contact() {
+    lastContact = performance.now();
+    if (expired) {
+      expired = false;
+      loadSnapshot();
+    }
+  }
+
+  function expireViewers() {
+    if (expired || override.mock || performance.now() - lastContact < timing.offlineHoldMs) return;
+    expired = true;
+    for (const key of Array.from(state.keys())) {
+      if (key.indexOf('viewers.') !== 0) continue;
+      const prev = state.get(key);
+      state.delete(key);
+      if (isReady) notifyState(key, undefined, prev);
+    }
+  }
+  tickFns.push(expireViewers);
+
   function request(url, ms, signal) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms);
@@ -1020,22 +1197,30 @@
 
   async function fetchSnapshot() {
     let delay = timing.snapshotRetryMs;
+    let raced = 0;
     for (;;) {
       let snap = null;
+      const asked = cursor;
       try {
         const p0 = performance.now();
         const res = await request(base + '/snapshot?v=1' + keyParam, timing.requestTimeoutMs);
         const p1 = performance.now();
+        const w1 = Date.now();
         if (res.ok) {
           snap = await res.json();
-          sampleClock(snap.ts, p0, p1);
+          sampleClock(snap.ts, p0, p1, w1);
         }
       } catch (err) { /* unreachable: keep what's on screen and retry */ }
       if (snap) {
         transport.ok = true;
         transport.lastData = Date.now();
+        lastContact = performance.now();
+        expired = false;
         // Applying is not a network failure: an error here is reported, never retried in a loop.
-        try { applySnapshot(snap); } catch (err) { reportError('applying the snapshot failed', err); }
+        let applied = true;
+        try { applied = applySnapshot(snap, asked); } catch (err) { reportError('applying the snapshot failed', err); }
+        // Newer envelopes arrived while it was in flight: fetch one that includes them.
+        if (applied === false && ++raced < 3) continue;
         return;
       }
       transport.ok = false;
@@ -1066,6 +1251,7 @@
     transport.opened++;
     transport.ok = true;
     onOpen();
+    contact();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
@@ -1076,6 +1262,7 @@
         if (chunk.done) break;
         clearTimeout(silence);
         silence = setTimeout(() => ctrl.abort(), timing.silenceMs);
+        contact(); // heartbeats included
         buf += decoder.decode(chunk.value, { stream: true });
         // Normalise line ends on the joined text, holding back a final \r whose \n may come next.
         const hold = buf.slice(-1) === '\r' ? '\r' : '';
@@ -1119,11 +1306,23 @@
 
   let pollGen = 0;
   let probeTimer = null;
+  let streaming = false;
 
   async function streamLoop() {
-    let gone = 0;
+    if (streaming) return; // a probe while a loop still runs (stuck on 410s, say) adds nothing
+    streaming = true;
+    try {
+      await streamLoopBody();
+    } finally {
+      streaming = false;
+    }
+  }
+
+  async function streamLoopBody() {
+    let gone = 0; // back-to-back 410s back off; a stream that opened starts the count again
     for (;;) {
       const result = await runStream(() => {
+        gone = 0;
         transport.mode = 'stream';
         stopPolling();
       });
@@ -1177,13 +1376,15 @@
       const p0 = performance.now();
       const res = await request(base + '/poll?cursor=' + encodeURIComponent(cursor) + keyParam, timing.requestTimeoutMs);
       const p1 = performance.now();
+      const w1 = Date.now();
       if (gen !== pollGen) return;
       if (res.status === 410) return loadSnapshot();
       if (!res.ok) { transport.ok = false; return; }
       const body = await res.json();
       if (gen !== pollGen) return;
       transport.ok = true;
-      sampleClock(body.ts, p0, p1);
+      contact();
+      sampleClock(body.ts, p0, p1, w1);
       if (body.build && meta.build && body.build !== meta.build) return reloadForBuild();
       for (const e of body.envelopes) apply(e);
     } catch (err) {
@@ -1194,6 +1395,7 @@
   // ---- mock (?mock=1, 08 §8.5) --------------------------------------------------------------
   // Sample data instead of the server: /sdk/v1/mock.js feeds a snapshot and envelopes through this
   // hook, and they pass the same filters as live data. It's a separate file so this one stays small.
+  // Mock replaces the live data, not the overlay's configuration: its saved settings still apply.
   function startMock() {
     transport.mode = 'mock';
     let seq = 0;
@@ -1201,16 +1403,18 @@
       seq++;
       return Date.now().toString(36).padStart(10, '0') + String(seq).padStart(16, '0');
     };
+    const withSettings = (s) => (meta.settings ? Object.assign({ 'overlay.settings': meta.settings }, s) : s);
     Object.defineProperty(window, '__skpMock', {
       value: Object.freeze({
         meta,
         now,
-        snapshot(snap) { applySnapshot(Object.assign({ cursor: id(), ts: Date.now() }, snap)); },
+        alertDurationMs,
+        snapshot(snap) { applySnapshot(Object.assign({ cursor: id(), ts: Date.now() }, snap, { state: withSettings(snap.state || {}) })); },
         push(type, data) { apply({ id: id(), type, ts: now(), src: { connector: 'simulator' }, data }); },
       }),
     });
     // If the sample data never arrives, start empty rather than never becoming ready.
-    const empty = () => { if (!snapshotLoaded) applySnapshot({ cursor: id(), ts: Date.now(), state: {} }); };
+    const empty = () => { if (!snapshotLoaded) applySnapshot({ cursor: id(), ts: Date.now(), state: withSettings({}) }); };
     const s = document.createElement('script');
     s.src = '/sdk/v1/mock.js';
     s.addEventListener('error', () => { reportError('mock data failed to load', new Error('/sdk/v1/mock.js')); empty(); });
@@ -1219,7 +1423,10 @@
   }
 
   // ---- the API (04 §4.4) --------------------------------------------------------------------
-  // Every subscribe call returns a function that removes the subscription again.
+  // Every subscribe call returns a function that removes the subscription again. Asking for a key
+  // or type the manifest doesn't declare is logged once: otherwise it looks like data that never
+  // comes (04 §4.2).
+  const undeclared = (what, name) => sendLog('warn', what + ' "' + name + '" is not declared in template.json consumes, so the template never receives it');
   const SK = {
     meta,
     env,
@@ -1233,12 +1440,17 @@
     get settings() { return settings(); },
     onSettings(fn) { return settingsSubs.add(fn); },
 
-    state(key) { return declaredState(key) ? clone(state.get(key)) : undefined; },
+    state(key) {
+      if (declaredState(key)) return clone(state.get(key));
+      undeclared('state', key);
+      return undefined;
+    },
 
     // onState('viewers.total', (value, prev) => …) or onState('show.*', (key, value, prev) => …).
     // Fires once with the current value when the template is ready (04 §4.4).
     onState(pattern, fn) {
       const sub = { test: matcher(pattern), wildcard: String(pattern).slice(-2) === '.*', fn, primed: false };
+      if (!sub.wildcard && !declaredState(pattern)) undeclared('state', pattern);
       const remove = stateSubs.add(sub);
       if (isReady) setTimeout(() => { if (stateSubs.items.indexOf(sub) >= 0) primeState(sub); }, 0);
       else bootQueue.push({ sub });
@@ -1246,9 +1458,13 @@
     },
 
     // on('alert.*', envelope => …): only types the template declared (04 §4.2).
-    on(pattern, fn) { return eventSubs.add({ test: matcher(pattern), fn }); },
+    on(pattern, fn) {
+      if (String(pattern).slice(-2) !== '.*' && !visibleEvent(String(pattern))) undeclared('event', pattern);
+      return eventSubs.add({ test: matcher(pattern), fn });
+    },
 
     get scene() { return current ? current.id : undefined; },
+    // For a stinger, onScene runs at the take and the root joins the page at the cut.
     onScene(fn) {
       const remove = sceneSubs.add(fn);
       if (isReady && current) {
@@ -1257,7 +1473,11 @@
       }
       return remove;
     },
-    defineScene(id, build) { sceneBuilders.set(id, build); },
+    // Defined after its scene was mounted (inside SK.ready, say): the scene is rebuilt in place.
+    defineScene(id, build) {
+      sceneBuilders.set(id, build);
+      if (isReady && current && current.id === id) showScene(id, 'cut', false, true);
+    },
 
     action(name, fn) {
       if (!(meta.actions || []).some((a) => a.id === name)) sendLog('warn', 'action "' + name + '" is not declared in template.json');
@@ -1308,12 +1528,14 @@
     if (boot) boot.remove(); // the runtime is running
     buildStage();
     collectSceneTemplates();
+    preloadStingers();
     if (override.debug) startHud();
     domReady = true;
     maybeReady();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', onDom);
   else onDom();
+  if (params.has('settings') && override.settings === null) sendLog('warn', '?settings= was ignored: it must be base64 of a JSON object');
 
   if (override.mock) {
     startMock();

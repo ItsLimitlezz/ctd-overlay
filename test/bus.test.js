@@ -114,6 +114,44 @@ describe('state', () => {
     assert.equal(bus.setState('viewers.twitch', undefined), null);
   });
 
+  test('null removes a key too: no value in the envelope, none in a snapshot (02 §2.2)', () => {
+    const { bus } = fixture();
+    const ch = bus.channel('ovl_a', { consumes: { state: ['viewers.*'] } });
+    bus.setState('viewers.twitch', 50);
+    const env = bus.setState('viewers.twitch', null);
+    assert.deepEqual(env.data, { key: 'viewers.twitch', prev: 50 });
+    assert.equal(bus.getState('viewers.twitch'), undefined);
+    assert.equal('viewers.twitch' in ch.snapshot().state, false);
+    assert.equal(bus.setState('viewers.twitch', null), null);
+  });
+
+  test('values JSON turns into null (NaN, Infinity, an invalid Date) are absent, not null', () => {
+    const { bus } = fixture();
+    const seen = [];
+    bus.subscribeAll((env) => seen.push(env));
+    for (const bad of [NaN, Infinity, -Infinity, new Date(NaN)]) {
+      assert.equal(bus.setState('viewers.total', bad), null, String(bad)); // already absent: no change
+    }
+    bus.setState('viewers.total', 5);
+    const env = bus.setState('viewers.total', NaN);
+    assert.deepEqual(env.data, { key: 'viewers.total', prev: 5 });
+    assert.equal(bus.getState('viewers.total'), undefined);
+    assert.equal([...bus.stateEntries()].length, 0);
+    assert.equal(seen.length, 2);
+  });
+
+  test('a change too large to publish is refused and the old value stays (02 §2.9)', () => {
+    const { bus } = fixture();
+    const seen = [];
+    bus.subscribeAll((env) => seen.push(env));
+    const a = 'a'.repeat(40 * 1024);
+    bus.setState('custom.big', a);
+    // value B plus prev A is over 64 KiB.
+    assert.throws(() => bus.setState('custom.big', 'b'.repeat(40 * 1024)), (e) => e instanceof BusError && e.code === 'too-large');
+    assert.equal(bus.getState('custom.big'), a);
+    assert.equal(seen.length, 1);
+  });
+
   test('bad keys are refused and values are copies', () => {
     const { bus } = fixture();
     assert.throws(() => bus.setState('Viewers', 1), (e) => e.code === 'bad-key');
@@ -256,6 +294,8 @@ describe('replay', () => {
     for (const bad of ['', 'not a cursor', 'zzzzzzzzzzzzzzzzzzzzzzzzzz', 42, undefined]) {
       assert.deepEqual(ch.since(bad), { gone: true }, String(bad));
     }
+    // A well-formed cursor from the future (a previous run whose clock was ahead) is gone too.
+    assert.deepEqual(ch.since('7ZZZZZZZZZZZZZZZZZZZZZZZZZ'), { gone: true });
   });
 
   test('the buffer keeps at least 120 s or 500 envelopes, whichever is more (01 §1.5)', () => {
@@ -348,6 +388,25 @@ describe('isolation', () => {
     assert.equal(bGot.length, 0);
     assert.equal(all.length, 0);
     assert.equal(bus.getState('show.scene'), undefined);
+  });
+
+  test('channel-only state set to null or NaN is removed, never null (02 §2.2)', () => {
+    const { bus, clock } = fixture();
+    const ch = bus.channel('ovl_a', {});
+    const got = watch(ch);
+    const red = { accent: 'red' };
+    for (const absent of [null, NaN]) {
+      ch.setLocalState('overlay.settings', red);
+      clock.advance(100);
+      ch.setLocalState('overlay.settings', absent);
+      clock.advance(100);
+      assert.equal('overlay.settings' in ch.snapshot().state, false, String(absent));
+    }
+    const set = { key: 'overlay.settings', value: red };
+    const removed = { key: 'overlay.settings', prev: red };
+    assert.deepEqual(got.map((e) => e.data), [set, removed, set, removed]);
+    ch.setLocalState('overlay.settings', null);
+    assert.equal(got.length, 4); // already absent: nothing sent
   });
 
   test('a targeted publish (the simulator) reaches one overlay only, and not the chat buffer', () => {

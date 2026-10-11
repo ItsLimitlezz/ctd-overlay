@@ -24,11 +24,15 @@
     SK.clock.at(startAt + durationMs, () => SK.unmount(el));
   });
 
-  SK.alerts.render((alert, el) => {
-    el.className = 'alert';
-    el.textContent = `${alert.user.name} ${alert.kind}`;
-    log.push({ what: 'alert', kind: alert.kind, name: alert.user.name, at: t0() });
-  });
+  // ?norender: a widget that takes alerts through SK.on only.
+  if (!location.search.includes('norender')) {
+    SK.alerts.render((alert, el) => {
+      el.className = alert.probe ? 'alert probe' : 'alert';
+      el.textContent = `${alert.user.name} ${alert.kind}`;
+      log.push({ what: 'alert', kind: alert.kind, name: alert.user.name, at: t0() });
+    });
+  }
+  SK.on('alert.*', (env) => log.push({ what: 'alert-event', type: env.type }));
 
   SK.chat.onAdd((m, info) => {
     const el = document.createElement('div');

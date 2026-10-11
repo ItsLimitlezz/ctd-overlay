@@ -69,8 +69,12 @@ function listFiles(dir, prefix = '') {
   return out.sort();
 }
 
-// The default canvas, or the one `canvas` names (01 §1.4: the one allowed URL parameter).
+// The default canvas, or the one `canvas` names (01 §1.4: the one allowed URL parameter), by id
+// or as <w>x<h> (`1080x1920`). An id wins over a size that reads the same.
 export function pickCanvas(manifest, requested) {
   const canvases = manifest.canvases;
-  return canvases.find((c) => c.id === requested) || canvases.find((c) => c.default) || canvases[0];
+  const size = /^(\d+)x(\d+)$/.exec(requested ?? '');
+  return canvases.find((c) => c.id === requested) ||
+    (size && canvases.find((c) => c.width === Number(size[1]) && c.height === Number(size[2]))) ||
+    canvases.find((c) => c.default) || canvases[0];
 }

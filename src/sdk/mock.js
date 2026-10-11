@@ -1,8 +1,10 @@
 /* Sample data for ?mock=1 (08 §8.5): what an overlay looks like mid-show, without a server, for the
    admin UI's previews and template authors. Loaded by sk.js in mock mode, through window.__skpMock.
-   Feeds: a lineup; a chat stream with every role, emotes, a long name and a deleted message; one
-   alert of every kind including a gift burst, in server-style display windows; a track with
-   progress; viewer counts that change; and each declared action once.
+   Feeds: a lineup; a chat stream with every role, emotes, a long name, a deleted message and a
+   user's messages cleared; one alert of every kind including a gift burst, in server-style
+   display windows; tracks with progress, one of them paused; viewer counts that change, go
+   briefly unknown and briefly stale; and each declared action once. Shapes follow the payload
+   schemas (docs/standard/schemas), and the chat backlog is trimmed as the server trims it.
    Like sk.js it must run in Chromium 103 and load nothing else. */
 (() => {
   'use strict';
@@ -63,8 +65,9 @@
   };
   const nextMsg = () => msg(people[n % people.length], lines[n % lines.length]);
 
+  // Slots carry server-resolved instants (09 §9.2); `time` is only a display label.
   const t = now();
-  const slot = (offsetMin, name, extra) => Object.assign({ name, at: t + offsetMin * MIN }, extra || {});
+  const slot = (offsetMin, name, extra) => Object.assign({ name, startAt: t + offsetMin * MIN }, extra || {});
   const lineup = [
     slot(-90, 'Manzone & strong'),
     slot(-30, 'Trapment'),
@@ -80,8 +83,15 @@
   const tracks = [
     track('Strobe', ['deadmau5'], 637000, 120400),
     track('Opus', ['Eric Prydz'], 543000, 30000),
-    track('Midnight City', ['M83'], 243000, 0),
+    Object.assign(track('Midnight City', ['M83'], 243000, 61000), { playing: false }),
   ];
+
+  // As many backlog messages as the server would send this template: chat.recent, default 50,
+  // 0 to 200 (02 §2.3).
+  const chatSpec = (meta.consumes || {}).chat;
+  const r = chatSpec && chatSpec.recent;
+  const recentCount = !chatSpec ? 0 : r === undefined ? 50 : Number.isInteger(r) ? Math.min(200, Math.max(0, r)) : 0;
+  const backlog = [nextMsg(), nextMsg(), nextMsg(), nextMsg(), nextMsg()];
 
   let viewers = { twitch: 842, kick: 317 };
   mock.snapshot({
@@ -94,18 +104,21 @@
       'viewers.kick': viewers.kick,
       'viewers.total': viewers.twitch + viewers.kick,
     },
-    chat: { recent: [nextMsg(), nextMsg(), nextMsg(), nextMsg(), nextMsg()] },
+    chat: { recent: recentCount ? backlog.slice(-recentCount) : [] },
   });
 
-  // Chat: a message every 1.5 s, and one deleted a few seconds after it appears.
+  // Chat: a message every 1.5 s, one deleted a few seconds after it appears, and now and then the
+  // bot's messages cleared (a ban or timeout).
   every(1500, () => {
     const m = nextMsg();
     mock.push('chat.message', m);
     if (n % 11 === 0) later(3000, () => mock.push('chat.message.deleted', { messageId: m.id }));
+    if (n % 23 === 0) mock.push('chat.user.cleared', { userId: 'twitch:8' });
   });
 
   // Viewers drift. Every sixth update Kick's count is briefly unknown, so templates show what they
-  // do when a value is absent (never 0, 02 §2.8).
+  // do when a value is absent (never 0, 02 §2.8); halfway between, the counts are briefly held
+  // through an error (viewers.stale).
   let vt = 0;
   every(5000, () => {
     vt++;
@@ -114,6 +127,7 @@
     mock.push('state.changed', { key: 'viewers.twitch', value: viewers.twitch });
     mock.push('state.changed', kickKnown ? { key: 'viewers.kick', value: viewers.kick } : { key: 'viewers.kick' });
     mock.push('state.changed', { key: 'viewers.total', value: viewers.twitch + (kickKnown ? viewers.kick : 0) });
+    mock.push('state.changed', vt % 6 === 3 ? { key: 'viewers.stale', value: true } : { key: 'viewers.stale' });
   });
 
   // A new track every 40 s.
@@ -136,15 +150,16 @@
     { kind: 'kicks', user: { id: 'kick:27', name: 'KickKing' }, amount: { value: 100, unit: 'kicks' } },
     { kind: 'follow', user: { id: 'twitch:28', name: 'NewFace' } },
   ];
-  const alertSpec = Object.assign({ durationMs: 6000, gapMs: 500 }, meta.alerts || {});
+  const gapMs = (meta.alerts && meta.alerts.gapMs) || 500;
   let ai = 0;
   let nextStart = 0;
   every(8000, () => {
     const a = alertKinds[ai % alertKinds.length];
     ai++;
+    const durationMs = mock.alertDurationMs(); // alerts.durationSetting applies, as on the server
     const startAt = Math.max(now(), nextStart);
-    nextStart = startAt + alertSpec.durationMs + alertSpec.gapMs;
-    mock.push('alert.' + a.kind, Object.assign({ message: null, gift: null }, a, { display: { startAt, durationMs: alertSpec.durationMs } }));
+    nextStart = startAt + durationMs + gapMs;
+    mock.push('alert.' + a.kind, Object.assign({ gift: null }, a, { display: { startAt, durationMs } }));
   });
 
   // Each declared action once, 20 s apart, then again.

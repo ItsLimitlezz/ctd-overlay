@@ -65,14 +65,18 @@ export class Channel {
     this.#emit(env);
   }
 
-  // Channel-only state: never global, never sent to other overlays or API subscribers.
+  // Channel-only state: never global, never sent to other overlays or API subscribers. Kept as a
+  // JSON copy like bus state, and null after the round trip (NaN, Infinity, an invalid Date) is
+  // absent, never null (02 §2.2).
   setLocalState(key, value) {
-    if (value === null) value = undefined; // absent, never null (02 §2.2)
+    const text = value === undefined ? undefined : JSON.stringify(value);
+    let json = text === undefined ? undefined : JSON.parse(text);
+    if (json === null) json = undefined;
     const prev = this.#local.get(key);
-    if (JSON.stringify(prev) === JSON.stringify(value)) return;
-    if (value === undefined) this.#local.delete(key);
-    else this.#local.set(key, structuredClone(value));
-    this.#offerState(changeData(key, value, prev), { connector: 'core' });
+    if (JSON.stringify(prev) === JSON.stringify(json)) return;
+    if (json === undefined) this.#local.delete(key);
+    else this.#local.set(key, json);
+    this.#offerState(changeData(key, json, prev), { connector: 'core' });
   }
 
   snapshot() {

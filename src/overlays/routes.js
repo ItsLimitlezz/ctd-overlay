@@ -30,11 +30,16 @@ const HEARTBEAT_MS = 15000; // at least every 15 s (01 §1.5)
 const MAX_STREAMS_PER_CLIENT = 4;
 const USE_POLLING = 'https://skp.dev/errors/use-polling';
 
-// SK.log (04 §4.4): template messages forwarded to the platform log. Small, and rate-limited per
-// overlay, because a template stuck in a loop must not flood the log or the disk.
-const LOG_BODY_LIMIT = 8 * 1024;
+// SK.log (04 §4.4): template messages forwarded to the platform log, rate-limited per overlay,
+// because a template stuck in a loop must not flood the log or the disk. The body limit leaves
+// room for a full batch with its contexts; each context is cut down here.
+const LOG_BODY_LIMIT = 64 * 1024;
+const LOG_BATCH = 20; // entries used from one request, as many as the SDK sends at once
 const LOG_PER_MINUTE = 30;
+const LOG_CONTEXT_CHARS = 2000;
+const LOG_DROPS_EVERY_MS = 60000; // the dropped-entries summary, at most once a minute
 const LOG_LEVELS = new Set(['info', 'warn', 'error']);
+const LOG_SHAPE = 'Send JSON: { "entries": [{ "level": "warn", "msg": "…" }] }';
 
 const OVERLAY_HEADERS = {
   'access-control-allow-origin': '*', // lets the sandboxed admin preview fetch (04 §4.8)
@@ -90,6 +95,9 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       alerts: manifest.alerts || {},
       transitions: manifest.transitions || [],
       consumes: { state: manifest.consumes?.state || [], events: manifest.consumes?.events || [], chat: manifest.consumes?.chat || null },
+      // The saved settings, for ?mock=1, which never fetches the snapshot that carries them
+      // (04 §4.9, 08 §8.5).
+      settings: o.doc.data.settings || {},
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -200,37 +208,79 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     res.end(code);
   };
 
+  // SK.log's POST is CORS-simple (a string body, no preflight), so it is delivered from any page
+  // whatever the answer says. The answers still carry Access-Control-Allow-Origin, beyond the GETs
+  // of 07 §7.10: without it the sandboxed preview logs a CORS error to its console on every flush.
+  // Allowing it exposes nothing: the answer is a bare 204, or a problem about the request itself.
   const templateLog = log.child('template');
-  const buckets = new Map(); // slug → { tokens, at, dropped }
+  const buckets = new Map(); // slug → { tokens, at, template, dropped, reportedAt, timer }
   async function logEntry({ req, res, params }) {
     const o = find(res, params.slug);
     if (!o) return;
-    let entries;
+    let body;
     try {
-      const body = JSON.parse(await readBody(req, LOG_BODY_LIMIT));
-      entries = Array.isArray(body?.entries) ? body.entries : [body];
+      body = JSON.parse(await readBody(req, LOG_BODY_LIMIT));
     } catch (err) {
-      return sendProblem(res, err.status || 400, 'Bad log entry',
-        err.status ? err.message : 'Send JSON: { "entries": [{ "level": "warn", "msg": "…" }] }', { headers: OVERLAY_HEADERS });
+      return sendProblem(res, err.status || 400, 'Bad log entry', err.status ? err.message : LOG_SHAPE,
+        { headers: { ...OVERLAY_HEADERS, ...err.headers } });
     }
+    const entries = logEntries(body);
+    if (!entries) return sendProblem(res, 400, 'Bad log entry', LOG_SHAPE, { headers: OVERLAY_HEADERS });
+
     const now = Date.now();
-    const bucket = buckets.get(params.slug) || { tokens: LOG_PER_MINUTE, at: now, dropped: 0 };
-    bucket.tokens = Math.min(LOG_PER_MINUTE, bucket.tokens + ((now - bucket.at) / 60000) * LOG_PER_MINUTE);
+    sweepBuckets(now);
+    const bucket = buckets.get(params.slug) || { tokens: LOG_PER_MINUTE, at: now, dropped: 0, reportedAt: -Infinity, timer: null };
+    bucket.tokens = refilled(bucket, now);
     bucket.at = now;
-    const template = `${o.template.id}@${o.template.version}`;
-    for (const e of entries.slice(0, 20)) {
+    bucket.template = `${o.template.id}@${o.template.version}`;
+    buckets.set(params.slug, bucket);
+    for (const e of entries) {
       if (bucket.tokens < 1) { bucket.dropped++; continue; }
       bucket.tokens--;
-      const level = LOG_LEVELS.has(e?.level) ? e.level : 'warn';
-      templateLog[level](String(e?.msg ?? '').slice(0, 500), { overlay: params.slug, template, context: e?.context });
+      const level = LOG_LEVELS.has(e.level) ? e.level : 'warn';
+      templateLog[level](e.msg.slice(0, 500), { overlay: params.slug, template: bucket.template, context: clipContext(e.context) });
     }
-    if (bucket.dropped && bucket.tokens >= 1) {
-      templateLog.warn('template log entries were dropped by the rate limit', { overlay: params.slug, template, dropped: bucket.dropped });
-      bucket.dropped = 0;
-    }
-    buckets.set(params.slug, bucket);
+    reportDrops(params.slug, bucket, now);
     res.writeHead(204, OVERLAY_HEADERS);
     res.end();
+  }
+
+  // The dropped-entries summary costs no token. It's written at the first drop, then at most once
+  // a minute while drops go on; a timer writes what's left when that minute ends, so the drops at
+  // the tail of a flood are reported too. A last report in the future means the clock stepped
+  // back: report now rather than wait for the clock to catch up.
+  function reportDrops(slug, bucket, now) {
+    if (!bucket.dropped || bucket.timer) return;
+    const wait = bucket.reportedAt + LOG_DROPS_EVERY_MS - now;
+    if (wait > 0 && wait <= LOG_DROPS_EVERY_MS) {
+      bucket.timer = setTimeout(() => writeDrops(slug, bucket), wait);
+      bucket.timer.unref();
+    } else {
+      writeDrops(slug, bucket);
+    }
+  }
+
+  function writeDrops(slug, bucket) {
+    clearTimeout(bucket.timer);
+    bucket.timer = null;
+    templateLog.warn('template log entries were dropped by the rate limit', { overlay: slug, template: bucket.template, dropped: bucket.dropped });
+    bucket.dropped = 0;
+    bucket.reportedAt = Date.now();
+  }
+
+  // Forgets buckets that are full again and owe no summary (dropped entries always have a timer
+  // waiting), so the map holds only overlays that logged in about the last minute, and a deleted
+  // overlay's bucket doesn't stay forever.
+  function sweepBuckets(now) {
+    for (const [slug, b] of buckets) {
+      if (!b.timer && refilled(b, now) >= LOG_PER_MINUTE && now - b.reportedAt >= LOG_DROPS_EVERY_MS) buckets.delete(slug);
+    }
+  }
+
+  // At shutdown, drops still waiting for their minute are reported at once.
+  function closeLog() {
+    for (const [slug, b] of buckets) if (b.timer) writeDrops(slug, b);
+    buckets.clear();
   }
 
   return [
@@ -239,7 +289,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     { method: 'GET', path: '/o/:slug/poll', handler: poll },
     { method: 'GET', path: '/o/:slug/stream', handler: stream },
     { method: 'GET', path: '/o/:slug/t/:build/*', handler: file },
-    { method: 'POST', path: '/o/:slug/log', handler: logEntry },
+    { method: 'POST', path: '/o/:slug/log', handler: logEntry, close: closeLog },
     { method: 'GET', path: '/sdk/v1/sk.js', handler: script(SDK_FILE) },
     { method: 'GET', path: '/sdk/v1/mock.js', handler: script(MOCK_FILE) },
   ];
@@ -251,6 +301,29 @@ function gone(res) {
 
 function notFound(res) {
   sendProblem(res, 404, 'Not found', 'No such template file.', { headers: OVERLAY_HEADERS });
+}
+
+// What SK.log sends: { "entries": [{ "level", "msg", "context"? }, …] } (04 §4.4). Only the first
+// LOG_BATCH entries are used; null when the body isn't that shape.
+function logEntries(body) {
+  if (!isObject(body) || !Array.isArray(body.entries)) return null;
+  const entries = body.entries.slice(0, LOG_BATCH);
+  return entries.every((e) => isObject(e) && typeof e.msg === 'string') ? entries : null;
+}
+
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// A bucket's tokens after refilling for the time since its last request. Math.max: a clock that
+// stepped back refills nothing, instead of draining the bucket below zero.
+function refilled(bucket, now) {
+  return Math.min(LOG_PER_MINUTE, bucket.tokens + (Math.max(0, now - bucket.at) / 60000) * LOG_PER_MINUTE);
+}
+
+// A template's context, cut to LOG_CONTEXT_CHARS of JSON so one entry can't fill the log.
+function clipContext(context) {
+  if (context === undefined) return undefined;
+  const text = JSON.stringify(context);
+  return text.length > LOG_CONTEXT_CHARS ? { truncated: text.slice(0, LOG_CONTEXT_CHARS) } : context;
 }
 
 // 04 §4.8, with base-uri 'self' for the inserted <base> (04 §4.5). Font hosts beyond Google Fonts
@@ -281,9 +354,10 @@ export function overlayCsp(manifest = {}) {
 // A small corner badge with no script: invisible, revealed by a CSS delay unless the SDK removes
 // it as soon as it runs. If the runtime never starts in OBS (a 404, a CSP block, syntax OBS's
 // browser doesn't know), this is the only thing that can say so (v0's error ladder, under a CSP
-// that forbids inline script).
+// that forbids inline script). The SDK marks <html> with data-skp-canvas the moment it runs, which
+// hides the badge even if the document is slow to finish parsing.
 export const BOOT_BADGE =
-  '<style>@keyframes skp-boot{to{opacity:1}}</style>' +
+  '<style>@keyframes skp-boot{to{opacity:1}}html[data-skp-canvas] [data-skp-boot]{display:none}</style>' +
   '<div data-skp-boot style="position:fixed;left:8px;bottom:8px;z-index:2147483647;max-width:60%;padding:4px 8px;' +
   'font:12px/1.4 ui-monospace,Consolas,monospace;color:#ff5a5a;background:rgba(0,0,0,.8);opacity:0;pointer-events:none;' +
   'animation:skp-boot 0s linear 8s forwards">SKP: the overlay runtime did not start. Open this URL with ?debug=1, ' +
@@ -292,21 +366,77 @@ export const BOOT_BADGE =
 // Inserts, as the first children of <head>: the <base> that points relative URLs at the pinned
 // template's files, the runtime's settings as a <meta> (CSP forbids inline scripts), and the SDK
 // script, so SK exists before any template script runs (04 §4.4–4.5). The boot badge goes first in
-// <body>.
+// <body>. Only real tags count: not text in comments, attribute values or a script's code.
+//
+// The SDK and the entry's own external scripts load with `crossorigin`. The admin preview frames
+// the page in <iframe sandbox="allow-scripts">, an opaque origin, so there every script is a
+// cross-origin load, and without CORS its errors reach window.onerror only as "Script error." and
+// its rejections never fire unhandledrejection (04 §4.8). Every /sdk/ and /o/<slug>/t/ response,
+// errors included, allows any origin. In OBS the page is same-origin and nothing changes.
 export function injectRuntime(entry, slug, build, meta, sdkVersion = '') {
+  const doc = withCrossorigin(entry);
   const tags =
     `<base href="/o/${slug}/t/${build}/">` +
     `<meta name="skp" content="${escapeAttr(JSON.stringify(meta))}">` +
-    `<script src="/sdk/v1/sk.js${sdkVersion ? `?v=${sdkVersion}` : ''}"></script>`;
+    `<script crossorigin src="/sdk/v1/sk.js${sdkVersion ? `?v=${sdkVersion}` : ''}"></script>`;
   let out;
-  const head = /<head(\s[^>]*)?>/i.exec(entry);
-  const html = /<html(\s[^>]*)?>/i.exec(entry);
-  if (head) out = entry.slice(0, head.index + head[0].length) + tags + entry.slice(head.index + head[0].length);
-  else if (html) out = entry.slice(0, html.index + html[0].length) + `<head>${tags}</head>` + entry.slice(html.index + html[0].length);
-  else out = `<!doctype html><html><head>${tags}</head>${entry}`;
-  const body = /<body(\s[^>]*)?>/i.exec(out);
-  if (body) return out.slice(0, body.index + body[0].length) + BOOT_BADGE + out.slice(body.index + body[0].length);
-  return out + BOOT_BADGE;
+  const found = startTags(doc);
+  const head = found.find((t) => t.name === 'head');
+  const html = found.find((t) => t.name === 'html');
+  if (head) out = insertAt(doc, head.end, tags);
+  else if (html) out = insertAt(doc, html.end, `<head>${tags}</head>`);
+  else out = `<!doctype html><html><head>${tags}</head>${doc}`;
+  const body = startTags(out).find((t) => t.name === 'body');
+  return body ? insertAt(out, body.end, BOOT_BADGE) : out + BOOT_BADGE;
+}
+
+const insertAt = (s, i, text) => s.slice(0, i) + text + s.slice(i);
+
+// Elements whose content is text, never tags (HTML's raw text and RCDATA elements, and noscript
+// with scripting on).
+const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+
+// The document's start tags in order, as { name, index, end, text }: commented-out markup,
+// attribute values and raw text are skipped, so none of them can fake a tag.
+function startTags(html) {
+  const visible = blankComments(html);
+  const lower = visible.toLowerCase();
+  const re = /<([a-zA-Z][^\s/>]*)(?:[^>"']|"[^"]*"|'[^']*')*>/g;
+  const tags = [];
+  let m;
+  while ((m = re.exec(visible))) {
+    const name = m[1].toLowerCase();
+    tags.push({ name, index: m.index, end: re.lastIndex, text: m[0] });
+    if (RAW_TEXT.has(name)) {
+      const close = lower.indexOf(`</${name}`, re.lastIndex);
+      re.lastIndex = close < 0 ? visible.length : close;
+    }
+  }
+  return tags;
+}
+
+// The document with each comment replaced by as many spaces, so a tag search skips commented-out
+// markup and its indices still point into the original. As in HTML's tokenizer, a comment ends at
+// -->, --!> or the end of the document, and <!--> and <!---> are empty comments.
+function blankComments(html) {
+  return html.replace(/<!--(?:-?>|[\s\S]*?(?:--!?>|$))/g, (c) => ' '.repeat(c.length));
+}
+
+// A bare `crossorigin` on each external <script src> that has no crossorigin attribute of its
+// own (for a module script, which always loads with CORS, it changes nothing). Inline scripts,
+// and anything that only looks like a script tag (startTags), are left alone.
+function withCrossorigin(html) {
+  let out = '';
+  let last = 0;
+  for (const t of startTags(html)) {
+    if (t.name !== 'script') continue;
+    const attrs = t.text.replace(/"[^"]*"|'[^']*'/g, '""');
+    if (!/[\s/]src\s*=/i.test(attrs) || /[\s/]crossorigin(?=[\s=/>])/i.test(attrs)) continue;
+    const at = t.index + '<script'.length;
+    out += html.slice(last, at) + ' crossorigin';
+    last = at;
+  }
+  return out + html.slice(last);
 }
 
 function escapeAttr(s) {

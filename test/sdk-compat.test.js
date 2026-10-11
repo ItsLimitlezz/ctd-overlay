@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BOOT_BADGE } from '../src/overlays/routes.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -27,11 +28,16 @@ const stripCss = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 // [pattern, what, first Chromium that has it]
 const JS_DENY = [
   [/\.(toSorted|toReversed|toSpliced)\(/, 'Array copy methods', 110],
+  [/\.with\(/, 'Array.prototype.with', 110],
   [/\b(Object|Map)\.groupBy\b/, 'groupBy', 117],
   [/\bArray\.fromAsync\b/, 'Array.fromAsync', 121],
   [/\bPromise\.(withResolvers|try)\b/, 'Promise.withResolvers / Promise.try', 119],
   [/\.(union|intersection|difference|symmetricDifference|isSubsetOf|isSupersetOf|isDisjointFrom)\(/, 'Set methods', 122],
-  [/\bIterator\.from\b|\.values\(\)\.(map|filter|take|drop|flatMap|reduce|toArray)\(/, 'iterator helpers', 122],
+  [/\bIterator\.from\b|\.(values|keys|entries)\(\)\.(map|filter|take|drop|flatMap|reduce|toArray|forEach|some|every|find)\(/, 'iterator helpers', 122],
+  // A literal only where an expression can start (after an operator, a bracket or return), so
+  // `a / b / v` is division; flags must follow the closing slash directly. No `<` before the
+  // slash: in '</b></div>' that's a closing tag, not a regex with flags "div".
+  [/(?<=(^|[=(,:;!&|?{}[+\-*%>~^]|\breturn|\btypeof)\s*)\/(?![*/])(\\.|\[(\\.|[^\]\\\n])*\]|[^/\\\n[])+\/[dgimsuy]*v[dgimsuy]*(?![\w$])|\bRegExp\([^()]*,\s*['"`][dgimsuy]*v/, 'RegExp v flag', 112],
   [/\.(isWellFormed|toWellFormed)\(/, 'well-formed string methods', 111],
   [/\bAbortSignal\.(any|timeout)\b/, 'AbortSignal.any / AbortSignal.timeout', 116],
   [/\bResponse\.json\(/, 'static Response.json', 105],
@@ -64,7 +70,16 @@ const CSS_DENY = [
   [/@container\b|\bcq[whib]\b|\bcqmin\b|\bcqmax\b/, 'container queries', 105],
   [/\bcolor-mix\(|\b(ok)?lch\(|\b(ok)?lab\(|\blight-dark\(/, 'modern colour functions', 111],
   [/@scope\b|@starting-style\b|\btransition-behavior\b/, '@scope / @starting-style', 117],
+  [/\bsubgrid\b/, 'subgrid', 117],
   [/\btext-wrap\s*:/, 'text-wrap', 114],
+  // The function, not the keyword or linear-gradient() / repeating-linear-gradient().
+  [/(^|[^\w-])linear\(/, 'linear() easing', 113],
+  // Function calls only: not Math.sin( or words like "around(".
+  [/(^|[^\w.$-])(a?(sin|cos|tan)|atan2)\(/, 'trigonometric functions', 111],
+  [/(^|[^\w.$-])(round|mod|rem)\(/, 'round() / mod() / rem()', 125],
+  [/\banimation-composition\b/, 'animation-composition', 112],
+  [/\b(animation|scroll|view)-timeline\b/, 'scroll-driven animations', 115],
+  [/:nth-(last-)?child\([^)]*\bof\b/, ':nth-child(An+B of S)', 111],
   [/(^|[;{\s])(translate|rotate|scale)\s*:/, 'individual transform properties (use transform)', 104],
   [/\(\s*(min-|max-)?(width|height)\s*[<>]=?/, 'media query range syntax', 104],
   [/\d(svh|lvh|dvh|svw|lvw|dvw)\b/, 'small/large/dynamic viewport units', 108],
@@ -98,11 +113,20 @@ for (const file of templateCss) {
   });
 }
 
+// The SDK builds inline styles by concatenating string pieces, so every string literal is scanned
+// (one per line, unquoted) rather than whatever follows `cssText =`.
+const STRING = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g;
+const jsStrings = (code) => (stripJs(code).match(STRING) || []).map((s) => s.slice(1, -1)).join('\n');
+const cssHits = (css) => CSS_DENY.filter(([re]) => re.test(css)).map(([, what]) => what);
+
 test('the inline styles sk.js writes avoid post-103 and H10 CSS', () => {
-  const code = stripJs(readFileSync(path.join(root, 'src', 'sdk', 'sk.js'), 'utf8'));
-  const styles = (code.match(/cssText\s*=\s*([^;]+);/g) || []).join('\n');
-  assert.ok(styles.length > 0);
-  for (const [re, what] of CSS_DENY) assert.doesNotMatch(styles, re, `sk.js inline style uses ${what}`);
+  const styles = jsStrings(readFileSync(path.join(root, 'src', 'sdk', 'sk.js'), 'utf8'));
+  assert.match(styles, /position:absolute/); // the scan really sees the inline styles
+  assert.deepEqual(cssHits(styles), [], 'sk.js inline style uses post-103 or H10 CSS');
+});
+
+test('the boot badge the platform injects into every overlay avoids post-103 and H10 CSS', () => {
+  assert.deepEqual(cssHits(BOOT_BADGE), []);
 });
 
 test('the guard itself catches what it should', () => {
@@ -111,4 +135,37 @@ test('the guard itself catches what it should', () => {
   assert.deepEqual(hits('xs.toSorted()'), ['Array copy methods']);
   assert.deepEqual(hits('localStorage.getItem("x")'), ['storage (throws in the sandboxed preview, H15)']);
   assert.deepEqual(hits('// AbortSignal.any is not in 103\nconst ok = 1;'), []);
+  assert.deepEqual(hits('const ys = xs.with(0, 1);'), ['Array.prototype.with']);
+  assert.deepEqual(hits('const re = /[\\p{L}--[a-z]]/v;'), ['RegExp v flag']);
+  assert.deepEqual(hits('if (/\\d+/gv.test(s)) go();'), ['RegExp v flag']);
+  assert.deepEqual(hits('return s.split(/,/v);'), ['RegExp v flag']);
+  assert.deepEqual(hits('new RegExp(src, "gv")'), ['RegExp v flag']);
+  assert.deepEqual(hits("el.innerHTML = '<b>' + n + '</b></div>';"), []);
+  assert.deepEqual(hits('const row = `<p>${x}</p></div>`;'), []);
+  assert.deepEqual(hits('m.keys().map(f)'), ['iterator helpers']);
+  assert.deepEqual(hits('m.entries().toArray()'), ['iterator helpers']);
+  assert.deepEqual(hits('m.values().filter(f)'), ['iterator helpers']);
+  // No false positives on division, ordinary string methods or array iteration.
+  assert.deepEqual(hits('const r = a / b / v; const q = a/b/v;'), []);
+  assert.deepEqual(hits('s.startsWith("x") && s.endsWith("y")'), []);
+  assert.deepEqual(hits('Object.entries(o).map(f); Object.keys(o).forEach(g); Math.round(x);'), []);
+
+  assert.deepEqual(cssHits('.x { transition: opacity 1s linear(0, 0.25, 1); }'), ['linear() easing']);
+  assert.deepEqual(cssHits('.x { grid-template-columns: subgrid; }'), ['subgrid']);
+  assert.deepEqual(cssHits('.x { top: calc(sin(30deg) * 10px); left: atan2(1, 2); }'), ['trigonometric functions']);
+  assert.deepEqual(cssHits('.x { width: round(up, 10.5px, 1px); }'), ['round() / mod() / rem()']);
+  assert.deepEqual(cssHits('.x { margin: rem(10px, 3px); }'), ['round() / mod() / rem()']);
+  assert.deepEqual(cssHits('.x { animation-composition: add; }'), ['animation-composition']);
+  assert.deepEqual(cssHits('.x { animation-timeline: scroll(); }'), ['scroll-driven animations']);
+  assert.deepEqual(cssHits('.x { view-timeline-name: --reveal; }'), ['scroll-driven animations']);
+  assert.deepEqual(cssHits('li:nth-child(2n of .on) {}'), [':nth-child(An+B of S)']);
+  assert.deepEqual(cssHits('li:nth-last-child(odd of .on) {}'), [':nth-child(An+B of S)']);
+  // A later declaration in the same string is still seen (the old `cssText = ...;` scan stopped at the first ';').
+  assert.deepEqual(cssHits(jsStrings("x.style.cssText = 'position:absolute;backdrop-filter:blur(4px)'")),
+    ['backdrop-filter / mix-blend-mode on overlays (H10)']);
+  // No false positives on the linear keyword, gradients, transform functions or Math.
+  assert.deepEqual(cssHits('.x { background: linear-gradient(red, blue), repeating-linear-gradient(red, blue 4px); }'), []);
+  assert.deepEqual(cssHits('.x { animation-timing-function: linear; transition: all 1s linear 2s; }'), []);
+  assert.deepEqual(cssHits(jsStrings("el.style.transform = 'translate(' + x + 'px) scale(' + s + ') rotate(' + r + ')';")), []);
+  assert.deepEqual(cssHits('Math.round(x); Math.sin(y); margin: 1.5rem; stroke-linecap: round; li:nth-child(odd) {}'), []);
 });

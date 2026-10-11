@@ -132,9 +132,10 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 |---|---|---|
 | `GET /o/{slug}` | required | The overlay page |
 | `GET /o/{slug}/snapshot` · `/stream` · `/poll` | required | Live data (01 §1.5) |
+| `POST /o/{slug}/log` | required | `SK.log` and runtime errors for the template log: `{ "entries": [{ "level", "msg", "context"? }] }`, at most 20 per request and 64 KiB, 30 entries a minute per overlay; answers `204` |
 | `GET /o/{slug}/t/{build}/*` | no | The pinned template version's files (04 §4.5) |
 | `GET /media/{fileId}/{name}` | no | Uploaded media that settings or `media.play` point to (07 §7.6) |
-| `GET /sdk/v1/sk.js` | no | The runtime SDK |
+| `GET /sdk/v1/sk.js` · `/sdk/v1/mock.js` | no | The runtime SDK, and its sample data for `?mock=1` (08 §8.5) |
 
 These responses send `Referrer-Policy: no-referrer`. Template files and media never change at a
 given URL, so they send `Cache-Control: public, max-age=31536000, immutable`. Everything else

@@ -48,7 +48,34 @@ describe('stage and page (04 §4.5)', () => {
     const { page } = await open(t, { query: '?bg=dark&lite=1&debug=1' });
     assert.equal(await page.eval('getComputedStyle(document.documentElement).backgroundColor'), 'rgb(8, 7, 10)');
     assert.equal(await page.eval('document.documentElement.hasAttribute("data-skp-lite") && SK.env.lite'), true);
+    assert.equal(await page.eval('SK.env.preview'), true); // any override means a preview, never OBS
     await page.waitFor('(document.querySelector("[data-skp-debug]") || {}).textContent?.includes("scene program")');
+  });
+
+  test('the boot badge is gone once the runtime runs', opts, async (t) => {
+    const { page } = await open(t);
+    assert.equal(await page.eval('!!document.querySelector("[data-skp-boot]")'), false);
+  });
+
+  test('the boot badge says so when the runtime never starts', { ...opts, timeout: 30000 }, async (t) => {
+    const { page, base } = await open(t);
+    await page.send('Network.enable');
+    await page.send('Network.setBlockedURLs', { urls: ['*/sdk/v1/sk.js*'] });
+    await page.goto(base);
+    assert.equal(await page.eval('typeof window.SK'), 'undefined');
+    await page.waitFor('getComputedStyle(document.querySelector("[data-skp-boot]")).opacity === "1"', 12000);
+  });
+
+  test('a second copy of sk.js in the page changes nothing', opts, async (t) => {
+    const { page } = await open(t);
+    const before = await page.eval('SK.transport.streamsOpened');
+    await page.eval(`new Promise((resolve) => {
+      const s = document.createElement('script'); s.src = '/sdk/v1/sk.js'; s.onload = resolve; document.head.appendChild(s);
+    })`);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page.eval('SK.transport.streamsOpened'), before);
+    assert.equal(await page.eval('document.querySelectorAll("[data-skp-stage]").length'), 1);
+    assert.deepEqual(page.problems, []);
   });
 });
 
@@ -74,17 +101,51 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
     assert.equal(await page.eval('SK.scene'), 'brb');
   });
 
-  test('"cut" swaps at once; core names map to template scenes; unknown scenes are ignored', opts, async (t) => {
+  test('"cut" swaps at once; a burst of takes converges on the last', opts, async (t) => {
     const { page, platform, overlay, logOf } = await open(t);
     platform.bus.publish('show.scene.changed', { scene: 'outro', transition: 'cut' }, { target: overlay.id });
     await page.waitFor('SK.scene === "outro"');
     assert.equal(await page.eval('document.querySelectorAll("[data-skp-scene-root]").length'), 1);
     assert.equal(await page.eval('document.querySelector("[data-skp-scene-root=outro]").dataset.skpState'), 'idle');
-    platform.bus.publish('show.scene.changed', { scene: 'pov', transition: 'cut' }, { target: overlay.id });
+    platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
     platform.bus.publish('show.scene.changed', { scene: 'lineup', transition: 'cut' }, { target: overlay.id });
     await page.waitFor('SK.scene === "lineup"');
     assert.match(await page.eval('document.querySelector("[data-skp-scene-root=lineup]").textContent'), /Lineup for h/);
     assert.deepEqual((await logOf('scene')).map((s) => s.scene), ['program', 'outro', 'lineup']);
+  });
+
+  test('core scene names map to the template\'s scenes; an unknown name keeps the current scene', opts, async (t) => {
+    const { page, platform, overlay, logOf } = await open(t);
+    platform.bus.publish('show.scene.changed', { scene: 'intro', transition: 'cut' }, { target: overlay.id });
+    await page.waitFor('SK.scene === "opener"'); // { "id": "opener", "core": "intro" }
+    platform.bus.publish('show.scene.changed', { scene: 'pov', transition: 'cut' }, { target: overlay.id });
+    platform.bus.publish('custom.sentinel', {}, { target: overlay.id });
+    await page.waitFor('window.__log.some((e) => e.type === "custom.sentinel")');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(await page.eval('SK.scene'), 'opener');
+    assert.deepEqual((await logOf('scene')).map((s) => s.scene), ['program', 'opener']);
+  });
+
+  test('the operator\'s transition wins over the show.scene state that echoes the take, in either order', opts, async (t) => {
+    const { page, channel, platform, overlay, logOf } = await open(t);
+    platform.bus.publish('show.scene.changed', { scene: 'outro', transition: 'cut' }, { target: overlay.id });
+    channel.setLocalState('show.scene', 'outro');
+    await page.waitFor('SK.scene === "outro"');
+    channel.setLocalState('show.scene', 'brb');
+    platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
+    await page.waitFor('SK.scene === "brb"');
+    assert.deepEqual((await logOf('scene')).slice(1).map((s) => `${s.scene}:${s.transition}`), ['outro:cut', 'brb:cut']);
+    assert.equal(await page.eval('document.querySelectorAll("[data-skp-scene-root]").length'), 1);
+  });
+
+  test('a scene defined after it was mounted (inside SK.ready) is rebuilt in place', opts, async (t) => {
+    const { page } = await open(t);
+    await page.eval(`SK.defineScene('program', (ctx) => {
+      const d = document.createElement('div'); d.className = 'rebuilt'; d.textContent = ctx.scene; return d;
+    }); true`);
+    await page.waitFor('!!document.querySelector("[data-skp-scene-root=program] .rebuilt")');
+    assert.equal(await page.eval('document.querySelectorAll("[data-skp-scene-root]").length'), 1);
+    assert.equal(await page.eval('SK.scene'), 'program');
   });
 
   test('?scene= pins a scene for previews, whatever the show does', opts, async (t) => {
@@ -95,12 +156,44 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
     assert.equal(await page.eval('SK.scene'), 'brb');
   });
 
-  test('a stinger covers the swap, which happens at cutAtMs', opts, async (t) => {
+  const rootsOf = 'Array.from(document.querySelectorAll("[data-skp-scene-root]")).map((r) => r.dataset.skpSceneRoot)';
+
+  test('a stinger covers the swap, which happens at cutAtMs on the video\'s clock, then leaves', opts, async (t) => {
     const { page, platform, overlay } = await open(t);
     platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'stinger' }, { target: overlay.id });
     await page.waitFor('!!document.querySelector("video[data-skp-stinger=stinger]")');
     assert.equal(await page.eval('!!document.querySelector("[data-skp-scene-root=brb]")'), false); // not before cutAtMs
-    await page.waitFor('!!document.querySelector("[data-skp-scene-root=brb]") && !document.querySelector("[data-skp-scene-root=program]")', 2000);
+    const swapAt = await page.waitFor('document.querySelector("[data-skp-scene-root=brb]") && !document.querySelector("[data-skp-scene-root=program]") && document.querySelector("video[data-skp-stinger]")?.currentTime', 2000);
+    assert.ok(swapAt >= 0.15, `swapped at ${swapAt} s into the stinger`);
+    await page.waitFor('!document.querySelector("video[data-skp-stinger]")', 3000); // removed when it ends
+    assert.deepEqual(page.problems, []);
+  });
+
+  test('a stinger whose file fails still cuts on schedule', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    const t0 = Date.now();
+    platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'broken' }, { target: overlay.id });
+    await page.waitFor(`JSON.stringify(${rootsOf}) === '["brb"]'`, 2000);
+    assert.ok(Date.now() - t0 < 900, `cut after ${Date.now() - t0} ms`);
+    await page.waitFor('!document.querySelector("video[data-skp-stinger]")', 2000);
+  });
+
+  test('a take during a stinger\'s pre-cut window leaves exactly one scene on stage', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    const take = (scene, transition) => platform.bus.publish('show.scene.changed', { scene, transition }, { target: overlay.id });
+    take('brb', 'stinger');
+    await page.waitFor('!!document.querySelector("video[data-skp-stinger]")');
+    take('starting', 'cut'); // an operator correcting a misclick
+    await page.waitFor('SK.scene === "starting"');
+    await new Promise((r) => setTimeout(r, 1500)); // past every timer the stinger armed
+    assert.deepEqual(await page.eval(rootsOf), ['starting']);
+    take('brb', 'stinger');
+    await page.waitFor('SK.scene === "brb"');
+    take('outro', 'stinger'); // a stinger over a stinger
+    await page.waitFor('SK.scene === "outro"');
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.deepEqual(await page.eval(rootsOf), ['outro']);
+    assert.deepEqual(page.problems, []);
   });
 });
 
@@ -126,15 +219,35 @@ describe('element lifecycle (05 §5.2)', () => {
     assert.ok(breathing.entered >= 140 && breathing.entered < 400, `enter took ${breathing.entered} ms`);
   });
 
+  // Every step ends on its duration plus the 50 ms deadline (05 §5.2).
   test('opts.durationMs beats --skp-enter-ms, which beats CSS; transitions count too', opts, async (t) => {
     const { page } = await open(t);
+    // .custom msg: --skp-enter-ms 75 and --skp-exit-ms 25 over a 200 ms CSS animation.
     const custom = await page.eval(measure('custom msg'));
-    assert.ok(custom.entered >= 70 && custom.entered < 300, `custom enter took ${custom.entered} ms`);
-    assert.ok(custom.exited >= 70 && custom.exited < 300, `custom exit took ${custom.exited} ms (25 + 50)`);
-    const forced = await page.eval(measure('msg', '{ durationMs: 0 }'));
-    assert.ok(forced.entered < 100, `durationMs 0 entered in ${forced.entered} ms`);
+    assert.ok(custom.entered >= 115 && custom.entered < 200, `custom enter took ${custom.entered} ms (75 + 50, CSS would be 250)`);
+    assert.ok(custom.exited >= 70 && custom.exited < 150, `custom exit took ${custom.exited} ms (25 + 50, CSS would be 250)`);
+    const forced = await page.eval(measure('custom msg', '{ durationMs: 300 }'));
+    assert.ok(forced.entered >= 340 && forced.entered < 500, `durationMs 300 entered in ${forced.entered} ms`);
+    const zero = await page.eval(measure('msg', '{ durationMs: 0 }'));
+    assert.ok(zero.entered < 100, `durationMs 0 entered in ${zero.entered} ms`);
     const transitioned = await page.eval(measure('transitioned'));
-    assert.ok(transitioned.entered >= 140, `transition-based enter took ${transitioned.entered} ms (120 + 30)`);
+    assert.ok(transitioned.entered >= 190, `transition-based enter took ${transitioned.entered} ms (120 + 30 + 50)`);
+  });
+
+  test('animations the state change starts on children count toward the duration', opts, async (t) => {
+    const { page } = await open(t);
+    const r = await page.eval(`(async () => {
+      const el = document.createElement('div');
+      const card = document.createElement('div'); card.className = 'msg'; el.appendChild(card);
+      const style = document.createElement('style');
+      style.textContent = '[data-skp-state="exit"] > .msg { animation: fadeOut 300ms linear both; }';
+      document.head.appendChild(style);
+      await SK.mount(el);
+      const t1 = performance.now();
+      await SK.unmount(el);
+      return Math.round(performance.now() - t1);
+    })()`);
+    assert.ok(r >= 330, `exit took ${r} ms (a child's 300 ms + 50)`);
   });
 
   test('a hidden element still finishes on time: no animationend needed (H9)', opts, async (t) => {
@@ -190,6 +303,16 @@ describe('actions (04 §4.6, 05 §5.3)', () => {
     assert.ok(calls[0].lateMs >= 900 && calls[0].lateMs < 2500, `lateMs ${calls[0].lateMs}`);
   });
 
+  test('a handler registered after its trigger arrived still runs at startAt', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    const startAt = Date.now() + 500;
+    platform.bus.publish('show.trigger', { name: 'titleCard', args: {}, startAt, durationMs: 2000 }, { target: overlay.id });
+    await new Promise((r) => setTimeout(r, 150));
+    await page.eval('SK.action("titleCard", () => window.__log.push({ what: "second-handler", at: SK.clock.now() })); true');
+    const call = await page.waitFor('window.__log.find((e) => e.what === "second-handler")', 3000);
+    assert.ok(call.at >= startAt - 50, `ran ${startAt - call.at} ms early`);
+  });
+
   test('triggers for actions the template has no handler for are ignored', opts, async (t) => {
     const { page, platform, overlay } = await open(t);
     platform.bus.publish('show.trigger', { name: 'nowPlaying', startAt: Date.now(), durationMs: 1000 }, { target: overlay.id });
@@ -201,25 +324,64 @@ describe('actions (04 §4.6, 05 §5.3)', () => {
 describe('alerts (05 §5.5)', () => {
   const follow = (name, extra = {}) => ({ kind: 'follow', user: { name }, ...extra });
 
-  test('an alert with a display window shows from startAt and is gone when the window ends', opts, async (t) => {
+  // Records, in server time, when an alert element is added, starts its exit and is removed.
+  const watchAlerts = `(() => {
+    const times = window.__alertTimes = {};
+    const isAlert = (n) => n.nodeType === 1 && n.hasAttribute('data-skp-alert');
+    new MutationObserver((records) => {
+      for (const m of records) {
+        for (const n of m.addedNodes) if (isAlert(n) && !times.added) times.added = SK.clock.now();
+        for (const n of m.removedNodes) if (isAlert(n) && !times.removed) times.removed = SK.clock.now();
+        if (m.type === 'attributes' && isAlert(m.target) && m.target.dataset.skpState === 'exit' && !times.exit) times.exit = SK.clock.now();
+      }
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-skp-state'] });
+    return true;
+  })()`;
+
+  test('an alert shows from startAt, starts its exit so it ends with the window, and is gone then', opts, async (t) => {
     const { page, platform, overlay } = await open(t);
+    await page.eval(watchAlerts);
     const startAt = Date.now() + 300;
     platform.bus.publish('alert.follow', follow('Trapment', { display: { startAt, durationMs: 1000 } }), { target: overlay.id });
     await page.waitFor('!!document.querySelector("[data-skp-alerts] [data-skp-alert=follow]")', 2000);
-    const shownAt = Date.now();
-    assert.ok(shownAt >= startAt - 50, `shown ${startAt - shownAt} ms early`);
     assert.equal(await page.eval('document.querySelector("[data-skp-alert]").textContent'), 'Trapment follow');
-    await page.waitFor('!document.querySelector("[data-skp-alert]")', 3000);
-    const goneAt = Date.now();
-    assert.ok(goneAt <= startAt + 1000 + 400, `gone ${goneAt - startAt - 1000} ms after the window`);
+    const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 3000);
+    // --skp-exit-ms is 200: exit at startAt + 800, removed 50 ms after it ends.
+    assert.ok(times.added >= startAt - 50 && times.added < startAt + 150, `added at ${times.added - startAt}`);
+    assert.ok(times.exit >= startAt + 750 && times.exit < startAt + 950, `exit at ${times.exit - startAt}`);
+    assert.ok(times.removed >= startAt + 1000 && times.removed < startAt + 1400, `removed at ${times.removed - startAt}`);
   });
 
-  test('alerts.cut removes the alert on screen at once', opts, async (t) => {
+  test('a late alert lands on the same frame as on-time ones, even when its exit is probed from CSS', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    platform.bus.publish('alert.follow', follow('Late', { probe: true, display: { startAt: Date.now() - 500, durationMs: 3000 } }), { target: overlay.id });
+    await page.waitFor('!!document.querySelector("[data-skp-alert].probe")', 2000);
+    // The 1000 ms enter was sought forward by the lateness, and no probe restarted it.
+    const at = await page.eval('Math.round(document.querySelector("[data-skp-alert].probe").getAnimations()[0].currentTime)');
+    assert.ok(at >= 400, `enter animation at ${at} ms`);
+  });
+
+  test('alerts.cut removes the alert on screen at once, and one still waiting for its window never shows', opts, async (t) => {
     const { page, platform, overlay } = await open(t);
     const env = platform.bus.publish('alert.raid', { kind: 'raid', user: { name: 'BIA' }, display: { startAt: Date.now(), durationMs: 10000 } }, { target: overlay.id });
     await page.waitFor('!!document.querySelector("[data-skp-alert=raid]")', 2000);
     platform.bus.publish('alerts.cut', { alertId: env.id }, { target: overlay.id });
     await page.waitFor('!document.querySelector("[data-skp-alert=raid]")', 1000);
+    await page.eval(watchAlerts);
+    const queued = platform.bus.publish('alert.follow', follow('Later', { display: { startAt: Date.now() + 500, durationMs: 1000 } }), { target: overlay.id });
+    platform.bus.publish('alerts.cut', { alertId: queued.id }, { target: overlay.id });
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await page.eval('window.__alertTimes.added || 0'), 0);
+  });
+
+  test('alerts.durationSetting sets how long an alert without a window stays', opts, async (t) => {
+    const { page, platform, overlay } = await open(t, { settings: { alertHold: 2000 } });
+    await page.eval(watchAlerts);
+    const env = platform.bus.publish('alert.follow', follow('Held'), { target: overlay.id });
+    const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 4000);
+    // The window starts at the envelope's time: removed at 2000 + 50, not at 1500 + 50.
+    const end = times.removed - env.ts;
+    assert.ok(end >= 1950 && end < 2400, `removed ${end} ms after the envelope (2000 from settings, not 1500 from the manifest)`);
   });
 
   test('without a display window (before the server queue, step 19) an alert shows at once; the browser never queues', opts, async (t) => {
@@ -234,11 +396,13 @@ describe('alerts (05 §5.5)', () => {
     await page.waitFor('document.querySelectorAll("[data-skp-alert]").length === 0', 3000);
   });
 
-  test('alerts for templates without a renderer still reach SK.on subscribers only', opts, async (t) => {
-    const { page, platform, overlay } = await open(t);
-    await page.eval('SK.on("alert.*", (e) => window.__log.push({ what: "on-alert", type: e.type })); true');
+  test('alerts for templates without a renderer reach SK.on subscribers only; nothing is mounted', opts, async (t) => {
+    const { page, platform, overlay } = await open(t, { query: '?norender' });
+    await page.eval(watchAlerts);
     platform.bus.publish('alert.cheer', { kind: 'cheer', user: { name: 'x' }, amount: { value: 100, unit: 'bits' } }, { target: overlay.id });
-    await page.waitFor('window.__log.some((e) => e.what === "on-alert" && e.type === "alert.cheer")');
+    await page.waitFor('window.__log.some((e) => e.what === "alert-event" && e.type === "alert.cheer")');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await page.eval('window.__alertTimes.added || 0'), 0);
   });
 });
 
@@ -268,6 +432,31 @@ describe('chat (02 §2.3, 05 §5.6)', () => {
     await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg:not([data-skp-state=exit])").length === 5', 2000);
     await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg").length === 5', 2000);
     assert.deepEqual(await ids(), ['m4', 'm5', 'm6', 'm7', 'm8']);
+  });
+
+  test('messages arriving one by one are paced too: never more than 4 per 250 ms', opts, async (t) => {
+    const { page, platform } = await chatBed(t);
+    await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg").length === 3');
+    for (let i = 1; i <= 12; i++) {
+      platform.bus.publish('chat.message', msg(`p${i}`), { src: twitch });
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await page.waitFor('window.__log.filter((e) => e.what === "chat" && !e.initial).length === 12', 4000);
+    const at = await page.eval('window.__log.filter((e) => e.what === "chat" && !e.initial).map((e) => e.at)');
+    for (let i = 0; i + 4 < at.length; i++) assert.ok(at[i + 4] - at[i] >= 230, `messages ${i + 1}–${i + 5} within ${at[i + 4] - at[i]} ms`);
+  });
+
+  test('a scene with its own chat box gets the latest messages again after a scene change', opts, async (t) => {
+    const { page, platform, overlay, ids } = await chatBed(t);
+    await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg").length === 3');
+    platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
+    await page.waitFor('SK.scene === "brb"');
+    platform.bus.publish('show.scene.changed', { scene: 'program', transition: 'cut' }, { target: overlay.id });
+    await page.waitFor('SK.scene === "program" && document.querySelectorAll("[data-skp-chat] .msg").length === 3');
+    assert.deepEqual(await ids(), ['r1', 'r2', 'r3']);
+    for (let i = 1; i <= 8; i++) platform.bus.publish('chat.message', msg(`m${i}`), { src: twitch });
+    // chat.max (5), counting only what is on screen: the old root's messages left with it.
+    await page.waitFor('[...document.querySelectorAll("[data-skp-chat] .msg")].map((e) => e.dataset.id).join() === "m4,m5,m6,m7,m8"', 4000);
   });
 
   test('deletions, bans and clears take messages off screen', opts, async (t) => {

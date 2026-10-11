@@ -61,14 +61,18 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
     setState(key, value, { src = { connector: 'core' } } = {}) {
       if (typeof key !== 'string' || !KEY.test(key)) throw new BusError(`bad state key "${key}"`, 'bad-key');
       checkSrc(src);
-      // null means "no value" too: a key without a value is absent, never null (02 §2.2).
-      const json = value === undefined || value === null ? undefined : toJson(value);
+      // null means "no value" too: a key without a value is absent, never null (02 §2.2). Checked
+      // after the JSON round trip, which turns NaN, Infinity and an invalid Date into null.
+      let json = value === undefined ? undefined : toJson(value);
+      if (json === null) json = undefined;
       const current = state.get(key);
       if (JSON.stringify(current?.value) === JSON.stringify(json)) return null;
-      if (json === undefined) state.delete(key);
-      else state.set(key, { value: json, src, ts: now() });
+      // Size-checked before anything is stored: a refused change must leave the old value, not
+      // keep a new one that no overlay was ever told about.
       const env = bus.envelope('state.changed', changeData(key, json, current?.value), src);
       checkSize(env);
+      if (json === undefined) state.delete(key);
+      else state.set(key, { value: json, src, ts: env.ts });
       route(env);
       return env;
     },

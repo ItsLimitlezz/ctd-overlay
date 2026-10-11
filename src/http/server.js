@@ -9,8 +9,9 @@ const BASE_HEADERS = {
   'cache-control': 'no-store',
 };
 
-// Routes: { method, path: '/a/:param/b', handler({ req, res, params, url }) }. A final `*`
-// segment matches one or more remaining segments, joined with "/" in params['*'].
+// Routes: { method, path: '/a/:param/b', handler({ req, res, params, url }), close() }. A final `*`
+// segment matches one or more remaining segments, joined with "/" in params['*']. The optional
+// close() runs once the server has closed, for timers a handler keeps.
 export function createRouter(routes) {
   const compiled = routes.map((r) => ({ ...r, parts: r.path.split('/').slice(1) }));
   return {
@@ -101,6 +102,12 @@ export function createHttpServer({ log, crash, routes = [] }) {
     }
   }
 
+  server.on('close', () => {
+    for (const route of routes) {
+      try { route.close?.(); } catch (err) { log.error('a route failed to close', { path: route.path, err }); }
+    }
+  });
+
   // Malformed HTTP (not even a parseable request line) from scanners and broken clients.
   server.on('clientError', (err, socket) => {
     if (err.code !== 'ECONNRESET' && socket.writable) {
@@ -150,33 +157,45 @@ async function handle(req, res, router) {
   await match.route.handler({ req, res, params: match.params, url });
 }
 
+// `headers` go on the error's response. A 413 closes the connection: the rest of the body is
+// never read, so the connection can't carry another request (and Node would otherwise read and
+// discard the whole body to keep it alive).
 export class BodyError extends Error {
-  constructor(status, message) {
+  constructor(status, message, headers = {}) {
     super(message);
     this.status = status;
+    this.headers = headers;
   }
 }
 
+const tooLarge = (message) => new BodyError(413, message, { connection: 'close' });
+
 // Reads a request body as text, refusing more than `limit` bytes (413) without buffering the rest.
+// On overflow it only stops reading: destroying the request would also destroy the socket, and
+// the 413 would never arrive.
 export function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length']);
     if (declared > limit) {
-      reject(new BodyError(413, `The body is ${declared} bytes; the limit is ${limit}.`));
+      reject(tooLarge(`The body is ${declared} bytes; the limit is ${limit}.`));
       return;
     }
     const chunks = [];
     let size = 0;
-    req.on('data', (chunk) => {
+    const onData = (chunk) => {
       size += chunk.length;
       if (size > limit) {
-        req.destroy();
-        reject(new BodyError(413, `The body is over the ${limit}-byte limit.`));
+        req.off('data', onData);
+        req.off('end', onEnd);
+        req.pause();
+        reject(tooLarge(`The body is over the ${limit}-byte limit.`));
         return;
       }
       chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    };
+    const onEnd = () => resolve(Buffer.concat(chunks).toString('utf8'));
+    req.on('data', onData);
+    req.on('end', onEnd);
     req.on('error', reject);
   });
 }

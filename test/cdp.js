@@ -7,19 +7,29 @@
 //   const n = await page.eval('document.querySelectorAll("[data-skp-scene-root]").length');
 //   page.problems  // console errors, uncaught exceptions and CSP violations seen so far
 //
-// Set SKP_TEST_BROWSER to a browser executable to choose one. Without a browser, browserPath is
-// undefined and browser tests skip, except on CI, where a missing browser is a failure.
+// Set SKP_TEST_BROWSER to a browser executable's path to choose one. Without a browser, browserPath
+// is undefined and browser tests skip, except on CI, where a missing browser is a failure.
+//
+// Every CDP command fails after 15 s unless given its own timeout (cdp.send's 4th argument,
+// page.send's 3rd, page.eval's 2nd), so a page promise that never settles fails one test instead
+// of hanging CI.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { defer } from './helpers.js';
 
+const SEND_TIMEOUT_MS = 15000;
+const configured = process.env.SKP_TEST_BROWSER;
 export const browserPath = findBrowser();
-export const browserSkip = browserPath || process.env.CI ? false : 'no Chrome or Edge found (set SKP_TEST_BROWSER)';
+// A wrong SKP_TEST_BROWSER says so rather than quietly testing some other browser.
+const noBrowser = configured && !browserPath
+  ? `SKP_TEST_BROWSER does not exist: ${configured}`
+  : 'no Chrome or Edge found (set SKP_TEST_BROWSER)';
+export const browserSkip = browserPath || process.env.CI ? false : noBrowser;
 
 function findBrowser() {
-  if (process.env.SKP_TEST_BROWSER) return process.env.SKP_TEST_BROWSER;
+  if (configured) return existsSync(configured) ? configured : undefined;
   const env = process.env;
   const candidates = {
     win32: [
@@ -48,7 +58,7 @@ function findBrowser() {
 // With a test context, the browser closes when that test ends; without one (a browser shared by
 // a whole file), the caller closes it.
 export async function launchBrowser(t) {
-  if (!browserPath) throw new Error('no Chrome or Edge found; set SKP_TEST_BROWSER');
+  if (!browserPath) throw new Error(noBrowser);
   const profile = mkdtempSync(path.join(tmpdir(), 'skp-browser-'));
   const args = [
     '--headless=new',
@@ -59,18 +69,45 @@ export async function launchBrowser(t) {
     '--disable-extensions',
     '--disable-background-networking',
     '--disable-component-update',
+    '--disable-breakpad', // no crash handler processes holding the profile open after exit
+    '--disable-crash-reporter',
     '--mute-audio',
     '--autoplay-policy=no-user-gesture-required', // OBS plays muted media without a gesture
     'about:blank',
   ];
   if (process.platform === 'linux' && process.env.CI) args.unshift('--no-sandbox'); // CI runners restrict user namespaces
-  const child = spawn(browserPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  let child;
+  try {
+    child = spawn(browserPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (err) { // some failures throw at once (on Windows, a .cmd or .bat path: EINVAL)
+    removeProfile(profile);
+    throw new Error(`could not start ${browserPath}: ${err.message}`);
+  }
+  // Most spawn failures (EACCES, a bad path) arrive as an event instead; unheard, it would crash
+  // the test process.
+  let spawnError;
+  child.on('error', (err) => { spawnError ??= err; });
   let stderr = '';
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
-  const exited = new Promise((resolve) => child.on('exit', resolve));
+  // A child that never spawned has no pid and may never emit exit.
+  const exited = new Promise((resolve) => {
+    child.on('exit', resolve);
+    child.on('error', () => { if (child.pid === undefined) resolve(); });
+  });
 
-  const wsUrl = await waitForDevTools(profile, child, () => stderr);
-  const cdp = await connect(wsUrl);
+  let cdp;
+  try {
+    const wsUrl = await waitForDevTools(profile, child, () => stderr, () => spawnError);
+    cdp = await connect(wsUrl);
+  } catch (err) {
+    // No browser object exists to close, so don't leak the browser, its profile, or the stderr
+    // pipe that would keep the test process alive.
+    try { child.kill(); } catch {}
+    await within(exited, 2000);
+    child.stderr.destroy();
+    removeProfile(profile);
+    throw err;
+  }
 
   let closing;
   const browser = {
@@ -80,23 +117,28 @@ export async function launchBrowser(t) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
       const page = makePage(cdp, sessionId, targetId);
-      await page.send('Runtime.enable');
-      await page.send('Log.enable');
-      await page.send('Page.enable');
-      await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-      await page.goto(url);
+      try {
+        await page.send('Runtime.enable');
+        await page.send('Log.enable');
+        await page.send('Page.enable');
+        await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+        await page.goto(url);
+      } catch (err) {
+        await page.close().catch(() => {}); // drops its listener too
+        throw err;
+      }
       return page;
     },
     // Idempotent. The browser may exit before it answers Browser.close, so the reply is only
     // awaited briefly; a browser that won't exit is killed.
     close() {
       closing ??= (async () => {
-        await Promise.race([cdp.send('Browser.close').catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
+        await cdp.send('Browser.close', {}, undefined, 2000).catch(() => {});
         cdp.close();
         const timer = setTimeout(() => child.kill(), 3000);
         await exited;
         clearTimeout(timer);
-        rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        removeProfile(profile);
       })();
       return closing;
     },
@@ -105,10 +147,31 @@ export async function launchBrowser(t) {
   return browser;
 }
 
-async function waitForDevTools(profile, child, stderr) {
+// Resolves when the promise settles or after ms, whichever is first, leaving no timer behind.
+async function within(promise, ms) {
+  let timer;
+  try {
+    await Promise.race([promise, new Promise((r) => { timer = setTimeout(r, ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A helper process that outlives the browser can hold the profile locked on Windows; a leftover
+// temp directory must not fail a suite that passed.
+function removeProfile(profile) {
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    console.warn(`could not remove the browser profile ${profile}: ${err.message}`);
+  }
+}
+
+async function waitForDevTools(profile, child, stderr, spawnError) {
   const file = path.join(profile, 'DevToolsActivePort');
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
+    if (spawnError()) throw new Error(`could not start ${browserPath}: ${spawnError().message}`);
     if (child.exitCode !== null) throw new Error(`the browser exited (${child.exitCode}): ${stderr()}`);
     if (existsSync(file)) {
       const [port, wsPath] = readFileSync(file, 'utf8').split('\n');
@@ -116,7 +179,6 @@ async function waitForDevTools(profile, child, stderr) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  child.kill();
   throw new Error(`the browser did not start DevTools in time: ${stderr()}`);
 }
 
@@ -144,11 +206,22 @@ function connect(url) {
       pending.clear();
     });
     ws.addEventListener('open', () => resolve({
-      send(method, params = {}, sessionId) {
+      send(method, params = {}, sessionId, timeoutMs = SEND_TIMEOUT_MS) {
         if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error(`${method}: connection closed`));
         const id = nextId++;
         ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-        return new Promise((ok, fail) => pending.set(id, { resolve: ok, reject: fail, method }));
+        return new Promise((ok, fail) => {
+          // A late reply finds no pending entry and is dropped.
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            fail(new Error(`${method}: no reply within ${timeoutMs} ms`));
+          }, timeoutMs);
+          pending.set(id, {
+            resolve: (v) => { clearTimeout(timer); ok(v); },
+            reject: (e) => { clearTimeout(timer); fail(e); },
+            method,
+          });
+        });
       },
       on(fn) { listeners.add(fn); return () => listeners.delete(fn); },
       close() { try { ws.close(); } catch {} },
@@ -161,7 +234,7 @@ function makePage(cdp, sessionId, targetId) {
   const problems = [];
   const consoleLog = [];
   const loadWaiters = new Set();
-  cdp.on((msg) => {
+  const off = cdp.on((msg) => {
     if (msg.sessionId !== sessionId) return;
     const p = msg.params;
     if (msg.method === 'Runtime.consoleAPICalled') {
@@ -181,7 +254,7 @@ function makePage(cdp, sessionId, targetId) {
   const page = {
     problems,
     consoleLog,
-    send: (method, params) => cdp.send(method, params, sessionId),
+    send: (method, params, timeoutMs) => cdp.send(method, params, sessionId, timeoutMs),
     async goto(url) {
       const loaded = new Promise((resolve) => loadWaiters.add(resolve));
       await page.send('Page.navigate', { url });
@@ -193,9 +266,10 @@ function makePage(cdp, sessionId, targetId) {
         clearTimeout(timer);
       }
     },
-    // Evaluates an expression in the page (awaiting promises) and returns its JSON value.
-    async eval(expression) {
-      const r = await page.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    // Evaluates an expression in the page (awaiting promises) and returns its JSON value; fails
+    // if that takes longer than timeoutMs.
+    async eval(expression, timeoutMs) {
+      const r = await page.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, timeoutMs);
       if (r.exceptionDetails) throw new Error(`in page: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
       return r.result.value;
     },
@@ -204,7 +278,8 @@ function makePage(cdp, sessionId, targetId) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         let value;
-        try { value = await page.eval(expression); } catch { value = undefined; }
+        // A hung evaluation counts against this deadline, not the 15 s command timeout.
+        try { value = await page.eval(expression, Math.max(deadline - Date.now(), 1000)); } catch { value = undefined; }
         if (value) return value;
         if (Date.now() > deadline) throw new Error(`timed out waiting for: ${expression}`);
         await new Promise((r) => setTimeout(r, 20));
@@ -217,7 +292,10 @@ function makePage(cdp, sessionId, targetId) {
       const { data } = await page.send('Page.captureScreenshot', { format: 'png' });
       return Buffer.from(data, 'base64');
     },
-    close: () => cdp.send('Target.closeTarget', { targetId }),
+    close() {
+      off(); // a page per test would otherwise leave a listener per test on a shared browser
+      return cdp.send('Target.closeTarget', { targetId });
+    },
   };
   return page;
 }

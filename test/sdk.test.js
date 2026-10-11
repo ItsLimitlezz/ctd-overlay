@@ -1,7 +1,7 @@
 // The SDK is browser code. These tests run the real file in a VM context with just the browser
 // APIs it uses, against a real server, so the transport is exercised end to end: snapshot,
 // stream, reconnect with the cursor, 410 re-sync, and the fall back to polling.
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -9,18 +9,32 @@ import { fakeDom } from './fakedom.js';
 import { defer, startWithOverlay } from './helpers.js';
 
 const CODE = readFileSync(new URL('../src/sdk/sk.js', import.meta.url), 'utf8');
+const MOCK = readFileSync(new URL('../src/sdk/mock.js', import.meta.url), 'utf8');
 
 // Loads sk.js as the overlay page at `pageUrl` would, with the page's real <meta name="skp"> (plus
-// test timings). `hangStreams` makes stream requests never open (as when the browser holds them
-// back), until set back to false.
-async function loadSdk(t, pageUrl, { timing = {} } = {}) {
+// test timings and `meta` overrides). Controls, changeable at any time:
+//   hangStreams  stream requests never open (as when the browser holds them back)
+//   fail(url)    true makes that request fail as if the server were unreachable
+//   futureCursor the next snapshot carries a cursor from the future (a server restarted with its
+//                clock stepped back still holds envelopes "older" than the client's cursor)
+//   offset       ms added to the page's clock (Date), against the server's
+//   requests     every URL path the page fetched
+// `mock` runs mock.js in the page after the SDK, as ?mock=1 would. `fail` and `futureCursor` can
+// also be given up front, for the requests the page makes as it boots.
+async function loadSdk(t, pageUrl, { timing = {}, meta: metaOverrides = {}, mock = false, offset = 0, fail = () => false, futureCursor = false } = {}) {
   const html = await (await fetch(pageUrl)).text();
   const content = /<meta name="skp" content="([^"]*)">/.exec(html)[1]
     .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-  const meta = { ...JSON.parse(content), timing: { reconnectMs: 50, ...timing } };
+  const meta = { ...JSON.parse(content), ...metaOverrides, timing: { reconnectMs: 50, ...timing } };
   const timers = new Set();
   const controllers = new Set();
-  const control = { hangStreams: false, disposed: false };
+  const control = { hangStreams: false, disposed: false, fail, futureCursor, offset, requests: [] };
+  // The page's clock: off from the server's by control.offset.
+  const RealDate = Date;
+  class PageDate extends RealDate {
+    constructor(...args) { if (args.length) super(...args); else super(RealDate.now() + control.offset); }
+    static now() { return RealDate.now() + control.offset; }
+  }
   const track = (set, clear) => (fn, ms, ...args) => {
     if (control.disposed) return 0;
     const id = set(() => { timers.delete(id); fn(...args); }, ms);
@@ -33,6 +47,7 @@ async function loadSdk(t, pageUrl, { timing = {} } = {}) {
     console,
     document: dom.document,
     location: new URL(pageUrl),
+    Date: PageDate,
     URLSearchParams,
     AbortController,
     TextDecoder,
@@ -42,27 +57,40 @@ async function loadSdk(t, pageUrl, { timing = {} } = {}) {
     clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
     setInterval: (fn, ms) => { if (control.disposed) return 0; const id = setInterval(fn, ms); timers.add(id); return id; },
     clearInterval: (id) => { timers.delete(id); clearInterval(id); },
-    fetch: (input, init = {}) => {
+    fetch: async (input, init = {}) => {
       if (control.disposed) return new Promise(() => {});
       const url = new URL(input, pageUrl);
+      control.requests.push(url.pathname);
+      if (control.fail(url)) throw new TypeError('Failed to fetch');
       const own = new AbortController();
       controllers.add(own);
       const signal = init.signal ? AbortSignal.any([init.signal, own.signal]) : own.signal;
       if (control.hangStreams && url.pathname.endsWith('/stream')) {
         return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
       }
-      return fetch(url, { ...init, signal }).finally(() => controllers.delete(own));
+      const res = await fetch(url, { ...init, signal }).finally(() => controllers.delete(own));
+      if (control.futureCursor && url.pathname.endsWith('/snapshot') && res.ok) {
+        control.futureCursor = false;
+        const snap = await res.json();
+        return new Response(JSON.stringify({ ...snap, cursor: '7ZZZZZZZZZZZZZZZZZZZZZZZZZ' }), { status: 200, headers: res.headers });
+      }
+      return res;
     },
   };
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: 'sk.js' });
+  if (mock) vm.runInContext(MOCK, sandbox, { filename: 'mock.js' });
   defer(t, () => {
     control.disposed = true;
     for (const id of timers) { clearTimeout(id); clearInterval(id); }
     for (const c of controllers) c.abort();
   });
-  return { SK: sandbox.window.SK, control };
+  return { SK: sandbox.window.SK, control, window: sandbox.window };
 }
+
+// Envelopes from a chat connection (the overlay must be bound to it).
+const twitch = { connector: 'twitch', connection: 'con_tw' };
+const chatMsg = (id, user = 'twitch:1') => ({ id, user: { id: user, name: user, roles: [] }, text: `text ${id}`, fragments: [{ type: 'text', text: `text ${id}` }] });
 
 // Resolves when check() is truthy, polling every 10 ms.
 async function until(check, ms = 4000, what = 'condition') {
@@ -123,10 +151,10 @@ test('after a dropped connection it resumes from its cursor: nothing missed, not
   assert.ok(SK.transport.streamsOpened >= 2);
 });
 
-test('when its cursor has expired (410) it re-fetches the snapshot and reports what changed', async (t) => {
+test('when its cursor has expired (410) it re-fetches the snapshot, reports what changed, and streams on', async (t) => {
   const { platform, base, overlay } = await startWithOverlay(t);
   platform.bus.setState('custom.diag.counter', 1);
-  const { SK } = await loadSdk(t, base);
+  const { SK, control } = await loadSdk(t, base);
   const values = [];
   SK.onState('custom.diag.counter', (v) => values.push(v));
   await until(() => SK.transport.mode === 'stream');
@@ -138,6 +166,23 @@ test('when its cursor has expired (410) it re-fetches the snapshot and reports w
   platform.bus.setState('custom.diag.counter', 2);
   await until(() => values.includes(2), 4000, 're-sync');
   assert.deepEqual(values, [1, 2]);
+  // Straight back to streaming from the new cursor, never through polling.
+  await until(() => SK.transport.mode === 'stream' && SK.transport.streamsOpened >= 2, 4000, 'a new stream');
+  assert.equal(control.requests.filter((p) => p.endsWith('/poll')).length, 0);
+});
+
+test('a cursor from the server\'s future (a restart with its clock stepped back) re-syncs instead of freezing', async (t) => {
+  const { platform, base } = await startWithOverlay(t);
+  platform.bus.setState('custom.diag.counter', 1);
+  // The first snapshot: 410 on every stream and poll from it.
+  const { SK, control } = await loadSdk(t, base, { futureCursor: true });
+  const values = [];
+  SK.onState('custom.diag.counter', (v) => values.push(v));
+  await until(() => SK.transport.mode === 'stream' && SK.transport.streamsOpened >= 1, 4000, 'a stream after the 410');
+  platform.bus.setState('custom.diag.counter', 2);
+  await until(() => values.includes(2), 4000, 'a live change');
+  assert.deepEqual(values, [1, 2]);
+  assert.ok(control.requests.filter((p) => p.endsWith('/snapshot')).length <= 3, control.requests.join(' '));
 });
 
 test('streams that never open fall back to polling within the window, then return to streaming', async (t) => {
@@ -168,13 +213,17 @@ test('when the server says the browser has enough streams (429), it polls at onc
     const res = await fetch(`${base}/stream?cursor=${cursor}`, { signal: c.signal });
     assert.equal(res.status, 200);
   }
-  const { SK } = await loadSdk(t, base, { timing: { pollMs: 30, openTimeoutMs: 5000 } });
+  // A failure would only reach polling after reconnectMs (10 s), and the stream retry would come
+  // after retryStreamMs (300 ms) without Retry-After (60 s).
+  const { SK, control } = await loadSdk(t, base, { timing: { pollMs: 30, openTimeoutMs: 5000, reconnectMs: 10000, retryStreamMs: 300 } });
   const seen = [];
   SK.on('custom.*', (env) => seen.push(env.data.n));
-  await until(() => SK.transport.mode === 'poll', 2000, 'poll mode without waiting for failures');
+  await until(() => SK.transport.mode === 'poll', 1000, 'poll mode without waiting for failures');
   assert.equal(SK.transport.streamsOpened, 0);
   platform.bus.publish('custom.diag.tick', { n: 1 });
   await until(() => seen.length === 1);
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.equal(control.requests.filter((p) => p.endsWith('/stream')).length, 1, 'no stream retry before Retry-After');
 });
 
 test('a template callback that throws does not break the others', async (t) => {
@@ -198,4 +247,216 @@ test('SK and its clock are frozen, and the clock tracks server time', async (t) 
   assert.ok(Object.isFrozen(SK));
   assert.ok(Object.isFrozen(SK.clock));
   assert.ok(Math.abs(SK.clock.now() - Date.now()) < 1000);
+});
+
+test('a page whose clock is 90 s off still runs on server time, and follows a clock step at once (01 §1.6)', async (t) => {
+  const { base } = await startWithOverlay(t, { heartbeatMs: 50 });
+  const { SK, control } = await loadSdk(t, base, { offset: 90000 });
+  await until(() => SK.transport.mode === 'stream');
+  assert.ok(Math.abs(SK.transport.skew + 90000) < 150, `skew ${SK.transport.skew}`);
+  assert.ok(Math.abs(SK.clock.now() - Date.now()) < 150, `off by ${SK.clock.now() - Date.now()} ms`);
+  // The page's clock steps 5 s back (NTP, a manual fix): the next heartbeat corrects it.
+  control.offset = 85000;
+  await until(() => Math.abs(SK.clock.now() - Date.now()) < 150, 2000, 'the step corrected');
+  // A server time scheduled a moment ahead fires on server time, not the page's.
+  const target = Date.now() + 300;
+  const fired = await new Promise((resolve) => SK.clock.at(target, () => resolve(Date.now())));
+  assert.ok(fired >= target - 30 && fired < target + 300, `fired ${fired - target} ms from the server time`);
+});
+
+test('a polling page also follows a clock step at once', async (t) => {
+  const { base } = await startWithOverlay(t);
+  const { SK, control } = await loadSdk(t, base, { timing: { openTimeoutMs: 100, pollMs: 30, retryStreamMs: 60000 } });
+  control.hangStreams = true;
+  await until(() => SK.transport.mode === 'poll', 4000, 'poll mode');
+  control.offset = -3000;
+  await until(() => Math.abs(SK.clock.now() - Date.now()) < 150, 1000, 'the step corrected');
+});
+
+test('a stream that goes silent (a half-open connection) is replaced, and nothing arrives twice', async (t) => {
+  const { platform, base } = await startWithOverlay(t, { heartbeatMs: 60000 });
+  const { SK } = await loadSdk(t, base, { timing: { silenceMs: 200, failWindowMs: 100 } });
+  const seen = [];
+  SK.on('custom.*', (env) => seen.push(env.data.n));
+  await until(() => SK.transport.streamsOpened >= 2, 2000, 'a second stream after the silence');
+  platform.bus.publish('custom.diag.tick', { n: 1 });
+  await until(() => seen.length === 1);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(seen, [1]);
+});
+
+test('heartbeats keep a quiet stream open', async (t) => {
+  const { base } = await startWithOverlay(t, { heartbeatMs: 50 });
+  const { SK } = await loadSdk(t, base, { timing: { silenceMs: 200 } });
+  await until(() => SK.transport.mode === 'stream');
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(SK.transport.streamsOpened, 1);
+});
+
+test('a server that is down when the page loads is retried until it answers (01 §1.7)', async (t) => {
+  const { platform, base } = await startWithOverlay(t);
+  platform.bus.setState('custom.diag.counter', 7);
+  let refused = 0;
+  const fail = (url) => url.pathname.endsWith('/snapshot') && ++refused <= 3;
+  const { SK } = await loadSdk(t, base, { fail, timing: { snapshotRetryMs: 20, snapshotRetryMaxMs: 40 } });
+  let ready = false;
+  SK.ready(() => { ready = true; });
+  await until(() => ready, 4000, 'ready');
+  assert.equal(refused, 4);
+  assert.equal(SK.state('custom.diag.counter'), 7);
+});
+
+test('while the server is unreachable the last good state stays, and the page resumes when it returns', async (t) => {
+  const { platform, base } = await startWithOverlay(t);
+  platform.bus.setState('custom.diag.counter', 1);
+  const { SK, control } = await loadSdk(t, base, { timing: { pollMs: 30, failWindowMs: 60000 } });
+  await until(() => SK.transport.mode === 'stream');
+  control.fail = () => true;
+  platform.server.closeAllConnections();
+  await until(() => SK.transport.mode === 'offline', 4000, 'offline');
+  assert.equal(SK.state('custom.diag.counter'), 1);
+  control.fail = () => false;
+  platform.bus.setState('custom.diag.counter', 2);
+  await until(() => SK.state('custom.diag.counter') === 2, 4000, 'resumed');
+});
+
+test('viewer counts are hidden after 120 s without the server, and come back with it (H6)', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  const consumes = { state: ['custom.*', 'viewers.*'], events: ['custom.*'], chat: null };
+  platform.bus.channel(overlay.id, { consumes });
+  platform.bus.setState('viewers.total', 1234);
+  platform.bus.setState('custom.diag.counter', 1);
+  const { SK, control } = await loadSdk(t, base, { meta: { consumes }, timing: { offlineHoldMs: 300, pollMs: 30, failWindowMs: 60000, tickMs: 50 } });
+  const seen = [];
+  SK.onState('viewers.total', (v) => seen.push(v));
+  await until(() => SK.transport.mode === 'stream');
+  control.fail = () => true;
+  platform.server.closeAllConnections();
+  await until(() => seen.length === 2, 2000, 'the count hidden');
+  assert.deepEqual(seen, [1234, undefined]);
+  assert.equal(SK.state('custom.diag.counter'), 1); // everything else is held (01 §1.7)
+  control.fail = () => false; // the count never changed, so only a fresh snapshot can restore it
+  await until(() => seen.length === 3, 4000, 'the count back');
+  assert.deepEqual(seen, [1234, undefined, 1234]);
+});
+
+test('a re-sync never takes chat off screen unless the new buffer shows it was deleted', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  const consumes = { state: ['custom.*'], events: ['custom.*'], chat: { recent: 0, max: 5 } };
+  const bind = () => platform.bus.channel(overlay.id, { consumes, connections: ['con_tw'] });
+  bind();
+  const { SK } = await loadSdk(t, base, { meta: { consumes } });
+  const added = [];
+  const removed = [];
+  SK.chat.onAdd((m) => { added.push(m.id); });
+  SK.chat.onRemove((id) => removed.push(id));
+  await until(() => SK.transport.mode === 'stream');
+  for (const id of ['a', 'b', 'c']) platform.bus.publish('chat.message', chatMsg(id), { src: twitch });
+  await until(() => added.length === 3, 2000, 'live messages');
+  // A 410 re-sync with chat.recent 0: the snapshot has no messages, which proves nothing.
+  platform.bus.removeChannel(overlay.id);
+  platform.bus.publish('custom.filler', {});
+  bind();
+  platform.bus.setState('custom.diag.counter', 9);
+  await until(() => SK.state('custom.diag.counter') === 9, 4000, 're-sync');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(removed, []);
+});
+
+test('a re-sync takes off screen what was deleted during the gap, and adds what was missed, once', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  const consumes = { state: ['custom.*'], events: ['custom.*'], chat: { recent: 10, max: 5 } };
+  const bind = () => platform.bus.channel(overlay.id, { consumes, connections: ['con_tw'] });
+  bind();
+  const { SK } = await loadSdk(t, base, { meta: { consumes } });
+  const added = [];
+  const removed = [];
+  SK.chat.onAdd((m) => { added.push(m.id); });
+  SK.chat.onRemove((id) => removed.push(id));
+  await until(() => SK.transport.mode === 'stream');
+  for (const id of ['a', 'b', 'c']) platform.bus.publish('chat.message', chatMsg(id), { src: twitch });
+  await until(() => added.length === 3, 2000, 'live messages');
+  platform.bus.removeChannel(overlay.id);
+  platform.bus.publish('chat.message.deleted', { messageId: 'b' }, { src: twitch }); // during the gap
+  platform.bus.publish('chat.message', chatMsg('d'), { src: twitch });
+  bind();
+  platform.bus.setState('custom.diag.counter', 9);
+  await until(() => SK.state('custom.diag.counter') === 9 && added.length === 4, 4000, 're-sync');
+  assert.deepEqual(removed, ['b']);
+  assert.deepEqual(added, ['a', 'b', 'c', 'd']);
+});
+
+test('the renderer gets only the alert kinds the template declared (04 §4.2)', async (t) => {
+  const { platform, base, overlay } = await startWithOverlay(t);
+  platform.bus.channel(overlay.id, { consumes: { state: ['custom.*'], events: ['custom.*', 'alert.*'], chat: null } });
+  const { SK } = await loadSdk(t, base, { meta: { consumes: { state: ['custom.*'], events: ['custom.*', 'alert.follow'], chat: null } } });
+  const rendered = [];
+  SK.alerts.render((a) => { rendered.push(a.kind); });
+  await until(() => SK.transport.mode === 'stream');
+  platform.bus.publish('alert.raid', { kind: 'raid', user: { name: 'x' } });
+  platform.bus.publish('alert.follow', { kind: 'follow', user: { name: 'y' } });
+  platform.bus.publish('custom.done', {});
+  await until(() => rendered.length === 1, 2000, 'the follow');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(rendered, ['follow']);
+});
+
+test('reading undeclared data is logged once, so a missing declaration is found', async (t) => {
+  const { base } = await startWithOverlay(t);
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  defer(t, () => { console.warn = original; });
+  const { SK } = await loadSdk(t, base);
+  SK.onState('viewers.total', () => {});
+  SK.state('viewers.total');
+  SK.on('show.trigger', () => {});
+  SK.onState('custom.diag.counter', () => {});
+  assert.deepEqual(warnings.filter((w) => /not declared/.test(w)).length, 2, warnings.join('\n'));
+});
+
+describe('mock mode (?mock=1, 08 §8.5)', () => {
+  test('the overlay\'s saved settings still apply, and nothing is fetched from the server', async (t) => {
+    const { base } = await startWithOverlay(t, { settings: { accent: 'cyan' } });
+    const { SK, control } = await loadSdk(t, `${base}?mock=1`, { mock: true });
+    let ready = false;
+    SK.ready(() => { ready = true; });
+    await until(() => ready, 2000, 'ready');
+    assert.equal(SK.settings.accent, 'cyan');
+    assert.equal(SK.transport.mode, 'mock');
+    assert.deepEqual(control.requests.filter((p) => /\/(snapshot|stream|poll)$/.test(p)), []);
+  });
+
+  test('the chat backlog follows consumes.chat.recent, as the server would send it', async (t) => {
+    const { base } = await startWithOverlay(t);
+    const recentOf = async (chat) => {
+      const { SK } = await loadSdk(t, `${base}?mock=1`, { mock: true, meta: { consumes: { state: [], events: [], chat } } });
+      let ready = false;
+      SK.ready(() => { ready = true; });
+      await until(() => ready, 2000, 'ready');
+      return SK.chat.recent().length;
+    };
+    assert.equal(await recentOf({ recent: 0, max: 5 }), 0);
+    assert.equal(await recentOf({ recent: 3, max: 5 }), 3);
+    assert.equal(await recentOf({ max: 5 }), 5); // default 50; the sample has 5
+  });
+
+  test('sample alerts match the alert schema, use the duration setting, and only declared kinds render', async (t) => {
+    const { base } = await startWithOverlay(t, { settings: { hold: 2000 } });
+    const { SK, window } = await loadSdk(t, `${base}?mock=1&mockSpeed=100`, {
+      mock: true,
+      meta: { consumes: { state: [], events: ['alert.follow', 'alert.raid'], chat: null }, alerts: { durationMs: 6000, durationSetting: 'hold' } },
+    });
+    const seen = [];
+    SK.on('alert.*', (env) => seen.push(env));
+    const rendered = [];
+    SK.alerts.render((a) => { rendered.push(a.kind); });
+    await until(() => seen.length >= 2, 4000, 'two sample alerts');
+    for (const env of seen) {
+      assert.ok(!('message' in env.data) || (env.data.message && typeof env.data.message === 'object'), JSON.stringify(env.data));
+      assert.equal(env.data.display.durationMs, 2000);
+    }
+    assert.deepEqual([...new Set(seen.map((e) => e.type))].sort(), ['alert.follow', 'alert.raid']);
+    assert.ok(window.__skpMock);
+  });
 });

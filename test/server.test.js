@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { startPlatform, StartupError } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { readBody, sendJson, sendProblem } from '../src/http/server.js';
 import { defer, memoryLogger, tempDir } from './helpers.js';
 
 async function start(t, { routes = [], store = 'sqlite' } = {}) {
@@ -83,6 +84,84 @@ test('a handler that throws or rejects gets a 500 with no stack, logged to crash
   assert.doesNotMatch(crash, /skp_ovl_leak/);
   assert.ok(entries.some((e) => e.level === 'error' && e.msg === 'request failed'));
   assert.equal((await fetch(`${url}/healthz`)).status, 200);
+});
+
+test('errors under /o/ and /sdk/ allow any origin; others do not (07 §7.10)', async (t) => {
+  const routes = [
+    { method: 'GET', path: '/sdk/boom', handler: () => { throw new Error('boom'); } },
+    { method: 'GET', path: '/api/boom', handler: () => { throw new Error('boom'); } },
+  ];
+  const { url } = await start(t, { routes });
+  for (const [p, status, cors] of [['/sdk/boom', 500, '*'], ['/o/x/y/z/w', 404, '*'], ['/api/boom', 500, null], ['/nope', 404, null]]) {
+    const res = await fetch(url + p);
+    assert.equal(res.status, status, p);
+    assert.equal(res.headers.get('access-control-allow-origin'), cors, p);
+  }
+});
+
+// Sends a raw request and resolves with the reply's status line and headers, and whether the
+// server closed the connection afterwards (within a second of the reply).
+function exchange(port, text) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.write(text));
+    let data = '';
+    let timer;
+    const done = (closed) => {
+      clearTimeout(timer);
+      socket.destroy();
+      const [head] = data.split('\r\n\r\n');
+      const [status, ...lines] = head.split('\r\n');
+      const headers = Object.fromEntries(lines.map((l) => [l.slice(0, l.indexOf(':')).toLowerCase(), l.slice(l.indexOf(':') + 1).trim()]));
+      resolve({ status, headers, closed });
+    };
+    socket.setEncoding('latin1');
+    socket.on('data', (d) => {
+      data += d;
+      clearTimeout(timer);
+      timer = setTimeout(() => done(false), 1000);
+    });
+    socket.on('end', () => done(true));
+    socket.on('error', reject);
+  });
+}
+
+test('a body over the limit gets its 413, then the connection closes (chunked or declared)', async (t) => {
+  // A route that reads at most 8 KiB and answers with the size, or with the BodyError.
+  const routes = [{
+    method: 'POST',
+    path: '/body',
+    handler: async ({ req, res }) => {
+      let text;
+      try { text = await readBody(req, 8192); } catch (err) { return sendProblem(res, err.status, 'Too large', err.message, { headers: err.headers }); }
+      sendJson(res, 200, { bytes: Buffer.byteLength(text) });
+    },
+  }];
+  const { platform, url } = await start(t, { routes });
+  const chunks = (n) => Array.from({ length: n / 1000 }, () => `3e8\r\n${'x'.repeat(1000)}\r\n`).join('') + '0\r\n\r\n';
+
+  const small = await fetch(`${url}/body`, { method: 'POST', body: 'x'.repeat(5000) });
+  assert.deepEqual(await small.json(), { bytes: 5000 });
+
+  const chunked = await exchange(platform.port, `POST /body HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n${chunks(9000)}`);
+  assert.equal(chunked.status, 'HTTP/1.1 413 Payload Too Large');
+  assert.equal(chunked.headers.connection, 'close');
+  assert.equal(chunked.closed, true);
+
+  const declared = await exchange(platform.port, `POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 9000\r\n\r\n${'x'.repeat(1000)}`);
+  assert.equal(declared.status, 'HTTP/1.1 413 Payload Too Large');
+  assert.equal(declared.headers.connection, 'close');
+  assert.equal(declared.closed, true, 'the server does not wait for (or read) the other 8000 bytes');
+
+  assert.equal((await fetch(`${url}/healthz`)).status, 200);
+});
+
+test('route close hooks run when the server closes', async (t) => {
+  let closed = 0;
+  const routes = [{ method: 'GET', path: '/x', handler: ({ res }) => res.end(), close: () => { closed++; } }];
+  const { platform } = await start(t, { routes });
+  assert.equal(closed, 0);
+  await platform.stop();
+  assert.equal(closed, 1);
 });
 
 test('route parameters are decoded path segments', async (t) => {

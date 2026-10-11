@@ -180,7 +180,7 @@ progress locally between updates; templates read `SK.music.progress()` and never
 | `chat.message`, `chat.message.deleted`, `chat.user.cleared`, `chat.cleared` | §2.3 |
 | `alert.<kind>` | §2.4 |
 | `alerts.cut` | `{ "alertId": "…" }` — end that alert now (an operator skip, 05 §5.5). Delivered to every overlay that consumes `alert.*`. |
-| `show.scene.changed` | `{ "scene": "brb", "prev": "program", "transition": "cut" }` |
+| `show.scene.changed` | `{ "scene": "brb", "prev": "program", "transition": "cut" }` — a take. The platform publishes it, then the `show.scene` state, in the same tick; the runtime uses the event's transition. It carries no `startAt`: members switch on receipt, so two of them can differ by their delivery time (up to one poll interval for a polling source). |
 | `show.trigger` | `{ "name": "titleCard", "args": { }, "startAt": 1791582412000, "durationMs": 7000 }` |
 | `show.cue.fired` | `{ "cueId": "cue_…", "action": "…" }` |
 | `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }` |

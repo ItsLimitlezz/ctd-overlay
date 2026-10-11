@@ -10,6 +10,6 @@
   "scripts": {
     "start": "node src/main.js",
     "diag": "node scripts/diag.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test --test-timeout=180000 \"test/**/*.test.js\""
   }
 }
