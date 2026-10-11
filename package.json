@@ -8,6 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test"
+    "start": "node src/main.js",
+    "test": "node --test \"test/**/*.test.js\""
   }
 }

@@ -71,15 +71,17 @@ services:
   most users give up.
 - Runs as a per-user LaunchAgent; an optional menu-bar companion shows status, the setup code,
   and "Open dashboard".
-- Data: `~/Library/Application Support/SKP/`. Config and master key:
-  `~/Library/Application Support/SKP/config/`. Logs: `~/Library/Logs/SKP/`.
+- Data: `~/Library/Application Support/SKP/data/`. Config and master key:
+  `~/Library/Application Support/SKP/config/`, beside the data directory and never inside it
+  (07 §7.7). Logs: `~/Library/Logs/SKP/`.
 - Default exposure `local`; switching to `lan` lets OBS on another machine reach it.
 
 ### Linux
 - Tarball with the executable, plus optional `.deb` / `.rpm`.
 - systemd unit with a dedicated `skp` user, `StateDirectory=skp`, `ConfigurationDirectory=skp`,
   `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`.
-- Data `/var/lib/skp`, config `/etc/skp`; or `$XDG_DATA_HOME/skp` when run per-user.
+- Data `/var/lib/skp`, config `/etc/skp`; or `$XDG_DATA_HOME/skp` and `$XDG_CONFIG_HOME/skp`
+  when run per-user.
 
 ## 10.5 Configuration
 
