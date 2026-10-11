@@ -38,9 +38,11 @@ export class TemplateError extends Error {
 
 // dirs: roots of bundled templates (one template per subdirectory); dataDir: where installed
 // templates live (omit it for a registry of bundled templates only). readOnly: look, don't touch
-// (another process holds the data directory): no sweeping, no installs.
-export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, readOnly = false }) {
+// (another process holds the data directory): no sweeping, no installs. reserve: roots whose
+// templates' ids are the platform's own, so no package can publish a version of them.
+export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, readOnly = false, reserve = [BUILTIN_DIR] }) {
   const byKey = new Map(); // `${id}@${version}` → template
+  const reserved = new Set(); // ids that ship with the platform
   const root = dataDir ? path.join(dataDir, 'templates') : null;
 
   if (root && !readOnly) {
@@ -53,7 +55,8 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
       const sub = path.join(dir, name);
       if (!lstatSync(sub).isDirectory() || !existsSync(path.join(sub, 'template.json'))) continue;
       try {
-        register(loadBundled(sub, log));
+        const t = register(loadBundled(sub, log));
+        if (reserve.some((r) => path.resolve(r) === path.resolve(dir))) reserved.add(t.id);
       } catch (err) {
         log.error('skipping a template that could not be loaded', { dir: sub, err: err.message, findings: err.findings });
       }
@@ -114,13 +117,12 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
         const files = extract(pkg, path.join(staging, 'package'));
         const build = buildFromFiles(files);
         const existing = byKey.get(`${id}@${version}`);
+        if (existing && existing.build === build) return { template: existing, warnings: result.warnings, noop: true };
+        if (reserved.has(id)) {
+          throw new TemplateError(`${id} is a template that ships with the platform; a package can't add or replace versions of it.`, 'reserved-id');
+        }
         if (existing) {
-          if (existing.build === build) return { template: existing, warnings: result.warnings, noop: true };
-          throw new TemplateError(
-            existing.source === 'bundled'
-              ? `${id}@${version} ships with the platform with other content; give the package a new version.`
-              : `${id}@${version} is already installed with other content; give the package a new version (installed versions never change, 04 §4.10).`,
-            'version-exists');
+          throw new TemplateError(`${id}@${version} is already installed with other content; give the package a new version (installed versions never change, 04 §4.10).`, 'version-exists');
         }
         const receipt = {
           id, version, build,

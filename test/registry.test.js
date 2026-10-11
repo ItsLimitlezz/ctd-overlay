@@ -54,11 +54,12 @@ test('an installed version never changes: the same bytes are a no-op, other byte
   assert.deepEqual(templates.versions(V1.id).map((x) => x.version), ['1.1.0', '1.0.0', '1.0.0-rc.1']);
 });
 
-test('a package can\'t replace a bundled template', (t) => {
+test('a package can\'t replace a bundled template, or add versions of one', (t) => {
   const { templates } = registry(t);
   assert.equal(templates.get(DIAG.id, DIAG.version).source, 'bundled');
   assert.equal(templates.install(packTemplate(DIAG_DIR)).noop, true, 'the same bytes as the bundled one');
-  refuses(() => templates.install(packTemplate(DIAG_DIR, { files: { 'x.txt': 'x' } })), 'version-exists', /ships with the platform/);
+  refuses(() => templates.install(packTemplate(DIAG_DIR, { files: { 'x.txt': 'x' } })), 'reserved-id', /ships with the platform/);
+  refuses(() => templates.install(packTemplate(DIAG_DIR, { manifest: { version: '9.0.0' } })), 'reserved-id');
 });
 
 test('an invalid package installs nothing and says why', (t) => {

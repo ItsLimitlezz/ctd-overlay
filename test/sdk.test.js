@@ -563,10 +563,11 @@ describe('mock mode (?mock=1, 08 §8.5)', () => {
   });
 
   test('sample alerts match the alert schema, use the duration setting, and only declared kinds render', async (t) => {
-    const { base } = await startWithOverlay(t, { settings: { hold: 2000 } });
+    const { base } = await startWithOverlay(t);
+    // The page as a template with a "hold" setting, saved at 2000, would get it.
     const { SK, window } = await loadSdk(t, `${base}?mock=1&mockSpeed=100`, {
       mock: true,
-      meta: { consumes: { state: [], events: ['alert.follow', 'alert.raid'], chat: null }, alerts: { durationMs: 6000, durationSetting: 'hold' } },
+      meta: { consumes: { state: [], events: ['alert.follow', 'alert.raid'], chat: null }, alerts: { durationMs: 6000, durationSetting: 'hold' }, settings: { hold: 2000 } },
     });
     const seen = [];
     SK.on('alert.*', (env) => seen.push(env));

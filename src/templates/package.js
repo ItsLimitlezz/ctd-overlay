@@ -13,8 +13,10 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { compilePatterns, TYPE } from '../bus/names.js';
 import { validate } from '../schema.js';
+import { classicMigrate } from './migrate.js';
 import { checkSettingsSchema, settingsSchema, boundKeys } from './settings.js';
 import { checkName, openZip, ZIP_LIMITS, ZipError } from './zip.js';
 
@@ -22,7 +24,9 @@ export const STANDARD = 'skp/1';
 const MANIFEST = 'template.json';
 const MANIFEST_BYTES = 1024 * 1024;
 const ENTRY_BYTES = 2 * 1024 * 1024;
-const JUNK = /(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|\/)__MACOSX(\/|$)/i;
+const JUNK = /(^|\/)(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini)$|(^|\/)__MACOSX(\/|$)/i;
+// SemVer 2.0.0 (semver.org), without build metadata: no leading zeros.
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
 const CATEGORY_CORES = { show: ['starting', 'program', 'brb', 'outro'] };
 const ALL_CORES = ['auto', 'starting', 'program', 'brb', 'lineup', 'outro', 'bg', 'intro'];
 const KNOWN_FIELDS = new Set(['$schema', 'standard', 'id', 'name', 'version', 'description', 'author', 'license', 'category', 'tags', 'entry', 'previews', 'engines', 'canvases', 'scenes', 'consumes', 'settings', 'actions', 'alerts', 'transitions', 'fonts', 'definitions', '$defs']);
@@ -138,7 +142,9 @@ export function validatePackage(pkg) {
 
   // template.json: present, small, JSON (a UTF-8 BOM, as Windows PowerShell 5.1 writes, is fine).
   if (!pkg.has(MANIFEST)) {
-    error('manifest-missing', MANIFEST, 'The package has no template.json at its root (or inside its one top folder).');
+    const deeper = pkg.names.find((n) => n.endsWith(`/${MANIFEST}`));
+    if (deeper) error('layout', deeper, `template.json is at "${deeper}"; it must be at the package's root (or inside one top folder). Zip the template's own folder.`);
+    else error('manifest-missing', MANIFEST, 'The package has no template.json at its root (or inside its one top folder).');
     return result(undefined);
   }
   if (pkg.size(MANIFEST) > MANIFEST_BYTES) {
@@ -166,6 +172,12 @@ export function validatePackage(pkg) {
   for (const e of validate(TEMPLATE_SCHEMA, manifest)) error('manifest-invalid', e.path, `template.json ${e.path} ${e.message}.`);
   for (const key of Object.keys(manifest)) if (!KNOWN_FIELDS.has(key)) warn('unknown-field', `/${key}`, `"${key}" is not a field this platform knows; it is ignored.`);
   if (errors.length) return result(manifest); // the rest assumes the schema's shapes
+  // Stricter than the schema's pattern: versions are compared and named on disk (04 §4.2, §4.10).
+  if (manifest.id.length > 100) error('id-too-long', '/id', 'The id is longer than 100 characters.');
+  if (manifest.version.length > 64 || !SEMVER.test(manifest.version)) {
+    error('version-invalid', '/version', `"${manifest.version}" is not a SemVer version like 1.2.0 or 1.2.0-rc.1 (no leading zeros, at most 64 characters).`);
+  }
+  if (manifest.author?.url !== undefined && !/^https?:\/\//i.test(manifest.author.url)) error('author-url', '/author/url', 'author.url must be an http:// or https:// address.');
 
   // Files the manifest names exist, inside the package (paths compared exactly: a case
   // difference works on Windows and macOS and breaks on Linux).
@@ -201,9 +213,10 @@ export function validatePackage(pkg) {
   // Scenes: core scenes a category needs (04 §4.2), and timed scenes that return somewhere real.
   const scenes = manifest.scenes;
   const cores = new Map();
+  // Shows, buttons and a timed scene's "then" name scenes by core, so a core maps to one scene.
   scenes.forEach((s, i) => {
     if (!s.core) return;
-    if (cores.has(s.core)) warn('duplicate-core', `/scenes/${i}/core`, `Two scenes map to the core scene "${s.core}"; shows will use "${cores.get(s.core)}".`);
+    if (cores.has(s.core)) error('duplicate-core', `/scenes/${i}/core`, `Scenes "${cores.get(s.core)}" and "${s.id}" both map to the core scene "${s.core}"; only one may.`);
     else cores.set(s.core, s.id);
   });
   for (const core of CATEGORY_CORES[manifest.category] || []) {
@@ -269,21 +282,29 @@ export function validatePackage(pkg) {
 
   // Settings (04 §4.3).
   const settings = checkSettingsSchema(manifest);
-  for (const m of settings.errors) {
-    if (/^alerts\.durationSetting .* declares no settings$/.test(m)) warn('settings', '/alerts/durationSetting', `${m}; the manifest's alerts.durationMs is used instead.`);
-    else error('settings', '/settings', m);
-  }
-  for (const m of settings.warnings) warn('settings', '/settings', m);
-  if (settingsSchema(manifest)) {
+  const at = (m) => (m.startsWith('alerts.durationSetting') ? '/alerts/durationSetting' : '/settings');
+  for (const m of settings.errors) error('settings', at(m), `${m}.`);
+  for (const m of settings.warnings) warn('settings', at(m), `${m}.`);
+  // A bound setting would hand the template a state key's value; it must be one it declared
+  // (least privilege, 04 §4.2, §4.8). The scene is always visible to the runtime.
+  if (safe(() => settingsSchema(manifest))) {
     for (const key of boundKeys(manifest)) {
-      if (!declaredState(key)) warn('bind-undeclared', '/settings', `A setting is bound to "${key}", which consumes.state doesn't declare; the template would see it only through its settings.`);
+      if (key !== 'show.scene' && !declaredState(key)) error('bind-undeclared', '/settings', `A setting is bound to "${key}", which consumes.state doesn't declare; declare it, or don't bind it.`);
     }
   }
 
-  // migrate.js, if any, is a classic script: no other imports or exports (04 §4.10).
+  // migrate.js, if any, is a classic script with no imports, which compiles (04 §4.10). It is
+  // only compiled here, never run.
   if (pkg.has('migrate.js')) {
     const src = pkg.read('migrate.js').toString('utf8');
     if (/^\s*import[\s{*]/m.test(src) || /\bimport\s*\(/.test(src)) error('migrate-import', 'migrate.js', 'migrate.js can\'t import anything; it runs with no I/O.');
+    else {
+      try {
+        new vm.Script(classicMigrate(src), { filename: 'migrate.js' }); // eslint-disable-line no-new
+      } catch (err) {
+        error('migrate-syntax', 'migrate.js', `migrate.js doesn't compile: ${err.message}.`);
+      }
+    }
   }
 
   // Paths that work but invite trouble (04 §4.1: lowercase recommended).
@@ -311,6 +332,10 @@ function lintCss(css, where, warn) {
   if (/\bmix-blend-mode\s*:\s*multiply/.test(code)) warn('css-blend', where, 'mix-blend-mode: multiply turns a transparent overlay black (05 §5.8, H10).');
   if (/url\(\s*["']?\/(?!\/)/.test(code)) warn('absolute-url', where, 'A stylesheet loads a file by an absolute "/…" URL; use a relative one.');
   if (/:has\(|@container\b/.test(code)) warn('css-too-new', where, ':has() and container queries need Chromium 105; OBS 30 runs 103.');
+}
+
+function safe(fn) {
+  try { return fn(); } catch { return undefined; }
 }
 
 function safePatterns(patterns) {

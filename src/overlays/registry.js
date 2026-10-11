@@ -41,8 +41,9 @@ export function createOverlays({ store, bus, templates, log }) {
       consumes: template?.manifest.consumes || {},
       connections: doc.data.connections || [],
     });
+    // A bound setting reads state as this overlay sees it: declared, from its own connections.
     const settings = template
-      ? resolveSettings(template.manifest, doc.data.settings || {}, (key) => bus.getState(key))
+      ? resolveSettings(template.manifest, doc.data.settings || {}, (key) => ch.visibleState(key))
       : (doc.data.settings || {});
     resolved.set(doc.id, settings);
     pins.set(doc.id, doc.data.template);
@@ -154,7 +155,11 @@ export function createOverlays({ store, bus, templates, log }) {
     // take their defaults. Returns the plan; with dryRun nothing changes. A major version needs
     // { confirm: true } (the operator must see what changes first). The slug, key and URL never
     // change; open pages re-sync and reload with the new build.
-    async upgrade(ref, version, { ifRev, dryRun = false, confirm = false } = {}) {
+    //
+    // migrate.js is code from the package, run on the server. It runs on its own only for
+    // templates that ship with the platform; for an installed package the operator allows it for
+    // that upgrade ({ runMigrate: true }). Skipped, renamed settings show up as removed.
+    async upgrade(ref, version, { ifRev, dryRun = false, confirm = false, runMigrate: allowMigrate } = {}) {
       const doc = byIdOrSlug(ref);
       const pin = doc.data.template;
       const from = templates.get(pin.id, pin.version); // may be gone: upgrading is the way out
@@ -165,8 +170,13 @@ export function createOverlays({ store, bus, templates, log }) {
       let settings = doc.data.settings || {};
       let migrated = false;
       if (to.files.has('migrate.js')) {
-        settings = await runMigrate(readFileSync(path.join(to.dir, 'migrate.js'), 'utf8'), pin.version, settings);
-        migrated = true;
+        const trusted = to.source === 'bundled' || to.receipt?.source?.kind === 'bundled';
+        if (allowMigrate ?? trusted) {
+          settings = await runMigrate(readFileSync(path.join(to.dir, 'migrate.js'), 'utf8'), pin.version, settings);
+          migrated = true;
+        } else {
+          migrated = 'skipped';
+        }
       }
       const { settings: next, changes } = migrateSettings(from?.manifest, to.manifest, settings);
       const removed = (list) => (from?.manifest[list] || []).filter((x) => !(to.manifest[list] || []).some((y) => y.id === x.id)).map((x) => x.id);
@@ -174,7 +184,7 @@ export function createOverlays({ store, bus, templates, log }) {
         overlay: doc.data.slug,
         from: pin.version,
         to: version,
-        major: major(version) !== major(pin.version),
+        major: isMajor(pin.version, version),
         migrated,
         settings: next,
         changes,
@@ -196,4 +206,17 @@ export function createOverlays({ store, bus, templates, log }) {
   };
 }
 
-const major = (v) => Number(String(v).split('.')[0]);
+// A change the operator must look at first (04 §4.10): another major version; under 1.0.0, another
+// minor one (SemVer makes no promises there); and any move involving a prerelease.
+export function isMajor(from, to) {
+  const parse = (v) => {
+    const [core, pre] = String(v).split(/-(.*)/s);
+    const [major, minor] = core.split('.').map(Number);
+    return { major, minor, pre: pre !== undefined };
+  };
+  const a = parse(from);
+  const b = parse(to);
+  if (a.major !== b.major) return true;
+  if (a.major === 0 && a.minor !== b.minor) return true;
+  return a.pre || b.pre;
+}

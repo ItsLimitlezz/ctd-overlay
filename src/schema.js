@@ -26,9 +26,11 @@ export const FORMATS = {
 
 export class SchemaError extends Error {}
 
-export function validate(schema, value, { root = schema, formats = FORMATS } = {}) {
+// maxStringLength: a string longer than this fails as too long before any pattern or format runs
+// on it (a template's pattern is then never tried on a huge value).
+export function validate(schema, value, { root = schema, formats = FORMATS, maxStringLength = Infinity } = {}) {
   const errors = [];
-  check(schema, value, '', { root, formats, errors, depth: 0, steps: { n: 0 } });
+  check(schema, value, '', { root, formats, errors, depth: 0, steps: { n: 0 }, maxStringLength });
   return errors;
 }
 
@@ -53,8 +55,11 @@ function check(schema, value, path, ctx) {
     const length = [...value].length; // code points, as the spec counts
     if (schema.minLength !== undefined && length < schema.minLength) fail(ctx, path, `must be at least ${schema.minLength} characters`);
     if (schema.maxLength !== undefined && length > schema.maxLength) fail(ctx, path, `must be at most ${schema.maxLength} characters`);
-    if (schema.pattern !== undefined && !regex(schema.pattern).test(value)) fail(ctx, path, `must match ${schema.pattern}`);
-    if (schema.format !== undefined && ctx.formats[schema.format] && !ctx.formats[schema.format](value)) fail(ctx, path, `must be a valid ${schema.format}`);
+    if (length > ctx.maxStringLength) fail(ctx, path, `must be at most ${ctx.maxStringLength} characters`);
+    else {
+      if (schema.pattern !== undefined && !regex(schema.pattern).test(value)) fail(ctx, path, `must match ${schema.pattern}`);
+      if (schema.format !== undefined && ctx.formats[schema.format] && !ctx.formats[schema.format](value)) fail(ctx, path, `must be a valid ${schema.format}`);
+    }
   }
 
   if (typeof value === 'number') {

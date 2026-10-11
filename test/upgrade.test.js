@@ -121,18 +121,31 @@ test('a major upgrade shows its plan and needs a confirmation; a dry run changes
   assert.equal(done.doc.data.template.version, '2.0.0');
 });
 
-test('a template\'s migrate.js renames settings on upgrade, isolated', async (t) => {
+test('a package\'s migrate.js renames settings on upgrade when the operator allows it, isolated', async (t) => {
   const renamed = { type: 'object', properties: { colour: { type: 'string', format: 'color' }, size: { type: 'integer', default: 2 } } };
   const migrate = 'export function migrate(from, s) { if (s.accent) { s.colour = s.accent; delete s.accent; } return s; }';
   const { platform, base } = await setup(t, {
     settings: { accent: '#123456' },
     install: [v('1.0.0', settingsV1), v('1.2.0', renamed, { files: { 'migrate.js': migrate } }), v('1.3.0', renamed, { files: { 'migrate.js': 'function migrate() { for (;;) {} }' } })],
   });
-  const plan = await platform.overlays.upgrade('main', '1.2.0');
+  // Package code runs on the server only when allowed; skipped, the renamed setting is dropped.
+  const skipped = await platform.overlays.upgrade('main', '1.2.0', { dryRun: true });
+  assert.equal(skipped.migrated, 'skipped');
+  assert.deepEqual(skipped.changes.map((c) => `${c.change} ${c.path}`), ['removed /accent', 'added /colour']);
+  const plan = await platform.overlays.upgrade('main', '1.2.0', { runMigrate: true });
   assert.equal(plan.migrated, true);
   assert.deepEqual(plan.settings, { colour: '#123456' });
   assert.deepEqual((await (await fetch(`${base}/snapshot`)).json()).state['overlay.settings'], { colour: '#123456', size: 2 });
   // A migrate.js that never returns fails the upgrade, and the overlay stays where it was.
-  await assert.rejects(platform.overlays.upgrade('main', '1.3.0'), { name: 'MigrateError' });
+  await assert.rejects(platform.overlays.upgrade('main', '1.3.0', { runMigrate: true }), { name: 'MigrateError' });
   assert.equal(platform.overlays.resolve('main').doc.data.template.version, '1.2.0');
+});
+
+test('what counts as a major upgrade', async () => {
+  const { isMajor } = await import('../src/overlays/registry.js');
+  assert.equal(isMajor('1.4.0', '2.0.0'), true);
+  assert.equal(isMajor('1.4.0', '1.9.3'), false);
+  assert.equal(isMajor('0.3.0', '0.4.0'), true, 'under 1.0.0 a minor version can break things');
+  assert.equal(isMajor('0.3.0', '0.3.9'), false);
+  assert.equal(isMajor('1.0.0-rc.1', '1.0.0'), true, 'a prerelease promises nothing');
 });

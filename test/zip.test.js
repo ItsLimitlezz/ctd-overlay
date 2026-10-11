@@ -135,9 +135,12 @@ test('names without the UTF-8 flag must be ASCII, and flagged names must be vali
 
 test('zip bombs: declared sizes are capped before inflating, and inflating stops at the declared size', () => {
   const big = Buffer.alloc(3 * 1024 * 1024); // deflates to a few KB
-  const limits = { fileBytes: 2 * 1024 * 1024, totalBytes: 4 * 1024 * 1024 };
+  const limits = { fileBytes: 2 * 1024 * 1024, totalBytes: 4 * 1024 * 1024, ratio: Infinity };
   refuses(forge([{ name: 'big.bin', data: big }]), 'too-large', /one file/, limits);
   refuses(forge([{ name: 'a.bin', data: big.subarray(0, 1.5 * 1024 * 1024) }, { name: 'b.bin', data: big.subarray(0, 1.5 * 1024 * 1024) }, { name: 'c.bin', data: big.subarray(0, 1.5 * 1024 * 1024) }]), 'too-large', /uncompressed/, limits);
+  // The ratio cap: 1.5 MiB of zeros deflates about 1000:1.
+  refuses(forge([{ name: 'zeros.bin', data: big.subarray(0, 1.5 * 1024 * 1024) }]), 'too-large', /expands more than 100 times/);
+  assert.equal(readZip(forge([{ name: 'small.txt', data: Buffer.alloc(100000) }])).files.length, 1, 'small files may compress well');
   // A lie: declares 1 KB, inflates to 3 MiB.
   refuses(forge([{ name: 'liar.bin', data: big, size: 1024 }]), 'too-large', /more than it declares/);
   // The archive itself, and the number of entries.

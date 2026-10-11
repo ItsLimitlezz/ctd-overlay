@@ -44,26 +44,51 @@ test('a settings schema outside the 04 §4.3 subset is refused, with the reason'
   assert.match(errors({ a: { $ref: '#/definitions/nowhere' } }).join(), /points at nothing/);
   assert.match(checkSettingsSchema({ settings: { type: 'string' } }).errors.join(), /must describe an object/);
   let deep = { type: 'string' };
-  for (let i = 0; i < 12; i++) deep = { type: 'object', properties: { a: deep } };
-  assert.match(errors({ deep }).join(), /nested more than/);
+  for (let i = 0; i < 4; i++) deep = { type: 'object', properties: { a: deep } };
+  assert.match(errors({ deep }).join(), /nested more than 3 deep/);
   const warnings = checkSettingsSchema(manifest({ a: { type: 'string', format: 'email', 'x-skp-widget': 'knob', 'x-skp-sparkle': 1 } })).warnings.join('\n');
   assert.match(warnings, /format "email"/);
   assert.match(warnings, /x-skp-widget "knob"/);
   assert.match(warnings, /x-skp-sparkle/);
 });
 
-test('alerts.durationSetting must name a numeric setting (05 §5.5)', () => {
-  assert.deepEqual(checkSettingsSchema(manifest({ hold: { type: 'integer', default: 6000 } }, { alerts: { durationSetting: 'hold' } })).errors, []);
-  assert.match(checkSettingsSchema(manifest({ hold: { type: 'string' } }, { alerts: { durationSetting: 'hold' } })).errors.join(), /durationSetting/);
-  assert.match(checkSettingsSchema({ alerts: { durationSetting: 'hold' } }).errors.join(), /declares no settings/);
+test('alerts.durationSetting should name a numeric setting (05 §5.5); otherwise durationMs is used, with a warning', () => {
+  assert.deepEqual(checkSettingsSchema(manifest({ hold: { type: 'integer', default: 6000 } }, { alerts: { durationSetting: 'hold' } })), { errors: [], warnings: [] });
+  assert.match(checkSettingsSchema(manifest({ hold: { type: 'string' } }, { alerts: { durationSetting: 'hold' } })).warnings.join(), /durationSetting/);
+  assert.match(checkSettingsSchema({ alerts: { durationSetting: 'hold' } }).warnings.join(), /declares no settings/);
+});
+
+test('constructs a settings form can\'t show are refused: combinators, multipleOf, required, group defaults, bad names', () => {
+  const errors = (props) => checkSettingsSchema(manifest(props)).errors.join('\n');
+  for (const keyword of ['const', 'required', 'multipleOf', 'exclusiveMinimum', 'anyOf', 'if']) {
+    assert.match(errors({ a: { type: 'string', [keyword]: keyword === 'required' ? [] : 1 } }), new RegExp(`"${keyword}" is not supported`), keyword);
+  }
+  assert.match(errors({ a: { enum: ['x'] } }), /needs a "type"/);
+  assert.match(errors({ a: { type: ['string', 'null'] } }), /"type" must be one of/);
+  assert.match(errors({ g: { type: 'object', default: {}, properties: { x: { type: 'string' } } } }), /a group can't have a default/);
+  assert.match(errors({ 'my-setting': { type: 'string' } }), /can't be a setting name/);
+  assert.match(errors({ a: { type: 'object', additionalProperties: true, properties: {} } }), /additionalProperties/);
+  assert.deepEqual(checkSettingsSchema(manifest({ a: { type: 'object', additionalProperties: false, properties: { b: { type: 'string' } } } })).errors, []);
+});
+
+test('settings formats are what a form writes: a colour, a local time of day, a web address', () => {
+  const m = manifest({ c: { type: 'string', format: 'color' }, t: { type: 'string', format: 'time' }, u: { type: 'string', format: 'uri' } });
+  assert.deepEqual(validateSettings(m, { c: '#abc', t: '21:30', u: 'https://example.com/poster.png' }), []);
+  assert.deepEqual(validateSettings(m, { t: '21:30Z', u: 'javascript:alert(1)' }).map((e) => e.path).sort(), ['/t', '/u']);
+  // A long value is refused by its length before any pattern runs on it.
+  const p = manifest({ s: { type: 'string', pattern: '^a+$' } });
+  assert.match(validateSettings(p, { s: 'a'.repeat(5000) })[0].message, /at most 4096 characters/);
 });
 
 test('saved values are validated against the schema before they are saved', () => {
   assert.deepEqual(validateSettings(EXAMPLE, { accent: '#000', chatX: 10 }), []);
   const problems = validateSettings(EXAMPLE, { accent: 'gold', chatX: 5000, mystery: 1, colors: { text: 'white' } }).map((e) => `${e.path} ${e.message}`).sort();
   assert.deepEqual(problems, ['/accent must be a valid color', '/chatX must be at most 1920', '/colors/text must be a valid color', '/mystery is not a setting of this template']);
-  assert.deepEqual(validateSettings({}, { anything: 1 }), []); // no schema: anything goes
+  // A template without a settings schema has no settings.
+  assert.deepEqual(validateSettings({}, { anything: 1 }).map((e) => e.path), ['/anything']);
+  assert.deepEqual(validateSettings({}, {}), []);
   assert.deepEqual(validateSettings(EXAMPLE, 'x').map((e) => e.message), ['must be an object']);
+  assert.deepEqual(validateSettings(EXAMPLE, { colors: { text: '#000', extra: 1 } }).map((e) => e.path), ['/colors/extra']);
 });
 
 test('resolution: saved value, else the bound state key, else the default; unknown keys are left out', () => {
@@ -76,8 +101,8 @@ test('resolution: saved value, else the bound state key, else the default; unkno
   });
   // A bound value of the wrong type is ignored like an invalid saved one.
   assert.equal(resolveSettings(EXAMPLE, {}, () => 42).headliner, undefined);
-  // Without a schema, saved settings pass through as they are.
-  assert.deepEqual(resolveSettings({}, { accent: 'cyan', size: 2 }), { accent: 'cyan', size: 2 });
+  // Without a schema there are no settings.
+  assert.deepEqual(resolveSettings({}, { accent: 'cyan', size: 2 }), {});
   assert.deepEqual(boundKeys(EXAMPLE), ['show.headliner']);
   // The default is a copy: changing what one overlay got changes nothing for the next.
   const a = resolveSettings(EXAMPLE, {});
@@ -96,7 +121,8 @@ test('upgrade: unchanged keys copy over, removed keys drop, invalid values fall 
     { path: '/fresh', change: 'added', to: true },
     { path: '/mode', change: 'default', from: 'a', to: 'b' },
   ]);
-  assert.deepEqual(migrateSettings(v1, {}, { anything: 1 }).settings, { anything: 1 }); // the new version has no schema
+  // A new version without settings drops them all, and says so.
+  assert.deepEqual(migrateSettings(v1, {}, { anything: 1 }), { settings: {}, changes: [{ path: '/anything', change: 'removed', from: 1 }] });
 });
 
 test('migrate.js renames settings, isolated from the platform', async () => {

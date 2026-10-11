@@ -28,6 +28,14 @@
   "actions": [
     { "id": "titleCard", "label": "Title card", "durationMs": 3000 }
   ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "accent": { "type": "string", "title": "Accent" },
+      "size": { "type": "integer", "title": "Size", "minimum": 1, "maximum": 10 },
+      "alertHold": { "type": "integer", "title": "Alert hold (ms)", "minimum": 1000, "maximum": 60000 }
+    }
+  },
   "alerts": { "mode": "serial", "durationMs": 1500, "durationSetting": "alertHold", "gapMs": 100 },
   "transitions": [
     { "id": "stinger", "media": "assets/stinger.webm", "cutAtMs": 200 },

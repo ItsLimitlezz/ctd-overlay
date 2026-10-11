@@ -25,6 +25,8 @@ export const ZIP_LIMITS = Object.freeze({
   fileBytes: 50 * 1024 * 1024, // one file, uncompressed (04 §4.1)
   entries: 5000,
   pathLength: 240, // leaves room under Windows' 260 for the install directory's prefix
+  ratio: 100, // uncompressed:compressed, for files over ratioFrom bytes (07 §7.11's ratio cap)
+  ratioFrom: 1024 * 1024,
 });
 
 export class ZipError extends Error {
@@ -39,7 +41,7 @@ const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;
 const SIG_END = 0x06054b50;
 const SIG_ZIP64_LOCATOR = 0x07064b50;
-const JUNK = /(^|\/)(__MACOSX\/|\.DS_Store$|Thumbs\.db$|desktop\.ini$)/i;
+export const JUNK = /(^|\/)(__MACOSX\/|\.DS_Store$|\._[^/]*$|Thumbs\.db$|desktop\.ini$)/i;
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\.|$)/i;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
@@ -161,10 +163,16 @@ export function openZip(source, limits = {}) {
     for (let j = 1; j < parts.length; j++) addFolder(parts.slice(0, j).join('/'), fold);
 
     if (size > max.fileBytes) throw new ZipError(`"${name}" is ${mib(size)} uncompressed; the limit for one file is ${mib(max.fileBytes)}.`, 'too-large');
+    if (size > max.ratioFrom && size / Math.max(1, compressed) > max.ratio) {
+      throw new ZipError(`"${name}" expands more than ${max.ratio} times; real template files don't, zip bombs do.`, 'too-large');
+    }
     total += size;
     if (total > max.totalBytes) throw new ZipError(`The package is over ${mib(max.totalBytes)} uncompressed.`, 'too-large');
     entries.push({ name, nameBytes, flags, method, crc, compressed, size, local });
   }
+
+  // The directory's records fill exactly the size the end record gives it: nothing hidden after.
+  if (p !== cd.length) throw new ZipError('The central directory is damaged.');
 
   // Each entry's local header and data must lie inside the archive, before the central
   // directory, and clear of every other entry's.
@@ -244,20 +252,16 @@ function localData(source, e, cdOffset) {
   return start;
 }
 
-// UTF-8 when the archive says so (flag bit 11); otherwise only ASCII is accepted, since the
-// legacy code page can't be known.
+// Names are UTF-8: flagged as such (bit 11), or simply valid UTF-8, as many tools write them
+// without the flag. Anything else is a legacy code page that can't be known.
 function decodeName(bytes, flags) {
-  if (flags & 0x800) {
-    try {
-      return utf8.decode(bytes);
-    } catch {
-      throw new ZipError('An entry name is not valid UTF-8.', 'unsafe-path');
-    }
+  try {
+    return utf8.decode(bytes);
+  } catch {
+    throw new ZipError(flags & 0x800
+      ? 'An entry name is not valid UTF-8.'
+      : 'An entry name is in a legacy character set; re-create the package with "skp template pack" or 7-Zip, which write UTF-8 names.', 'unsafe-path');
   }
-  for (const b of bytes) {
-    if (b > 0x7e) throw new ZipError('An entry name has non-ASCII characters but the archive does not mark it as UTF-8; re-create the package with a tool that writes UTF-8 names.', 'unsafe-path');
-  }
-  return bytes.toString('latin1');
 }
 
 // A package-relative, "/"-separated path that is safe to create on Windows, macOS and Linux.

@@ -9,29 +9,40 @@
 // A manifest's `settings` is a JSON Schema for one object, usually { "$ref":
 // "#/definitions/settings" }; references resolve inside the manifest. Only the subset 04 §4.3
 // lists is accepted, so the admin UI can always render the form. A template without a settings
-// schema gets the saved values as they are.
+// schema has no settings: it gets {}, and any saved key is refused (07 §7.11).
 //
 // Resolution, per field: the saved value if it is valid, else the value of the state key named by
-// x-skp-bind if that is valid, else the default; nested objects resolve field by field. Fields the
-// schema doesn't know are left out.
+// x-skp-bind if that is valid, else the default; groups (nested objects) resolve field by field
+// and are always objects. Fields the schema doesn't know are left out.
 import { KEY } from '../bus/names.js';
 import { FORMATS, SchemaError, isObject, resolve, validate } from '../schema.js';
 
 const PRIMITIVES = new Set(['string', 'number', 'integer', 'boolean']);
 const TYPES = new Set([...PRIMITIVES, 'array', 'object']);
-// The JSON Schema keywords a settings schema may use (04 §4.3, plus harmless annotations).
+// The JSON Schema keywords a settings schema may use (04 §4.3, plus harmless annotations). A form
+// can't render combinators, conditionals, or constraints like multipleOf, so those are refused.
 const KEYWORDS = new Set([
-  '$ref', 'type', 'title', 'description', 'default', 'enum', 'const', 'examples',
-  'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
-  'minLength', 'maxLength', 'pattern', 'format',
+  '$ref', 'type', 'title', 'description', 'default', 'enum', 'examples',
+  'minimum', 'maximum', 'minLength', 'maxLength', 'pattern', 'format',
   'items', 'minItems', 'maxItems', 'uniqueItems',
-  'properties', 'required', 'additionalProperties',
+  'properties', 'additionalProperties',
 ]);
-const SETTING_FORMATS = new Set(['color', 'uri', 'date', 'time']);
+// What the formats mean for a settings form: colours as the colour picker writes them, a local
+// date and time of day (no offset: the show's time zone applies), and a web address.
+export const SETTINGS_FORMATS = {
+  color: FORMATS.color,
+  date: FORMATS.date,
+  time: (s) => /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(s),
+  uri: (s) => s.length <= 2048 && /^https?:\/\/[^\s]+$/i.test(s) && FORMATS.uri(s),
+};
+// No setting value is longer than this; a template's pattern never runs on more (it could take
+// exponential time on a crafted value).
+export const MAX_VALUE_LENGTH = 4096;
 const WIDGETS = new Set(['color', 'font', 'media', 'position', 'size', 'slider', 'textarea', 'code']);
 const EXTENSIONS = new Set(['x-skp-widget', 'x-skp-labels', 'x-skp-group', 'x-skp-bind', 'x-skp-showIf', 'x-skp-preview', 'x-skp-axis', 'x-skp-accept', 'x-skp-step', 'x-skp-unit']);
-const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-const MAX_DEPTH = 8; // nested groups; a form deeper than this isn't a settings form
+const NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+const MAX_DEPTH = 3; // nested groups; a form deeper than this isn't a settings form
+const opts = (manifest) => ({ root: manifest, formats: SETTINGS_FORMATS, maxStringLength: MAX_VALUE_LENGTH });
 
 // The settings object's schema, with any top-level $ref followed; undefined when there is none.
 export function settingsSchema(manifest) {
@@ -54,7 +65,7 @@ export function checkSettingsSchema(manifest) {
     return { errors, warnings };
   }
   if (!root) {
-    if (manifest.alerts && manifest.alerts.durationSetting) errors.push(`alerts.durationSetting names "${manifest.alerts.durationSetting}", but the template declares no settings`);
+    if (manifest.alerts && manifest.alerts.durationSetting) warnings.push(`alerts.durationSetting names "${manifest.alerts.durationSetting}", but the template declares no settings; alerts.durationMs is used instead`);
     return { errors, warnings };
   }
   if (root.type !== 'object' || !isObject(root.properties)) {
@@ -62,12 +73,14 @@ export function checkSettingsSchema(manifest) {
     return { errors, warnings };
   }
 
-  const walk = (schema, path, depth) => {
-    if (depth > MAX_DEPTH) { errors.push(`${path}: nested more than ${MAX_DEPTH} deep`); return; }
+  // groups: how many nested objects deep this field is (the settings object itself is 0).
+  const walk = (schema, path, groups, hops = 0) => {
+    if (groups > MAX_DEPTH) { errors.push(`${path}: groups are nested more than ${MAX_DEPTH} deep`); return; }
     if (!isObject(schema)) { errors.push(`${path}: must be a schema object`); return; }
     if (schema.$ref !== undefined) {
+      if (hops > 8) { errors.push(`${path}: the $ref chain is too long`); return; }
       try {
-        walk(resolve(manifest, schema.$ref), path, depth + 1);
+        walk(resolve(manifest, schema.$ref), path, groups, hops + 1);
       } catch (err) {
         errors.push(`${path}: ${err.message}`);
       }
@@ -78,28 +91,29 @@ export function checkSettingsSchema(manifest) {
       else if (!KEYWORDS.has(key)) errors.push(`${path}: "${key}" is not supported in a settings schema (04 §4.3)`);
     }
     const type = schema.type;
-    if (type === undefined && schema.enum === undefined && schema.const === undefined) errors.push(`${path}: needs a "type"`);
-    if (type !== undefined && !TYPES.has(type)) errors.push(`${path}: "type" must be one of ${[...TYPES].join(', ')}`);
+    if (type === undefined) errors.push(`${path}: needs a "type"`);
+    else if (!TYPES.has(type)) errors.push(`${path}: "type" must be one of ${[...TYPES].join(', ')}`);
+    if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) errors.push(`${path}: "additionalProperties" can only be false`);
 
     if (type === 'object') {
       if (!isObject(schema.properties)) { errors.push(`${path}: an object needs "properties"`); return; }
+      if (groups > 0 && schema.default !== undefined) errors.push(`${path}: a group can't have a default; give its fields defaults`);
       for (const [name, prop] of Object.entries(schema.properties)) {
-        if (FORBIDDEN_KEYS.has(name)) errors.push(`${path}.properties: "${name}" can't be a setting name`);
-        walk(prop, `${path}.${name}`, depth + 1);
+        if (!NAME.test(name)) errors.push(`${path}: "${name}" can't be a setting name (use letters, digits and _, starting with a letter)`);
+        walk(prop, `${path}.${name}`, isObject(prop) && deref(manifest, prop)?.type === 'object' ? groups + 1 : groups);
       }
-      for (const name of schema.required || []) if (!Object.prototype.hasOwnProperty.call(schema.properties, name)) errors.push(`${path}: requires "${name}", which it doesn't define`);
     }
     if (type === 'array') {
       const items = isObject(schema.items) && schema.items.$ref !== undefined ? safeResolve(schema.items.$ref) : schema.items;
       if (!isObject(items) || !PRIMITIVES.has(items.type)) errors.push(`${path}: an array's "items" must be a string, number, integer or boolean (04 §4.3)`);
-      else walk(items, `${path}[]`, depth + 1);
+      else walk(items, `${path}[]`, groups);
     }
     if (schema.pattern !== undefined) checkPattern(schema.pattern, path, errors);
-    if (schema.format !== undefined && !SETTING_FORMATS.has(schema.format)) warnings.push(`${path}: format "${schema.format}" isn't one the settings form knows (${[...SETTING_FORMATS].join(', ')})`);
+    if (schema.format !== undefined && !Object.prototype.hasOwnProperty.call(SETTINGS_FORMATS, schema.format)) warnings.push(`${path}: format "${schema.format}" isn't one the settings form knows (${Object.keys(SETTINGS_FORMATS).join(', ')})`);
     if (schema.enum !== undefined) {
       if (!Array.isArray(schema.enum) || !schema.enum.length) errors.push(`${path}: "enum" must be a non-empty array`);
       else {
-        for (const v of schema.enum) if (validate({ ...schema, enum: undefined, default: undefined }, v, { root: manifest }).length) errors.push(`${path}: the enum value ${JSON.stringify(v)} doesn't match the field's own type`);
+        for (const v of schema.enum) if (safeValidate({ ...schema, enum: undefined, default: undefined }, v).length) errors.push(`${path}: the enum value ${JSON.stringify(v)} doesn't match the field's own type`);
         const labels = schema['x-skp-labels'];
         if (labels !== undefined && (!Array.isArray(labels) || labels.length !== schema.enum.length || !labels.every((l) => typeof l === 'string'))) {
           errors.push(`${path}: x-skp-labels must be one string per enum value`);
@@ -123,7 +137,7 @@ export function checkSettingsSchema(manifest) {
     try { return resolve(manifest, ref); } catch (err) { errors.push(`settings: ${err.message}`); return undefined; }
   };
   const safeValidate = (schema, value) => {
-    try { return validate(schema, value, { root: manifest }); } catch (err) { return [{ message: err.message }]; }
+    try { return validate(schema, value, opts(manifest)); } catch (err) { return [{ message: err.message }]; }
   };
 
   walk(root, 'settings', 0);
@@ -135,12 +149,13 @@ export function checkSettingsSchema(manifest) {
       warnings.push(`settings.${name}: x-skp-showIf must name another setting ({ "field": …, "equals": … })`);
     }
   }
-  // alerts.durationSetting names a numeric setting (05 §5.5).
+  // alerts.durationSetting names a numeric setting (05 §5.5); otherwise the runtime falls back to
+  // alerts.durationMs, so it's a warning.
   const ds = manifest.alerts && manifest.alerts.durationSetting;
   if (ds !== undefined) {
-    const prop = root.properties[ds];
+    const prop = Object.prototype.hasOwnProperty.call(root.properties, ds) ? root.properties[ds] : undefined;
     const t = isObject(prop) && (prop.$ref ? safeResolve(prop.$ref) : prop);
-    if (!isObject(t) || (t.type !== 'number' && t.type !== 'integer')) errors.push(`alerts.durationSetting names "${ds}", which must be a number or integer setting`);
+    if (!isObject(t) || (t.type !== 'number' && t.type !== 'integer')) warnings.push(`alerts.durationSetting names "${ds}", which isn't a number or integer setting; alerts.durationMs is used instead`);
   }
   return { errors, warnings };
 }
@@ -159,21 +174,29 @@ function checkPattern(pattern, path, errors) {
   if (/\((?:[^()\\]|\\.)*(?:[+*]|\{\d+,\})(?:[^()\\]|\\.)*\)(?:[+*]|\{\d+,\})/.test(pattern)) errors.push(`${path}: "pattern" repeats a group that itself repeats, which can take exponential time`);
 }
 
+// The values an operator saves: each must fit its field, and every key must be a field, at any
+// depth (07 §7.11: unknown fields are refused on writes).
 export function validateSettings(manifest, settings) {
-  const root = settingsSchema(manifest);
   if (!isObject(settings)) return [{ path: '/', message: 'must be an object' }];
-  if (!root) return [];
-  const errors = validate(root, settings, { root: manifest, formats: FORMATS });
-  for (const key of Object.keys(settings)) {
-    if (!Object.prototype.hasOwnProperty.call(root.properties || {}, key)) errors.push({ path: `/${key}`, message: 'is not a setting of this template' });
-  }
+  const root = settingsSchema(manifest);
+  if (!root) return Object.keys(settings).map((key) => ({ path: `/${key}`, message: 'is not a setting of this template (it has none)' }));
+  const errors = validate(root, settings, opts(manifest)).filter((e) => e.message !== 'is not a known field');
+  const unknown = (schema, value, path, depth) => {
+    if (depth > MAX_DEPTH || !isObject(value)) return;
+    for (const key of Object.keys(value)) {
+      const field = Object.prototype.hasOwnProperty.call(schema.properties || {}, key) ? deref(manifest, schema.properties[key]) : undefined;
+      if (!isObject(field)) errors.push({ path: `${path}/${key}`, message: 'is not a setting of this template' });
+      else if (field.type === 'object') unknown(field, value[key], `${path}/${key}`, depth + 1);
+    }
+  };
+  unknown(root, settings, '', 0);
   return errors;
 }
 
-// state(key) → the bus's current value for an x-skp-bind key, or undefined.
+// state(key) → the value an x-skp-bind key has for this overlay, or undefined.
 export function resolveSettings(manifest, saved = {}, state = () => undefined) {
   const root = settingsSchema(manifest);
-  if (!root) return isObject(saved) ? structuredClone(saved) : {};
+  if (!root) return {};
   return resolveObject(manifest, root, isObject(saved) ? saved : {}, state, 0);
 }
 
@@ -226,7 +249,10 @@ export function migrateSettings(fromManifest, toManifest, settings) {
   const to = settingsSchema(toManifest);
   const from = safe(() => settingsSchema(fromManifest));
   const changes = [];
-  if (!to) return { settings: isObject(settings) ? structuredClone(settings) : {}, changes };
+  if (!to) {
+    for (const [key, v] of Object.entries(isObject(settings) ? settings : {})) changes.push({ path: `/${key}`, change: 'removed', from: v });
+    return { settings: {}, changes };
+  }
   const carry = (toSchema, fromSchema, value, path, depth) => {
     const out = {};
     if (depth > MAX_DEPTH) return out;
@@ -269,7 +295,7 @@ function deref(manifest, schema) {
 
 function valid(manifest, schema, value) {
   try {
-    return validate(schema, value, { root: manifest }).length === 0;
+    return validate(schema, value, opts(manifest)).length === 0;
   } catch {
     return false;
   }

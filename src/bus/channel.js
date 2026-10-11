@@ -79,6 +79,15 @@ export class Channel {
     this.#offerState(changeData(key, json, prev), { connector: 'core' });
   }
 
+  // One state key as this overlay sees it (its own state first, then global state it consumes
+  // from connections bound to it), or undefined: what an x-skp-bind setting may read.
+  visibleState(key) {
+    if (this.#local.has(key)) return structuredClone(this.#local.get(key));
+    if (!(RUNTIME_KEYS.has(key) || this.wantsState(key))) return undefined;
+    const entry = this.#bus.stateEntry(key);
+    return entry && this.bound(entry.src) ? structuredClone(entry.value) : undefined;
+  }
+
   snapshot() {
     const state = {};
     for (const [key, entry] of this.#bus.stateEntries()) {

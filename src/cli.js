@@ -27,6 +27,7 @@ export const USAGE = `Usage: skp <command> [options]
   template uninstall <id>[@<version>]     remove an installed version, or every version
   overlay upgrade <slug> --to <version>   move an overlay to a newer template version
         [--dry-run] [--yes]               show what would change / confirm a major upgrade
+        [--run-migrate]                   let an installed package's migrate.js run
 
 Options: --json (machine-readable output), and the server's own --data-dir, --config-dir and
 --store to find the data directory (the same environment variables work too).`;
@@ -43,7 +44,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       allowPositionals: true,
       strict: true,
       options: {
-        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
         to: { type: 'string' }, out: { type: 'string', short: 'o' },
         ...Object.fromEntries(CONFIG_FLAGS.map((f) => [f, { type: 'string' }])),
       },
@@ -163,7 +164,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         try {
           let plan;
           try {
-            plan = await data.overlays.upgrade(rest[0], opts.to, { dryRun: opts['dry-run'], confirm: opts.yes });
+            plan = await data.overlays.upgrade(rest[0], opts.to, { dryRun: opts['dry-run'], confirm: opts.yes, runMigrate: opts['run-migrate'] });
           } catch (err) {
             if (err instanceof OverlayError && err.code === 'confirm-major') {
               if (opts.json) json({ error: err.code, message: err.message, plan: err.detail });
@@ -227,7 +228,8 @@ function printFindings(out, { manifest, errors, warnings, build }) {
 }
 
 function printPlan(out, plan) {
-  out(`${plan.overlay}: ${plan.from} → ${plan.to}${plan.major ? ' (major)' : ''}${plan.migrated ? ', settings run through the template\'s migrate.js' : ''}`);
+  out(`${plan.overlay}: ${plan.from} → ${plan.to}${plan.major ? ' (major)' : ''}${plan.migrated === true ? ', settings run through the template\'s migrate.js' : ''}`);
+  if (plan.migrated === 'skipped') out('  the package has a migrate.js, which was not run (it is the package\'s own code; allow it with --run-migrate)');
   for (const c of plan.changes) {
     const v = (x) => (x === undefined ? 'unset' : JSON.stringify(x));
     if (c.change === 'removed') out(`  setting ${c.path} is no longer used and is dropped (was ${v(c.from)})`);

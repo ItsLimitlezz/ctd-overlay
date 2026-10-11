@@ -82,6 +82,9 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       return entry ? structuredClone(entry.value) : undefined;
     },
 
+    // { value, src } as stored (not a copy), for channels deciding what an overlay may see.
+    stateEntry: (key) => state.get(key),
+
     stateEntries: () => state.entries(),
     chatRecent: () => chat,
 
