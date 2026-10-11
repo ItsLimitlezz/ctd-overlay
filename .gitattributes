@@ -1,2 +1,13 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Text files are stored and checked out with LF on every platform (matches .editorconfig).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.woff2 binary
+*.mp4 binary
+*.webm binary
+*.zip binary
+*.skp binary

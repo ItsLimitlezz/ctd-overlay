@@ -1,0 +1,11 @@
+node_modules/
+coverage/
+dist/
+
+# local runtime state (SKP_DATA_DIR / SKP_CONFIG_DIR when pointed inside the repo)
+data/
+config/
+
+*.log
+.DS_Store
+Thumbs.db
