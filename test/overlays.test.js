@@ -209,14 +209,14 @@ test('Last-Event-ID resumes a stream; an expired one gets 410', async (t) => {
   assert.equal((await fetch(`${base}/stream?cursor=00000000000000000000000000`)).status, 410);
 });
 
-test('an idle stream gets a heartbeat comment', async (t) => {
-  const { base } = await startWithOverlay(t, { heartbeatMs: 50 });
+test('an idle stream gets a heartbeat comment, with server time and the overlay\'s current build', async (t) => {
+  const { base, build } = await startWithOverlay(t, { heartbeatMs: 50 });
   const { cursor } = await (await fetch(`${base}/snapshot`)).json();
   const ctrl = new AbortController();
   defer(t, () => ctrl.abort());
   const next = frames(await fetch(`${base}/stream?cursor=${cursor}`, { signal: ctrl.signal }));
   await next();
-  assert.match((await next(1000)).comment, /^hb \d{13}$/);
+  assert.match((await next(1000)).comment, new RegExp(`^hb \\d{13} ${build}$`));
 });
 
 test('deleting the overlay ends its open streams', async (t) => {

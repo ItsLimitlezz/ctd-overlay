@@ -118,6 +118,20 @@ export class Channel {
   get subscriberCount() { return this.#subs.size; }
   get bufferSize() { return this.#buffer.length; }
 
+  // Forgets the replay buffer and ends every open stream, but keeps the channel and its local
+  // state. Clients reconnect and re-sync from a fresh snapshot, which is how an overlay's template
+  // upgrade reaches pages already open: they see the new build and reload (01 §1.4).
+  reset() {
+    this.#buffer = [];
+    this.#droppedUpTo = this.#bus.cursor();
+    this.#subs.clear();
+    const closers = [...this.#closers];
+    this.#closers.clear();
+    for (const fn of closers) {
+      try { fn(); } catch (err) { this.#bus.log.error('channel close handler failed', { channel: this.id, err }); }
+    }
+  }
+
   close() {
     this.#closed = true;
     for (const p of this.#pending.values()) this.#bus.timers.clearTimeout(p.timer);

@@ -3,15 +3,17 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { browserSkip, launchBrowser } from './cdp.js';
-import { TESTBED, defer, startWithOverlay } from './helpers.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { TESTBED, TESTBED_DIR, defer, packTemplate, startWithOverlay } from './helpers.js';
 
 let browser;
 before(async () => { if (!browserSkip) browser = await launchBrowser(); });
 after(async () => { if (browser) await browser.close(); });
 
 // A platform with a testbed overlay, and the page open in the browser and ready.
-async function open(t, { query = '', width = 1920, height = 1080, settings } = {}) {
-  const ctx = await startWithOverlay(t, { slug: 'bed', template: TESTBED, settings });
+async function open(t, { query = '', width = 1920, height = 1080, settings, install } = {}) {
+  const ctx = await startWithOverlay(t, { slug: 'bed', template: TESTBED, settings, install });
   const page = await browser.open(ctx.base + query, { width, height });
   defer(t, () => page.close().catch(() => {}));
   await page.waitFor('window.__log && window.__log.some((e) => e.what === "ready")', 10000);
@@ -68,6 +70,19 @@ describe('stage and page (04 §4.5)', () => {
     await page.goto(base);
     assert.equal(await page.eval('typeof window.SK'), 'undefined');
     await page.waitFor('getComputedStyle(document.querySelector("[data-skp-boot]")).opacity === "1"', 12000);
+  });
+
+  test('a template upgrade reaches the open page: it reloads with the new build, at the same URL (01 §1.4)', opts, async (t) => {
+    const css = readFileSync(path.join(TESTBED_DIR, 'template.css'), 'utf8');
+    const v2 = packTemplate(TESTBED_DIR, { manifest: { version: '1.1.0' }, files: { 'template.css': `${css}\n.v2 {}\n` } });
+    const { page, platform, base } = await open(t, { install: [v2] });
+    const before = await page.eval('SK.meta.build');
+    const after = platform.templates.get(TESTBED.id, '1.1.0').build;
+    assert.notEqual(before, after);
+    await platform.overlays.upgrade('bed', '1.1.0');
+    await page.waitFor(`window.SK && SK.meta.build === ${JSON.stringify(after)} && window.__log && window.__log.some((e) => e.what === "ready")`, 10000);
+    assert.equal(await page.eval('location.pathname'), new URL(base).pathname);
+    assert.equal(await page.eval('SK.meta.template.version'), '1.1.0');
   });
 
   test('a second copy of sk.js in the page changes nothing', opts, async (t) => {

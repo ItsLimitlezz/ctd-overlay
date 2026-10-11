@@ -11,7 +11,7 @@
 // overlay endpoints need no key (07 §7.6 allows "no key required" in local mode).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readBody, sendJson, sendProblem } from '../http/server.js';
@@ -48,6 +48,7 @@ const OVERLAY_HEADERS = {
 };
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+const FILE_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self'";
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -95,9 +96,9 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       alerts: manifest.alerts || {},
       transitions: manifest.transitions || [],
       consumes: { state: manifest.consumes?.state || [], events: manifest.consumes?.events || [], chat: manifest.consumes?.chat || null },
-      // The saved settings, for ?mock=1, which never fetches the snapshot that carries them
-      // (04 §4.9, 08 §8.5).
-      settings: o.doc.data.settings || {},
+      // The resolved settings (what overlay.settings carries), for ?mock=1, which never fetches the
+      // snapshot (04 §4.9, 08 §8.5).
+      settings: o.settings,
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -150,13 +151,17 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'x-accel-buffering': 'no', // no buffering in nginx-style proxies
     });
     // Sends the headers now, so the client knows the stream opened. Comments carry server time
-    // (the client keeps its clock estimate fresh, 01 §1.6) and the open one the build.
+    // (the client keeps its clock estimate fresh, 01 §1.6) and the overlay's current build, so a
+    // page whose template was upgraded reloads even if its stream outlived the upgrade.
     res.write(`: open ${Date.now()} ${o.template.build}\n\n`);
 
     const writer = createSseWriter(res);
     for (const env of backlog.envelopes) writer.send(env);
     const unsubscribe = o.channel.subscribe((env) => writer.send(env), () => res.end());
-    const heartbeat = setInterval(() => writer.comment(`hb ${Date.now()}`), heartbeatMs);
+    const heartbeat = setInterval(() => {
+      const build = overlays.currentBuild(params.slug);
+      writer.comment(build ? `hb ${Date.now()} ${build}` : `hb ${Date.now()}`);
+    }, heartbeatMs);
 
     let cleaned = false;
     const cleanup = () => {
@@ -174,17 +179,16 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     res.on('close', cleanup);
   }
 
+  // Only files the registry listed for this build, matched exactly: no stat of arbitrary paths, no
+  // links followed, and the same answer on case-insensitive disks (Windows, macOS) as on Linux.
   async function file({ res, params }) {
     const o = overlays.resolve(params.slug);
     const rel = params['*'];
-    const parts = rel.split('/');
-    const bad = !o?.template || params.build !== o.template.build ||
-      parts.some((p) => !p || p === '.' || p === '..' || /[\\:\0]/.test(p));
-    const full = bad ? null : path.join(o.template.dir, ...parts);
-    if (!full || !full.startsWith(o.template.dir + path.sep)) return notFound(res);
+    if (!o?.template || params.build !== o.template.build || !o.template.files.has(rel)) return notFound(res);
+    const full = path.join(o.template.dir, ...rel.split('/'));
+    if (!full.startsWith(o.template.dir + path.sep)) return notFound(res);
     let data;
     try {
-      if (!(await stat(full)).isFile()) return notFound(res);
       data = await readFile(full);
     } catch {
       return notFound(res);
@@ -194,6 +198,10 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'cache-control': IMMUTABLE,
       'content-type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
       'x-content-type-options': 'nosniff',
+      // A template's files are third-party content on the platform's origin. Loaded by the page they
+      // are subresources and this changes nothing; opened directly, an .html or .svg among them
+      // runs sandboxed, with no script and no origin (07 §7.1).
+      'content-security-policy': FILE_CSP,
     });
     res.end(data);
   }
