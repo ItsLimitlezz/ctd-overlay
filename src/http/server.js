@@ -9,7 +9,8 @@ const BASE_HEADERS = {
   'cache-control': 'no-store',
 };
 
-// Routes: { method, path: '/a/:param/b', handler({ req, res, params, url }) }.
+// Routes: { method, path: '/a/:param/b', handler({ req, res, params, url }) }. A final `*`
+// segment matches one or more remaining segments, joined with "/" in params['*'].
 export function createRouter(routes) {
   const compiled = routes.map((r) => ({ ...r, parts: r.path.split('/').slice(1) }));
   return {
@@ -29,11 +30,14 @@ export function createRouter(routes) {
 }
 
 function matchParts(parts, segments) {
-  if (parts.length !== segments.length) return null;
+  const rest = parts[parts.length - 1] === '*';
+  if (rest ? segments.length < parts.length : parts.length !== segments.length) return null;
   const params = {};
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    if (part.startsWith(':')) {
+    if (rest && i === parts.length - 1) {
+      params['*'] = segments.slice(i).join('/');
+    } else if (part.startsWith(':')) {
       if (!segments[i]) return null;
       params[part.slice(1)] = segments[i];
     } else if (part !== segments[i]) {

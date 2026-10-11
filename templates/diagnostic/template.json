@@ -1,0 +1,25 @@
+{
+  "standard": "skp/1",
+  "id": "dev.skp.diagnostic",
+  "name": "Diagnostic",
+  "version": "1.0.0",
+  "description": "Shows how this browser source is connected: stream or polling, events received, server clock and skew. Used to test the transport in OBS.",
+  "author": { "name": "CTD Overlay" },
+  "license": "GPL-2.0-or-later",
+  "category": "widget",
+  "tags": ["diagnostic", "test"],
+  "entry": "index.html",
+  "previews": ["previews/diagnostic.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Diagnostic", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "state": ["custom.*"],
+    "events": ["custom.*"]
+  }
+}

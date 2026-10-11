@@ -1,0 +1,29 @@
+html, body { margin: 0; background: transparent; }
+
+.diag {
+  position: absolute;
+  top: 40px;
+  left: 40px;
+  width: 560px;
+  padding: 20px 24px;
+  background: rgba(8, 7, 10, 0.82);
+  border: 2px solid #16e0ff;
+  color: #f2f0ea;
+  font: 22px/1.4 ui-monospace, Consolas, "Courier New", monospace;
+}
+
+header { display: flex; align-items: center; gap: 12px; font-size: 26px; margin-bottom: 12px; }
+
+.dot { width: 16px; height: 16px; border-radius: 50%; background: #8a8a8a; }
+.dot[data-state="stream"] { background: #36d67b; }
+.dot[data-state="poll"] { background: #ffb020; }
+.dot[data-state="offline"] { background: #ff2a2a; }
+
+dl { display: grid; grid-template-columns: 170px 1fr; margin: 0; row-gap: 4px; }
+dt { color: #8a8a8a; }
+dd { margin: 0; }
+
+/* A compositor-driven sweep: if it moves, the source is painting even when nothing else changes. */
+.track { position: relative; height: 6px; margin-top: 16px; overflow: hidden; background: rgba(255, 255, 255, 0.1); }
+.sweep { position: absolute; top: 0; left: 0; width: 20%; height: 100%; background: #16e0ff; animation: sweep 2s linear infinite; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(500%); } }

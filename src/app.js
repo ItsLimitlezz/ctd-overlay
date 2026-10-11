@@ -1,18 +1,22 @@
 // Starts the platform for a given configuration: data and config directories, crash log,
-// store (with migrations), HTTP server. Returns a handle with stop(). Installs no process-wide
-// handlers, so tests can run several instances.
+// store (with migrations), bus, templates, overlays and the HTTP server. Returns a handle with
+// stop(). Installs no process-wide handlers, so tests can run several instances.
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { createBus } from './bus/index.js';
 import { createCrashLog } from './crashlog.js';
 import { close, createHttpServer, listen } from './http/server.js';
+import { createOverlays } from './overlays/registry.js';
+import { overlayRoutes } from './overlays/routes.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
+import { createTemplateRegistry } from './templates/registry.js';
 
 export class StartupError extends Error {}
 
-export async function startPlatform(config, { log, routes = [] }) {
+// options.routes adds routes (tests); options.heartbeatMs shortens the SSE heartbeat (tests).
+export async function startPlatform(config, { log, routes = [], heartbeatMs } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
 
@@ -30,11 +34,19 @@ export async function startPlatform(config, { log, routes = [] }) {
   }
 
   const bus = createBus({ log: log.child('bus') });
-  const server = createHttpServer({ log: log.child('http'), crash, routes });
+  const templates = createTemplateRegistry({ log: log.child('templates') });
+  const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
+  const server = createHttpServer({
+    log: log.child('http'),
+    crash,
+    routes: [...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }), ...routes],
+  });
+
   let address;
   try {
     address = await listen(server, config.port, config.host);
   } catch (err) {
+    bus.close();
     store.close();
     if (err.code === 'EADDRINUSE') {
       throw new StartupError(
@@ -52,6 +64,8 @@ export async function startPlatform(config, { log, routes = [] }) {
     config,
     store,
     bus,
+    templates,
+    overlays,
     crash,
     server,
     port: address.port,

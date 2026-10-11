@@ -10,8 +10,19 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–2 of the plan: the server starts, checks its configuration, keeps its data in
-SQLite, and answers `/healthz`. Nothing renders yet; step 3 (the bus) is next.
+**Status:** steps 1–4 of the plan. The server keeps its data in SQLite, routes live data through
+the bus, and serves overlays to OBS browser sources over Server-Sent Events with a polling
+fallback. The only template so far is a built-in diagnostic one; step 5 (the template SDK) is next.
+
+## Try it in OBS
+
+```bash
+npm run diag
+```
+
+It starts a throwaway server on port 4949 with eight diagnostic overlays and prints their URLs.
+Add them to OBS as browser sources (1920 × 1080). Each shows whether it is streaming or polling,
+how many updates arrived, and the server clock.
 
 ## Run it
 

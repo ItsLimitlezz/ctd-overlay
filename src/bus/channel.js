@@ -19,6 +19,7 @@ export class Channel {
   #buffer = [];
   #droppedUpTo;
   #subs = new Set();
+  #closers = new Set();
   #local = new Map(); // channel-only state (overlay.settings, show.*), key → value
   #lastEmit = new Map(); // key → { at, json }
   #pending = new Map(); // key → { timer, value, src }
@@ -95,9 +96,15 @@ export class Channel {
     return { envelopes, cursor: envelopes.length ? envelopes[envelopes.length - 1].id : cursor };
   }
 
-  subscribe(fn) {
+  // fn gets each envelope; onClose runs if the channel goes away (the overlay was deleted), so a
+  // live stream can end instead of hanging silently.
+  subscribe(fn, onClose) {
     this.#subs.add(fn);
-    return () => this.#subs.delete(fn);
+    if (onClose) this.#closers.add(onClose);
+    return () => {
+      this.#subs.delete(fn);
+      if (onClose) this.#closers.delete(onClose);
+    };
   }
 
   get subscriberCount() { return this.#subs.size; }
@@ -108,6 +115,11 @@ export class Channel {
     for (const p of this.#pending.values()) this.#bus.timers.clearTimeout(p.timer);
     this.#pending.clear();
     this.#subs.clear();
+    const closers = [...this.#closers];
+    this.#closers.clear();
+    for (const fn of closers) {
+      try { fn(); } catch (err) { this.#bus.log.error('channel close handler failed', { channel: this.id, err }); }
+    }
   }
 
   #offerState(data, src, env) {
