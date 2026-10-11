@@ -77,7 +77,7 @@ vikkstar-event/
     { "id": "chipOpening","label": "Opening DJ chip","durationMs": 10000 }
   ],
 
-  "alerts": { "mode": "serial", "maxConcurrent": 1, "minDisplayMs": 4000, "gapMs": 600 },
+  "alerts": { "mode": "serial", "durationMs": 6000, "gapMs": 600 },
 
   "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@700;900"]
 }
@@ -178,8 +178,8 @@ SK.chat.onAdd(m => …); SK.chat.onRemove(id => …); SK.chat.onClear(() => …)
 SK.music.track()                  // Track or undefined
 SK.music.progress()               // interpolated ms
 
-// alerts: the runtime queues; the template renders one at a time
-SK.alerts.render(async (alert, el) => { … resolves when exit animation is done … })
+// alerts: the server queues and times them; the template fills in each one (05 §5.5)
+SK.alerts.render((alert, el) => { … })
 
 // animation lifecycle (see 05)
 SK.mount(el, { enter: 'rise', durationMs: 600 })
@@ -202,6 +202,13 @@ oldest OBS version the platform supports (10 §10.2).
 - The runtime sets `<html data-skp-canvas="h" data-skp-scene="program">` and scales a fixed
   stage of the canvas size to the viewport. Templates lay out in canvas pixels and never
   compute scaling themselves.
+- **Relative URLs.** The runtime serves the entry document at `/o/<slug>` and inserts, as the
+  first children of `<head>`, `<base href="/o/<slug>/t/<build>/">` and the SDK `<script>`.
+  Relative references in the entry document and its stylesheets therefore resolve to the pinned
+  template's files. `<build>` is at least 16 hex digits of the installed package's SHA-256: an
+  upgrade changes every file URL, so immutable caching never serves stale files (H14), and the
+  URLs can't be guessed without first loading the keyed page (07 §7.6). Templates **MUST** use
+  relative URLs for their own files and **MUST NOT** add a `<base>` of their own.
 - The page background **MUST** be transparent unless the active scene declares otherwise. OBS
   composites the overlay over the camera.
 - A template **MUST** render something sensible with empty data: before the snapshot, with no
@@ -245,12 +252,13 @@ Content-Security-Policy:
   media-src 'self' blob:;
   connect-src 'self';
   frame-ancestors 'self';
-  base-uri 'none';
+  base-uri 'self';
   form-action 'none'
 ```
 
 `connect-src 'self'` is what makes "templates never connect" enforceable: a template cannot
-fetch from a third party even if it tries. `img-src https:` exists because avatars, emotes and
+fetch from a third party even if it tries. `base-uri 'self'` allows the `<base>` the runtime
+inserts (§4.5). `img-src https:` exists because avatars, emotes and
 album art legitimately come from platform CDNs. Additional font hosts **MAY** be allowed only
 if listed in `fonts`.
 

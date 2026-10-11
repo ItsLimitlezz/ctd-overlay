@@ -31,6 +31,11 @@
         { "type": "object", "properties": { "recipients": { "type": "array", "items": { "type": "string" } }, "total": { "type": "integer" } } }
       ]
     },
-    "coalesced": { "type": "integer", "minimum": 1, "description": "Number of source events merged into this one (05 §5.5)." }
+    "coalesced": { "type": "integer", "minimum": 1, "description": "Number of source events merged into this one (05 §5.5)." },
+    "display": {
+      "type": "object", "required": ["startAt", "durationMs"],
+      "properties": { "startAt": { "type": "integer", "description": "Server epoch ms." }, "durationMs": { "type": "integer", "minimum": 0 } },
+      "description": "Display window added by the alert queue to alerts delivered to overlays (05 §5.5). Absent elsewhere."
+    }
   }
 }

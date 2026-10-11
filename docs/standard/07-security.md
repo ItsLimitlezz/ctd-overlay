@@ -32,7 +32,15 @@ There are **no default credentials**, ever.
 **Hashing.** Passwords **MUST** be hashed with a memory-hard KDF:
 - **scrypt** — N = 2¹⁷, r = 8, p = 1, 16-byte random salt, 32-byte output (available in the
   Node.js standard library, keeping the core dependency-free); or
-- **Argon2id** — m = 19 MiB, t = 2, p = 1, where a native implementation is acceptable.
+- **Argon2id** — m = 19 MiB, t = 2, p = 1, where the runtime provides it without an added
+  dependency (README decision 8).
+
+**One hash at a time.** scrypt at these parameters needs 128 MiB of working memory per call
+(`128 × N × r` bytes). The platform **MUST** run password hashing serially, in one queue for
+logins, password changes and setup, and answer `429` with `Retry-After` when more than 10
+requests are waiting. A burst of logins then can't exhaust memory on a small device (10 §10.2).
+In Node.js, pass `maxmem` above 128 MiB (160 MiB, say): the default limit of 32 MiB makes the
+call throw.
 
 Store `alg$params$salt$hash` so parameters can be raised later; rehash on next login when they
 change. Minimum length 12, maximum 256; check against a bundled list of common passwords; no
@@ -84,7 +92,13 @@ last-used timestamp. A token can never exceed its creator's role.
 OBS browser sources can't log in, so overlays use capability URLs.
 
 - `skp_ovl_` + 24 random bytes, one per overlay.
-- Grants read access to that overlay's page, assets, snapshot and stream — nothing else.
+- Grants read access to that overlay's page, snapshot, stream and poll — nothing else.
+- **Files are not behind the key.** An OBS browser source requests template files and images as
+  plain URLs, which can't carry `?key=`. So template files (`/o/<slug>/t/<build>/…`, 04 §4.5)
+  and uploaded media (`/media/<fileId>/…`) are served without it. Their paths protect them:
+  `<build>` carries at least 64 bits of the package hash and `fileId` at least 128 random bits,
+  and only the keyed page or an authenticated API call reveals either. They hold design files
+  and media, never live data or credentials.
 - Stored encrypted (not hashed), because the UI must be able to show the URL again for copying.
 - Rotating it is explicit and warns that OBS sources must be updated.
 - Overlay responses send `Referrer-Policy: no-referrer`; the platform **MUST** redact `key=`

@@ -82,30 +82,52 @@ The runtime plays the video over both scenes and swaps them at `cutAtMs`.
 
 ## 5.5 Alert queue
 
-Alerts arrive in bursts (a gift of 50 subs is 51 events). The runtime — not the template —
-queues them per overlay according to the manifest:
+Alerts arrive in bursts (a gift of 50 subs is 51 events). The **server** queues them: one queue
+per show, so every member overlay shows the same alert at the same moment, or one per overlay
+outside a show. Neither the template nor the browser queues alerts. A queue in the browser can't
+be paused from the admin UI, and two of them on two machines drift apart.
+
+The queue follows each template's `alerts` manifest settings. For a show, it paces to the
+longest `durationMs` among the members that consume the alert.
 
 | `alerts` field | Meaning | Default |
 |---|---|---|
 | `mode` | `serial` (one at a time) or `stack` (several visible) | `serial` |
 | `maxConcurrent` | for `stack` | 3 |
-| `minDisplayMs` | minimum time on screen | 4000 |
+| `durationMs` | time one alert is on screen, from the start of its enter to the end of its exit | 6000 |
+| `durationSetting` | name of a numeric setting (ms) that overrides `durationMs`, so users can tune the hold; clamped to 1000–60000 | — |
 | `gapMs` | pause between alerts | 500 |
 | `maxQueue` | alerts held before the oldest low-priority ones are dropped | 50 |
 | `coalesce` | merge a gift burst into one `alert.gift` with the total | `true` |
 
 Priority, highest first: `raid`, `superchat`/`tip`, `gift`, `subscription`, `membership`,
-`cheer`/`kicks`, `follow`. The operator can pause, skip and replay alerts from the admin UI.
+`cheer`/`kicks`, `follow`.
+
+When an alert's turn comes, the queue gives it a `display` window (`startAt`, `durationMs`) in
+server time and delivers it to the overlays (02 §2.4). The runtime then:
+1. at `startAt`, creates the alert element, calls the template's renderer to fill it, and mounts
+   it in `enter`. If the renderer returns a promise (to decode an avatar, say), the runtime
+   mounts when it resolves or after 250 ms, whichever comes first;
+2. at `startAt + durationMs` minus the element's exit duration, unmounts it, whether or not the
+   renderer has finished;
+3. handles lateness like any trigger (§5.3): a late arrival starts at an offset, and one whose
+   window has passed is dropped.
+
+The operator can pause and resume the queue, skip the alert on screen, and replay the last one,
+from the admin UI or the API (03 §3.4). A skip publishes `alerts.cut`, and the runtime unmounts
+that alert at once.
 
 The template supplies only the renderer:
 
 ```js
-SK.alerts.render(async (alert, el) => {
-  el.innerHTML = `<b>${alert.user.name}</b> ${verb(alert)}`;
-  await SK.mount(el, { durationMs: 600 });
-  await wait(Math.max(SK.settings.alertHoldMs, 4000));
-  await SK.unmount(el);
+SK.alerts.render((alert, el) => {
+  el.className = 'alert alert--' + alert.kind;
+  el.textContent = alert.user.name + ' ' + verb(alert);
 });
+```
+```css
+.alert[data-skp-state="enter"] { animation: rise .6s cubic-bezier(.2,.7,.2,1) both; }
+.alert[data-skp-state="exit"]  { animation: drop .45s ease-in both; }
 ```
 
 ## 5.6 Chat animation

@@ -54,15 +54,16 @@ decode; the clip silently didn't play. Convert to H.264 MP4 and bake in rotation
 **H13 · Phones get lite previews, loaded on tap.** *Why:* two live overlay iframes with blur and
 grain exhausted iOS Safari's GPU memory and crash-looped the control page. *(05 §5.8, 08 §8.3)*
 
-**H14 · Beat OBS's cache.** App files are `no-store`; template assets are versioned and immutable.
+**H14 · Beat OBS's cache.** App files are `no-store`; template files and media live at paths
+that change with their content, and are immutable.
 *Why:* OBS kept serving stale overlay code after updates. *(03 §3.4)*
 
 **H15 · Setup lives on the server.** *Why:* v0 kept the setup in browser storage; switching from
 the LAN address to the public one, or to a phone, showed an empty kit and the night's lineup had
 to be re-entered. *(01 §1.2)*
 
-**H16 · Concurrent edits are detected, not lost.** ETags and `If-Match` on every mutable
-resource. *Why:* an initial page load pushed its stale copy over a newer server copy and erased
+**H16 · Concurrent edits are detected, not lost.** Every mutable resource has an ETag, and the
+admin UI sends `If-Match` on every edit. *Why:* an initial page load pushed its stale copy over a newer server copy and erased
 an operator's work. *(03 §3.1)*
 
 **H17 · UI tolerates missing optional elements.** Pages initialize defensively — a field moved to
@@ -74,7 +75,8 @@ retrying a YouTube `quotaExceeded` as if it were a rate limit has consumed whole
 other streaming tools. *(06 §6.7)*
 
 **H19 · Test against the clock.** Every scheduled behaviour is tested by setting it a few minutes
-ahead and watching it fire on a running server, not only by unit tests. *Why:* v0's time bugs
+ahead and watching it fire on a running server, not only by unit tests. The time rules are also
+tested across a daylight-saving change (09 §9.2). *Why:* v0's time bugs
 (after-midnight, grace window, timezone) all passed reasoning and failed reality until tested this
 way.
 

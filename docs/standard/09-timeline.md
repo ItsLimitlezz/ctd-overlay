@@ -38,6 +38,12 @@ All schedule times are converted once, server-side, to absolute instants using t
 `timezone` (IANA name). Clients receive instants; they never re-interpret wall-clock strings, so
 an operator's phone in another timezone shows correct countdowns.
 
+**Clock changes.** A wall-clock time that doesn't exist in the show's timezone (skipped when the
+clocks go forward) moves forward by the length of the gap: `02:30` on a spring-forward night
+becomes `03:30`. A time that happens twice (when the clocks go back) means the first occurrence.
+This is the `compatible` disambiguation of ECMAScript Temporal. The admin UI **MUST** flag any
+lineup time or cue that falls in a gap or an overlap and show the instant it resolved to.
+
 ## 9.3 Cues
 
 ```json

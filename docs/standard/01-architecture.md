@@ -49,11 +49,14 @@ Owns all live data. It **MUST**:
 - route **events** to subscribers filtered by what each overlay's template declared it consumes;
 - keep a short **replay buffer** per overlay so a reconnecting client resumes without gaps
   (see §1.5);
-- stamp every message with server time.
+- stamp every message with server time;
+- run the **alert queue**: order, pace and time alerts per show, or per overlay outside a show
+  (05 §5.5).
 
 ### Overlay runtime
 Serves an overlay's page, injects the runtime SDK, delivers that overlay's data, manages scene
-changes, alert queues and animation lifecycle, and hands the template only what it declared.
+changes and animation lifecycle, shows queued alerts at the times the bus assigns, and hands the
+template only what it declared.
 Specified in [04-templates.md](04-templates.md) and [05-animation.md](05-animation.md).
 
 ### Admin UI
@@ -123,8 +126,17 @@ poll rather than to a dead source.
 Client behaviour (implemented by the runtime SDK, not by templates):
 1. Fetch the snapshot. Render.
 2. Open the stream with `Last-Event-ID` = snapshot cursor.
-3. If the stream fails twice within 30 s, switch to polling every 700 ms (1500 ms in lite mode)
-   and retry the stream every 60 s.
+3. Count the stream as **failed** when it errors, or when it hasn't opened within **5 s**. After
+   two failures within 30 s, switch to polling every 700 ms (1500 ms in lite mode) and retry the
+   stream every 60 s.
+
+**Connection budget.** Over HTTP/1.1, Chromium-based browsers, OBS's included, keep at most six
+connections open per host, and each open stream holds one. When browser sources share a
+connection pool, a seventh overlay's stream waits in the browser's queue and never fails; the
+5 s open timeout in step 3 is what moves it to polling. Polls are short requests and share the
+remaining connections. HTTP/2 (over TLS) removes the limit. Over plain HTTP the platform
+**SHOULD** warn on the dashboard when more than five overlay streams are open from one client
+address, and implementations **SHOULD** be tested with eight overlay sources in one OBS instance.
 
 The server **MUST** keep each overlay's replay buffer for at least **120 seconds or 500
 messages**, whichever is larger. If a cursor is older than the buffer, the server responds

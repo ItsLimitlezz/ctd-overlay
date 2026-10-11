@@ -134,7 +134,11 @@ Type: `alert.<kind>` · Common payload:
 Money amounts **MUST** carry an ISO 4217 `currency` and a decimal `value` as a string
 (`"5.00"`), never a float. The platform **MUST NOT** convert currencies.
 
-Alerts are queued by the runtime per overlay, never by the template — see 05 §5.5.
+Alerts are queued on the server, per show (or per overlay outside a show), never by the template
+or the browser — see 05 §5.5. When the queue releases an alert to an overlay it adds
+`"display": { "startAt": …, "durationMs": … }` in server time, so every member of a show shows it
+at the same moment. Alerts read through `GET /api/v1/events` or webhooks arrive as they happen,
+without `display`.
 
 ## 2.5 State keys
 
@@ -175,6 +179,7 @@ progress locally between updates; templates read `SK.music.progress()` and never
 | `state.changed` | §2.2 |
 | `chat.message`, `chat.message.deleted`, `chat.user.cleared`, `chat.cleared` | §2.3 |
 | `alert.<kind>` | §2.4 |
+| `alerts.cut` | `{ "alertId": "…" }` — end that alert now (an operator skip, 05 §5.5). Delivered to every overlay that consumes `alert.*`. |
 | `show.scene.changed` | `{ "scene": "brb", "prev": "program", "transition": "cut" }` |
 | `show.trigger` | `{ "name": "titleCard", "args": { }, "startAt": 1791582412000, "durationMs": 7000 }` |
 | `show.cue.fired` | `{ "cueId": "cue_…", "action": "…" }` |

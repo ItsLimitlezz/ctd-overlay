@@ -14,7 +14,7 @@ admin API: anything the UI can do, an authorized client can do.
 | Time | ISO 8601 UTC in resource bodies (`2026-08-29T05:00:00Z`); epoch ms only in live envelopes. |
 | Names | `camelCase` fields; plural resource paths. |
 | Pagination | Cursor based: `?limit=50&cursor=…` → `{ "items": [], "next": "…" }`. Max limit 200. |
-| Concurrency | Mutable resources return `ETag`. `PATCH`/`PUT` **MUST** accept `If-Match`; a stale tag returns `412`. Two operators editing one overlay can't silently overwrite each other. |
+| Concurrency | Mutable resources return `ETag`. Requests authenticated by session (the admin UI) **MUST** send `If-Match` on `PATCH` and `PUT`: without it the platform answers `428`, and with a stale tag `412`. Token-authenticated clients **SHOULD** send it and **MAY** omit it, accepting last-write-wins. Commands (taking a scene, firing actions, triggers and cue overrides, alert queue controls) take no `If-Match`. Two operators editing one overlay can't silently overwrite each other. |
 | Idempotency | `POST` accepts `Idempotency-Key`; a repeat within 24 h returns the original result. Required for anything a hardware button might fire twice. |
 
 ## 3.2 Errors
@@ -85,6 +85,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `PUT /overlays/{id}/scene` | `{ "scene": "brb", "transition": "fade" }` |
 | `POST /overlays/{id}/actions/{name}` | Fire a template action (04 §4.6) |
 | `POST /overlays/{id}/simulate` | Inject sample events into this overlay only (08 §8.5) |
+| `GET /overlays/{id}/alerts` · `POST /overlays/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | Alert queue of an overlay outside a show (05 §5.5) |
 
 ### Shows & timeline
 | Method · Path | Purpose |
@@ -92,6 +93,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
+| `GET /shows/{id}/alerts` · `POST /shows/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | The show's alert queue (05 §5.5) |
 | `GET/POST /shows/{id}/cues` · `PATCH/DELETE /shows/{id}/cues/{cueId}` | Timeline |
 | `POST /shows/{id}/cues/{cueId}/fire` · `/skip` · `/rearm` | Operator overrides |
 | `POST /shows/{id}/cues/build` | Regenerate cues from the lineup (09 §9.5) |
@@ -125,16 +127,18 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `POST /system/backup` · `POST /system/restore` | Export/import (10 §10.7) |
 | `GET /system/audit` | Audit log (owner/admin) |
 
-### Overlay-facing (overlay key)
-| Path | Purpose |
-|---|---|
-| `GET /o/{slug}` | The overlay page |
-| `GET /o/{slug}/snapshot` · `/stream` · `/poll` | Live data (01 §1.5) |
-| `GET /o/{slug}/t/*` | The pinned template version's static assets |
-| `GET /sdk/v1/sk.js` | The runtime SDK |
+### Overlay-facing
+| Path | Overlay key | Purpose |
+|---|---|---|
+| `GET /o/{slug}` | required | The overlay page |
+| `GET /o/{slug}/snapshot` · `/stream` · `/poll` | required | Live data (01 §1.5) |
+| `GET /o/{slug}/t/{build}/*` | no | The pinned template version's files (04 §4.5) |
+| `GET /media/{fileId}/{name}` | no | Uploaded media that settings or `media.play` point to (07 §7.6) |
+| `GET /sdk/v1/sk.js` | no | The runtime SDK |
 
-These responses send `Referrer-Policy: no-referrer` and `Cache-Control: no-store` (except
-versioned assets, which are immutable and cacheable).
+These responses send `Referrer-Policy: no-referrer`. Template files and media never change at a
+given URL, so they send `Cache-Control: public, max-age=31536000, immutable`. Everything else
+sends `Cache-Control: no-store`.
 
 ## 3.5 Rate limits
 

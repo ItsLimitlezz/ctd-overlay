@@ -1,6 +1,6 @@
 # Stream Kit Platform Standard (SKP) — v1.0 draft
 
-**Status:** Draft · **Date:** 2026-10-09 · **Identifier:** `skp/1`
+**Status:** Draft · **Date:** 2026-10-10 · **Identifier:** `skp/1` · [Changes](#changes)
 
 A specification for a self-hosted live-stream overlay platform: a server that connects to
 streaming platforms and OBS, normalizes everything into one data model, and serves styled
@@ -83,9 +83,11 @@ These are settled. An implementation that departs from one is not SKP-conformant
 6. **Never show a wrong number.** Missing or failed data hides; only real data renders. *(02)*
 7. **Single tenant, multiple users.** One installation serves one streamer or crew, with
    role-based accounts. Multi-tenant hosting is out of scope for v1.
-8. **No native dependencies in the core.** So it ships as a single executable on macOS and
-   Linux and a small multi-arch image for TrueNAS. Media transcoding uses an external ffmpeg
-   when present and is reported as unavailable when not. *(10)*
+8. **No runtime dependencies in the core.** The core runs on its runtime's standard library
+   alone: no npm packages at runtime, native or not. Development tools (bundler, test runner,
+   linters) are fine. So it ships as a single executable on macOS and Linux and a small
+   multi-arch image for TrueNAS. Media transcoding uses an external ffmpeg when present and is
+   reported as unavailable when not. *(10)*
 
 ---
 
@@ -117,3 +119,26 @@ These are settled. An implementation that departs from one is not SKP-conformant
 | **State** | A current value (viewer count, now playing, active scene). Snapshot-able. |
 | **Bus** | The in-process router that carries events and state from connectors to overlays. |
 | **Overlay key** | A per-overlay, read-only capability token that lets OBS load an overlay without logging in. |
+
+---
+
+## Changes
+
+**2026-10-10.** Fixes from the first implementation review:
+
+1. Template files load from `/o/<slug>/t/<build>/` through a `<base>` the runtime inserts, with
+   `<build>` taken from the package hash. Template files and media are served without the
+   overlay key. *(03 §3.4, 04 §4.5, §4.8, 07 §7.6, H14)*
+2. A live stream that hasn't opened within 5 s counts as failed, so an overlay stuck behind the
+   browser's per-host connection limit falls back to polling. *(01 §1.5)*
+3. Password hashing runs one call at a time, with scrypt's memory limit raised. *(07 §7.3,
+   10 §10.2)*
+4. The alert queue runs on the server, one per show, and gives each alert a display window, so
+   every member overlay shows it together and the operator can pause, skip and replay it.
+   *(01 §1.2, 02 §2.4, §2.6, 03 §3.4, 04 §4.2, §4.4, 05 §5.5, schemas)*
+5. Lineup times that fall in a daylight-saving gap or overlap have a defined meaning, and are
+   tested. *(09 §9.2, H19)*
+6. Decision 8 is now "no runtime dependencies in the core". *(README, 06 §6.7, 07 §7.3)*
+7. The admin UI must send `If-Match` on edits; token clients may omit it. *(03 §3.1, H16)*
+
+**2026-10-09.** v1.0 draft.

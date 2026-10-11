@@ -28,7 +28,8 @@ hardcode `/`, and keep native dependencies out of the core (README decision 8).
   image. Without it, `GET /system/info` reports `ffmpeg: false` and uploads are stored as-is
   with a warning that HEVC clips will not play in OBS.
 - Footprint target: under 150 MB RAM idle with 10 overlays and 4 connections; runs on a
-  Raspberry Pi 4–class device or a low-end NAS.
+  Raspberry Pi 4–class device or a low-end NAS. A password hash adds up to 128 MiB while it runs,
+  which is why hashing is serialized (07 §7.3).
 
 ## 10.3 Container image
 

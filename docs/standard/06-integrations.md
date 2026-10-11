@@ -190,8 +190,10 @@ unit. The connector **MUST**:
 `snippet.liveChatId`. Re-check every 5 minutes while not live; stop when live.
 
 **Chat:** prefer `liveChatMessages.streamList` — a server-streaming connection Google
-recommends for low latency and quota efficiency. Fall back to `liveChatMessages.list`, honouring
-the returned `pollingIntervalMillis` and `nextPageToken` exactly; never poll faster. The quota
+recommends for low latency and quota efficiency — when the runtime's standard library can consume
+it (README decision 8). Confirm its transport before relying on it. Otherwise, and as the
+fallback, use `liveChatMessages.list`, honouring the returned `pollingIntervalMillis` and
+`nextPageToken` exactly; never poll faster. The quota
 cost of `streamList` was not documented at verification time; measure it in the Cloud Console
 before release and record it here.
 
