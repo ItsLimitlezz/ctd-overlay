@@ -21,9 +21,17 @@ vikkstar-event/
 └── LICENSE
 ```
 
-- Total size **MUST NOT** exceed 100 MiB; a single file 50 MiB.
-- Paths are relative, lowercase recommended, no `..`, no absolute paths, no symlinks. The
-  platform **MUST** reject archives violating this (zip-slip protection).
+- The archive and its files uncompressed **MUST NOT** each exceed 100 MiB; a single file 50 MiB
+  uncompressed. Files use store or deflate; encrypted entries, ZIP64 and multi-part archives are
+  refused, as are files that expand more than 100 times (above 1 MiB: zip bombs).
+- Paths are relative, lowercase recommended, no `..`, no absolute paths, no symlinks. They
+  **MUST** be portable: no Windows-reserved names (`con`, `nul`, `com1`…) or characters
+  (`< > : " | ? *`), no name ending in a dot or space, and no two paths that differ only in case
+  or Unicode normalization. The platform **MUST** reject archives violating this (zip-slip
+  protection).
+- `template.json` sits at the archive's root, or inside one top-level folder (as drawn above),
+  which is not part of the package's paths. Desktop clutter (`__MACOSX/`, `.DS_Store`, `._*`,
+  `Thumbs.db`, `desktop.ini`) is ignored.
 - Everything the template loads at runtime **MUST** be inside the package, except the images
   the data itself points to (avatars, emotes, album art) and fonts from allowed hosts (§4.8).
 
@@ -84,17 +92,24 @@ vikkstar-event/
 ```
 
 ### Field rules
-- `id` — reverse-DNS, globally unique, immutable for the life of the template.
-- `version` — SemVer. A **major** bump means existing overlays' settings may not migrate
-  automatically (§4.10).
+- `id` — reverse-DNS, globally unique, immutable for the life of the template; at most 100
+  characters. The ids of templates that ship with the platform are reserved.
+- `version` — strict SemVer 2.0.0 (no leading zeros, no build metadata, at most 64 characters).
+  A **major** bump means existing overlays' settings may not migrate automatically (§4.10).
 - `category` — one of `show` (multi-scene package), `chat`, `alerts`, `now-playing`,
   `lower-third`, `background`, `ticker`, `goal`, `scoreboard`, `widget`.
 - `scenes[].core` — maps the scene to a **core scene** so shows, timelines and buttons work
   across templates: `auto`, `starting`, `program`, `brb`, `lineup`, `outro`, `bg`, `intro`. A
-  scene without `core` is a template **extra** (e.g. `headliner`). A `show`-category template
-  **MUST** provide `starting`, `program`, `brb` and `outro`; it **SHOULD** provide all eight.
-- `scenes[].then` + `durationMs` — a timed scene that returns automatically. The **server**
-  performs the return (09 §9.3), so it happens even if no browser is watching.
+  scene without `core` is a template **extra** (e.g. `headliner`). A core is mapped by at most
+  one scene. A `show`-category template **MUST** provide `starting`, `program`, `brb` and
+  `outro`; it **SHOULD** provide all eight.
+- `scenes[].then` + `durationMs` — a timed scene that returns automatically, to a scene id or a
+  core of the same template (not itself, and not around a loop of zero-length scenes). The
+  **server** performs the return (09 §9.3), so it happens even if no browser is watching.
+- Scene, action, canvas and transition ids are unique; the transition ids `cut` and `fade` are
+  the runtime's own.
+- `alerts.durationSetting` names a number or integer setting; if it names none, the runtime uses
+  `alerts.durationMs` (a validation warning).
 - `consumes` — least privilege. The runtime delivers only matching state keys and event types;
   everything else never leaves the server. Wildcards: `alert.*`, `show.*`.
 - `chat.recent` — how many buffered messages the snapshot includes (0–200). `chat.max` — the
@@ -125,8 +140,23 @@ UI generates the form from it — templates never ship their own settings UI.
 ```
 
 Supported: `string`, `number`, `integer`, `boolean`, `enum`, `array` of primitives, nested
-`object` (rendered as a group), `default`, `minimum`/`maximum`, `maxLength`, `pattern`,
-`format: color | uri | date | time`.
+`object` (rendered as a group), `default`, `minimum`/`maximum`, `minLength`/`maxLength`,
+`pattern`, `minItems`/`maxItems`/`uniqueItems`, `additionalProperties: false`, `title`,
+`description`, `examples`, `$ref` to the manifest's own `definitions`, and
+`format: color | uri | date | time`. Anything else (combinators, conditionals, `const`,
+`required`, `multipleOf`…) is refused, because the generated form couldn't show it. Further:
+
+- Every field declares exactly one `type`. Names are like identifiers (`^[A-Za-z][A-Za-z0-9_]*$`).
+- Groups nest at most 3 deep and carry no `default` of their own; their fields do.
+- Formats mean what a form writes: `color` is `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`;
+  `date` is `YYYY-MM-DD`; `time` is `HH:MM` or `HH:MM:SS` local time (the show's time zone, no
+  offset); `uri` is an absolute `http(s)` URL.
+- A `pattern` is at most 200 characters and may not repeat a repeating group without bound;
+  values longer than 4096 characters are refused before any pattern runs.
+- A template with no settings schema has no settings.
+- The platform stores the values the operator set; what the template receives is the
+  resolution: per field, the saved value if it is valid, else the `x-skp-bind` state value if
+  present and valid, else the `default`.
 
 Extensions (`x-skp-*`):
 
@@ -135,9 +165,11 @@ Extensions (`x-skp-*`):
 | `x-skp-widget` | `color`, `font`, `media`, `position`, `size`, `slider`, `textarea`, `code` |
 | `x-skp-labels` | Display labels for `enum` values |
 | `x-skp-group` | Groups fields into a collapsible section |
-| `x-skp-bind` | Default the value from a state key (still overridable) |
+| `x-skp-bind` | Default the value from a state key (still overridable). The key **MUST** be one `consumes.state` declares |
 | `x-skp-showIf` | `{ "field": "showPoster", "equals": true }` conditional display |
 | `x-skp-preview` | `"live"` — update the preview on every keystroke instead of on blur |
+| `x-skp-axis` | `"x"` or `"y"`, for a `position` widget |
+| `x-skp-accept` | Accepted media types for a `media` widget, e.g. `"image/*"` |
 
 Design tokens are just settings: a template that exposes `accent`, `fontDisplay` and `radius`
 lets a user restyle it without code.
@@ -205,10 +237,13 @@ oldest OBS version the platform supports (10 §10.2).
 - **Relative URLs.** The runtime serves the entry document at `/o/<slug>` and inserts, as the
   first children of `<head>`, `<base href="/o/<slug>/t/<build>/">` and the SDK `<script>`.
   Relative references in the entry document and its stylesheets therefore resolve to the pinned
-  template's files. `<build>` is at least 16 hex digits of the installed package's SHA-256: an
-  upgrade changes every file URL, so immutable caching never serves stale files (H14), and the
-  URLs can't be guessed without first loading the keyed page (07 §7.6). Templates **MUST** use
-  relative URLs for their own files and **MUST NOT** add a `<base>` of their own.
+  template's files. `<build>` is at least 16 hex digits of a SHA-256 over the package's files
+  (each path, sorted, with the SHA-256 of its content), so the same content has the same build
+  whether it ships with the platform or was installed, on every OS. An upgrade changes every
+  file URL, so immutable caching never serves stale files (H14), and the URLs can't be guessed
+  without first loading the keyed page (07 §7.6). Only the package's own files are served
+  there, matched exactly (case included). Templates **MUST** use relative URLs for their own
+  files and **MUST NOT** add a `<base>` of their own.
 - The page background **MUST** be transparent unless the active scene declares otherwise. OBS
   composites the overlay over the camera.
 - A template **MUST** render something sensible with empty data: before the snapshot, with no
@@ -268,6 +303,11 @@ Overlay endpoints authorize by key, not cookie, and answer `GET` with
 `Access-Control-Allow-Origin: *`, which is what lets the opaque-origin preview still stream
 data.
 
+A template's files (`/o/<slug>/t/<build>/*`) are served with a sandboxing CSP
+(`sandbox; default-src 'none'; …`): loaded by the overlay page they are subresources and it
+changes nothing, but a package's own `.html` or `.svg` opened directly runs with no script and no
+origin on the platform's host.
+
 A template **MUST NOT** receive tokens, credentials, other overlays' data, or any state key it
 did not declare.
 
@@ -281,12 +321,21 @@ include them.
 
 ## 4.10 Versioning and migration
 
-- Overlays pin `id@version`. Installing a newer version never changes running overlays.
-- `POST /overlays/{id}/upgrade` migrates settings: unchanged keys copy over, removed keys drop,
-  new keys take defaults. A template **MAY** ship `migrate.js` exporting
-  `migrate(fromVersion, settings) → settings` for renames; it runs server-side in an isolated
-  context with no I/O.
-- Across a **major** version the UI **MUST** show what will change before upgrading.
+- Overlays pin `id@version`. Installing a newer version never changes running overlays, and an
+  installed `id@version` never changes: installing the same bytes again does nothing, other
+  bytes with the same version are refused. A version that ships with the platform and is pinned
+  by an overlay is kept even after a platform release drops it.
+- `POST /overlays/{id}/upgrade` moves an overlay to a **newer** installed version of the same
+  template and migrates settings: unchanged keys copy over, removed keys drop, values the new
+  version no longer accepts drop, and new keys take defaults. A dry run returns the plan first.
+- A template **MAY** ship `migrate.js` for renames: a classic script defining
+  `migrate(fromVersion, settings) → settings` (`export function migrate` or
+  `export default function` is accepted), with no imports, synchronous, receiving the stored
+  values and returning an object. It runs server-side in an isolated context with no I/O.
+  It runs on its own only for templates that ship with the platform; for an installed package
+  it runs only when the operator allows it for that upgrade.
+- Across a **major** version the UI **MUST** show what will change before upgrading. Under
+  1.0.0 a minor version counts as major, and so does any move involving a prerelease.
 
 ## 4.11 Validation
 
@@ -295,6 +344,14 @@ the schema; `standard` is supported; every referenced file exists; previews exis
 escapes; scene and action IDs unique; `show` templates provide the required core scenes; the
 entry renders without throwing under `?mock=1` in a headless check when available. Errors
 block install; warnings (e.g. a missing `bg` scene) are shown.
+
+The result is a list of findings `{ level, code, path, message }`: `level` is `error` or
+`warning`, `path` a file in the package or a JSON pointer into `template.json`, and `message`
+says what is wrong and what to do. When no headless browser is available the result says the
+check was skipped. Beyond the list above, the platform also checks: strict SemVer; core scenes
+mapped once; `then` targets and zero-length loops; `consumes` patterns; `https` fonts and an
+`http(s)` `author.url`; the settings schema (§4.3); that `migrate.js` compiles; and that the
+entry has no `<base>`.
 
 ## 4.12 A minimal template
 

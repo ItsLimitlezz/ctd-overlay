@@ -104,9 +104,10 @@ test('settings schemas are checked at install; a binding must be to a declared k
 });
 
 test('strict SemVer, length limits, layout and duplicate core scenes', () => {
-  assert.deepEqual(codes(check({ manifest: { version: '1.02.0' } })), ['version-invalid /version']);
+  // The manifest schema's own pattern and lengths catch these (template.schema.json).
+  assert.deepEqual(codes(check({ manifest: { version: '1.02.0' } })), ['manifest-invalid /version']);
   assert.deepEqual(check({ manifest: { version: '1.2.0-rc.1' } }).errors, []);
-  assert.deepEqual(codes(check({ manifest: { id: `dev.skp.${'x'.repeat(100)}` } })), ['id-too-long /id']);
+  assert.deepEqual(codes(check({ manifest: { id: `dev.skp.${'x'.repeat(100)}` } })), ['manifest-invalid /id']);
   assert.deepEqual(codes(check({ manifest: { author: { name: 'x', url: 'ftp://x.example' } } })), ['author-url /author/url']);
   assert.deepEqual(codes(check({ manifest: { scenes: [{ id: 'a', label: 'A', core: 'program' }, { id: 'b', label: 'B', core: 'program' }] } })), ['duplicate-core /scenes/1/core']);
   const nested = writeZip(packageFromDir(DIAG_DIR).names.map((n) => ({ name: `outer/inner/${n}`, data: packageFromDir(DIAG_DIR).read(n) })));

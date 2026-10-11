@@ -124,6 +124,33 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-11.** From building template packages (plan step 6):
+
+1. Package format: the 100 MiB limit applies to the archive and to its files uncompressed;
+   store or deflate only; a 100:1 expansion cap above 1 MiB; portable paths only; `template.json`
+   at the root or inside one top folder; desktop clutter ignored. *(04 §4.1)*
+2. `id` at most 100 characters, `version` strict SemVer (no leading zeros) at most 64; a core
+   scene mapped once; `then` names a scene id or core; `cut` and `fade` reserved as transition
+   ids; ids of templates shipped with the platform reserved. *(04 §4.2, template.schema.json)*
+3. The settings subset is spelled out (keywords, one type per field, identifier-like names,
+   groups at most 3 deep without defaults, formats, pattern limits); a template without a
+   settings schema has no settings; bound keys must be declared; stored values are the
+   operator's, `SK.settings` the resolution. `show.headliner` is registered for the §4.3
+   example's binding. *(04 §4.3, 02 §2.5)*
+4. `<build>` hashes the package's files (path and content digest each), the same bundled or
+   installed. Template files are served only as listed, with a sandboxing CSP.
+   *(04 §4.5, §4.8, 07 §7.10)*
+5. Installed versions never change; pinned versions that ship with the platform are kept; an
+   upgrade goes to a newer version, with a dry run, a confirmation across a major version (0.y
+   minors and prereleases included), and an installed package's `migrate.js` only on the
+   operator's say-so; `migrate.js` is a classic script. *(04 §4.10, 03 §3.4)*
+6. Validation findings are `{ level, code, path, message }`, with the added checks listed.
+   *(04 §4.11)*
+7. `tpl_` IDs dropped (templates use their manifest id); `DELETE /templates/{id}?version=`.
+   *(03 §3.1, §3.4)*
+8. alert.schema.json: an `amount` without `unit` no longer requires `currency`.
+9. Installed templates' layout on disk, and one process per data directory. *(10 §10.6)*
+
 **2026-10-11.** From building the runtime SDK (plan step 5):
 
 1. `canvas` selects a canvas by its `id` or by `<w>x<h>`. *(01 §1.4)*

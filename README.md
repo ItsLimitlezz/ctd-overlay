@@ -10,12 +10,13 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–5 of the plan. The server keeps its data in SQLite, routes live data through
+**Status:** steps 1–6 of the plan. The server keeps its data in SQLite, routes live data through
 the bus, and serves overlays to OBS browser sources over Server-Sent Events with a polling
 fallback. Every overlay page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)):
 the server clock, state and events, scenes and transitions, element lifecycle on deadlines,
-actions, alerts, chat and music helpers, and a mock show (`?mock=1`). The only template so far is
-a built-in diagnostic one; step 6 (template packages) is next.
+actions, alerts, chat and music helpers, and a mock show (`?mock=1`). Templates install from
+`.skp` packages, with validation, settings and upgrades (below). The only bundled template so
+far is a diagnostic one; step 7 (media) is next.
 
 ## Try it in OBS
 
@@ -45,3 +46,25 @@ the same names as flags (`--port 5000`), or `config.json` in the config folder.
 ```bash
 npm test
 ```
+
+## Templates
+
+A template is a folder with a `template.json` ([04](docs/standard/04-templates.md)); a package is
+that folder zipped as `.skp`. Until the admin UI arrives, the command line handles them (with the
+platform stopped, for the commands that change its data):
+
+```bash
+npm run skp -- template validate path/to/template-folder
+```
+
+```bash
+npm run skp -- template pack path/to/template-folder -o my-template.skp
+```
+
+```bash
+npm run skp -- template install my-template.skp
+```
+
+`template list` and `template uninstall <id>[@<version>]` do what they say, and
+`overlay upgrade <slug> --to <version> [--dry-run] [--yes]` moves an overlay to a newer version of
+its template; its OBS URL never changes.

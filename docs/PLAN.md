@@ -75,7 +75,9 @@ option that keeps a live show running with nobody touching it.
    window surviving a reload (steps 9 and 19).
 6. **Template packages.** Zip reader on `node:zlib` with zip-slip and zip-bomb guards, manifest
    validation, install/validate/uninstall, build hash, settings resolution and upgrade migration
-   (04 §4.1–4.3, §4.10, §4.11).
+   (04 §4.1–4.3, §4.10, §4.11). Through a CLI for now (the HTTP routes need auth: steps 11–13).
+   Deferred: live re-resolution of `x-skp-bind` settings (step 9), the headless `?mock=1` check
+   (step 14 or 24), installing from a URL (step 13).
 7. **Media.** Uploads with size caps, ffmpeg transcode (H12), `/media/<fileId>/<name>`
    (03 §3.4, 07 §7.11).
 8. **TAKEOVER template.** Port the v0 look with the fixes listed above: all core scenes plus The

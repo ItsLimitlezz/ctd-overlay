@@ -17,7 +17,7 @@
         "unit": { "enum": ["months", "count", "bits", "kicks", "viewers", "currency"] },
         "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
       },
-      "if": { "properties": { "unit": { "const": "currency" } } },
+      "if": { "required": ["unit"], "properties": { "unit": { "const": "currency" } } },
       "then": { "required": ["currency"], "properties": { "value": { "type": "string", "pattern": "^\\d+(\\.\\d{1,4})?$" } } }
     },
     "tier": { "type": "string" },

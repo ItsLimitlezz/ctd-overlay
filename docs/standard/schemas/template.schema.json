@@ -6,9 +6,13 @@
   "required": ["standard", "id", "name", "version", "category", "entry", "previews", "canvases", "scenes"],
   "properties": {
     "standard": { "const": "skp/1" },
-    "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+){2,}$", "description": "Reverse-DNS, immutable." },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+){2,}$", "maxLength": 100, "description": "Reverse-DNS, immutable." },
     "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$" },
+    "version": {
+      "type": "string", "maxLength": 64,
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$",
+      "description": "Strict SemVer 2.0.0, without build metadata."
+    },
     "description": { "type": "string", "maxLength": 500 },
     "author": {
       "type": "object", "required": ["name"],
@@ -42,7 +46,7 @@
           "core": { "enum": ["auto", "starting", "program", "brb", "lineup", "outro", "bg", "intro"] },
           "transparent": { "type": "boolean" },
           "durationMs": { "type": "integer", "minimum": 0 },
-          "then": { "type": "string" }
+          "then": { "type": "string", "description": "A scene id or a core of this template, returned to after durationMs." }
         },
         "dependentRequired": { "then": ["durationMs"] }
       }
@@ -80,7 +84,7 @@
         "mode": { "enum": ["serial", "stack"] },
         "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 10 },
         "durationMs": { "type": "integer", "minimum": 1000, "maximum": 60000 },
-        "durationSetting": { "type": "string", "description": "Name of a numeric setting (ms) that overrides durationMs (05 §5.5)." },
+        "durationSetting": { "type": "string", "description": "Name of a numeric setting (ms) that overrides durationMs (05 §5.5); if it names none, durationMs is used." },
         "gapMs": { "type": "integer", "minimum": 0 },
         "maxQueue": { "type": "integer", "minimum": 1 },
         "coalesce": { "type": "boolean" }

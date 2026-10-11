@@ -154,6 +154,7 @@ Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS.
 | `Referrer-Policy` | `same-origin` | `no-referrer` |
 | `Cross-Origin-Opener-Policy` | `same-origin` | — |
 | CORS | none by default; per-origin allow-list for external web apps | `*` for `GET`, and for the CORS-simple `POST /o/{slug}/log` (03 §3.4), so the sandboxed preview's `SK.log` doesn't log a CORS error each time; no credentials |
+| Template files | — | `/o/{slug}/t/{build}/*` add `Content-Security-Policy: sandbox; default-src 'none'; …`, so a package's own HTML or SVG opened directly runs without script or origin (04 §4.8) |
 
 ## 7.11 Input, uploads and processing
 
