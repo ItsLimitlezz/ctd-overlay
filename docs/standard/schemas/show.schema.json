@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/show.schema.json",
+  "title": "Show",
+  "type": "object",
+  "required": ["id", "name", "overlays", "date", "timezone"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^show_" },
+    "name": { "type": "string" },
+    "overlays": { "type": "array", "items": { "type": "string", "pattern": "^ovl_" } },
+    "date": { "type": "string", "format": "date" },
+    "timezone": { "type": "string", "description": "IANA zone, e.g. America/Toronto." },
+    "dayBoundary": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$", "default": "12:00" },
+    "goLive": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+    "scene": { "type": "string" },
+    "lineup": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["time", "name"],
+        "properties": {
+          "time": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+          "name": { "type": "string" },
+          "b2b": { "type": "string" },
+          "headliner": { "type": "boolean" },
+          "closer": { "type": "boolean" }
+        }
+      }
+    },
+    "obsSceneMap": { "type": "object", "additionalProperties": { "type": "string" }, "description": "OBS scene name → overlay scene id (06 §6.9)." },
+    "recipe": { "type": "object", "description": "Cue generation recipe (09 §9.5)." }
+  }
+}

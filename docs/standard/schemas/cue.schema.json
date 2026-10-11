@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/cue.schema.json",
+  "title": "Timeline cue",
+  "type": "object",
+  "required": ["id", "at", "action", "status"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^cue_" },
+    "at": { "type": "string", "format": "date-time", "description": "Absolute instant, resolved server-side (09 §9.2)." },
+    "label": { "type": "string", "maxLength": 120 },
+    "generated": { "type": "boolean", "description": "Created by a lineup recipe (09 §9.5)." },
+    "status": { "enum": ["armed", "fired", "skipped", "missed"] },
+    "firedAt": { "type": "string", "format": "date-time" },
+    "action": { "$ref": "#/$defs/action" }
+  },
+  "$defs": {
+    "action": {
+      "type": "object", "required": ["type"],
+      "properties": {
+        "type": { "enum": ["show.scene", "overlay.action", "show.slot", "connector.action", "media.play", "media.stop", "webhook", "sequence"] },
+        "scene": { "type": "string" },
+        "transition": { "type": "string" },
+        "name": { "type": "string" },
+        "args": { "type": "object" },
+        "slot": { "type": "integer", "minimum": 0 },
+        "connector": { "type": "string" },
+        "mediaId": { "type": "string" },
+        "webhookId": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "items": { "type": "object", "required": ["offsetMs", "action"], "properties": { "offsetMs": { "type": "integer", "minimum": 0 }, "action": { "$ref": "#/$defs/action" } } }
+        }
+      }
+    }
+  }
+}

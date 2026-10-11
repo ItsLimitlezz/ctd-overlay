@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/connection-health.schema.json",
+  "title": "Connection health",
+  "type": "object",
+  "required": ["status", "since"],
+  "properties": {
+    "status": { "enum": ["disabled", "connecting", "connected", "degraded", "needs-reauth", "error"] },
+    "detail": { "type": "string", "description": "Operator-facing, plain language." },
+    "since": { "type": "string", "format": "date-time" },
+    "lastEventAt": { "type": "string", "format": "date-time" },
+    "quota": {
+      "type": "object",
+      "properties": { "used": { "type": "integer" }, "limit": { "type": "integer" }, "resetsAt": { "type": "string", "format": "date-time" } }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

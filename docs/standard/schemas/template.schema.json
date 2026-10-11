@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/template.schema.json",
+  "title": "SKP template manifest (template.json)",
+  "type": "object",
+  "required": ["standard", "id", "name", "version", "category", "entry", "previews", "canvases", "scenes"],
+  "properties": {
+    "standard": { "const": "skp/1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+){2,}$", "description": "Reverse-DNS, immutable." },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$" },
+    "description": { "type": "string", "maxLength": 500 },
+    "author": {
+      "type": "object", "required": ["name"],
+      "properties": { "name": { "type": "string" }, "url": { "type": "string", "format": "uri" } }
+    },
+    "license": { "type": "string" },
+    "category": { "enum": ["show", "chat", "alerts", "now-playing", "lower-third", "background", "ticker", "goal", "scoreboard", "widget"] },
+    "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 12 },
+    "entry": { "type": "string", "default": "index.html" },
+    "previews": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "engines": { "type": "object", "properties": { "obs": { "type": "string" } } },
+    "canvases": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "width", "height"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "width": { "type": "integer", "minimum": 64, "maximum": 7680 },
+          "height": { "type": "integer", "minimum": 64, "maximum": 7680 },
+          "default": { "type": "boolean" }
+        }
+      }
+    },
+    "scenes": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "label"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "label": { "type": "string" },
+          "core": { "enum": ["auto", "starting", "program", "brb", "lineup", "outro", "bg", "intro"] },
+          "transparent": { "type": "boolean" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "then": { "type": "string" }
+        },
+        "dependentRequired": { "then": ["durationMs"] }
+      }
+    },
+    "consumes": {
+      "type": "object",
+      "properties": {
+        "state": { "type": "array", "items": { "type": "string" } },
+        "events": { "type": "array", "items": { "type": "string" } },
+        "chat": {
+          "type": "object",
+          "properties": {
+            "recent": { "type": "integer", "minimum": 0, "maximum": 200 },
+            "max": { "type": "integer", "minimum": 1, "maximum": 200 }
+          }
+        }
+      }
+    },
+    "settings": { "type": "object", "description": "JSON Schema (2020-12 subset) with x-skp-* extensions, 04 §4.3." },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["id", "label"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9]*$" },
+          "label": { "type": "string" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "args": { "type": "object" }
+        }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["serial", "stack"] },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "minDisplayMs": { "type": "integer", "minimum": 0 },
+        "gapMs": { "type": "integer", "minimum": 0 },
+        "maxQueue": { "type": "integer", "minimum": 1 },
+        "coalesce": { "type": "boolean" }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["id"],
+        "properties": { "id": { "type": "string" }, "media": { "type": "string" }, "cutAtMs": { "type": "integer", "minimum": 0 } }
+      }
+    },
+    "fonts": { "type": "array", "items": { "type": "string", "format": "uri" } },
+    "definitions": { "type": "object" }
+  }
+}

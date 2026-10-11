@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/chat-message.schema.json",
+  "title": "chat.message payload",
+  "type": "object",
+  "required": ["id", "user", "text", "fragments"],
+  "properties": {
+    "id": { "type": "string" },
+    "platformMessageId": { "type": "string" },
+    "channel": { "type": "string" },
+    "user": {
+      "type": "object", "required": ["id", "name", "roles"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^(twitch|kick|youtube|custom):.+$" },
+        "login": { "type": "string" },
+        "name": { "type": "string" },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "avatar": { "type": "string", "format": "uri" },
+        "roles": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": ["broadcaster", "moderator", "vip", "subscriber", "member", "verified", "founder", "artist", "bot"] }
+        },
+        "badges": {
+          "type": "array",
+          "items": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "image": { "type": "string", "format": "uri" } } }
+        }
+      }
+    },
+    "text": { "type": "string", "maxLength": 1000 },
+    "truncated": { "type": "boolean" },
+    "fragments": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["type", "text"],
+        "properties": {
+          "type": { "enum": ["text", "emote", "mention", "link", "cheermote"] },
+          "text": { "type": "string" },
+          "image": { "type": "string", "format": "uri" },
+          "animated": { "type": "boolean" },
+          "url": { "type": "string", "format": "uri" },
+          "userId": { "type": "string" },
+          "amount": { "type": "integer" }
+        }
+      }
+    },
+    "reply": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "properties": { "messageId": { "type": "string" }, "userName": { "type": "string" }, "text": { "type": "string" } } }
+      ]
+    },
+    "highlighted": { "type": "boolean" },
+    "action": { "type": "boolean", "description": "/me message" }
+  }
+}

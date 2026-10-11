@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/track.schema.json",
+  "title": "music.nowPlaying value",
+  "type": "object",
+  "required": ["title", "artists", "playing", "source"],
+  "properties": {
+    "title": { "type": "string" },
+    "artists": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "album": { "type": "string" },
+    "art": { "type": "string", "format": "uri" },
+    "url": { "type": "string", "format": "uri" },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "progressMs": { "type": "integer", "minimum": 0 },
+    "progressAt": { "type": "integer", "minimum": 0, "description": "Server epoch ms at which progressMs was true." },
+    "playing": { "type": "boolean" },
+    "source": { "type": "string" }
+  }
+}

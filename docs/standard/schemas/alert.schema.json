@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skp.dev/schemas/1/alert.schema.json",
+  "title": "alert.<kind> payload",
+  "type": "object",
+  "required": ["kind", "user"],
+  "properties": {
+    "kind": { "enum": ["follow", "subscription", "gift", "cheer", "kicks", "raid", "membership", "superchat", "tip"] },
+    "user": {
+      "type": "object", "required": ["name"],
+      "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "avatar": { "type": "string", "format": "uri" }, "anonymous": { "type": "boolean" } }
+    },
+    "amount": {
+      "type": "object",
+      "properties": {
+        "value": { "type": ["integer", "string"], "description": "Integer for counts; decimal string for money (\"5.00\")." },
+        "unit": { "enum": ["months", "count", "bits", "kicks", "viewers", "currency"] },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      },
+      "if": { "properties": { "unit": { "const": "currency" } } },
+      "then": { "required": ["currency"], "properties": { "value": { "type": "string", "pattern": "^\\d+(\\.\\d{1,4})?$" } } }
+    },
+    "tier": { "type": "string" },
+    "message": {
+      "type": "object",
+      "properties": { "text": { "type": "string" }, "fragments": { "type": "array" } }
+    },
+    "gift": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "properties": { "recipients": { "type": "array", "items": { "type": "string" } }, "total": { "type": "integer" } } }
+      ]
+    },
+    "coalesced": { "type": "integer", "minimum": 1, "description": "Number of source events merged into this one (05 §5.5)." }
+  }
+}

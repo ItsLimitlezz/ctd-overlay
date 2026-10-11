@@ -1,0 +1,97 @@
+# 09 · Timeline
+
+A show runs itself. The server builds a schedule of cues and fires them on its own clock, so a
+broadcast advances with every browser closed and survives a restart mid-show.
+
+## 9.1 Show
+
+```json
+{
+  "id": "show_sat",
+  "name": "Saturday TAKEOVER",
+  "overlays": ["ovl_main_h", "ovl_main_v"],
+  "date": "2026-08-28",
+  "timezone": "America/Toronto",
+  "dayBoundary": "12:00",
+  "goLive": "22:30",
+  "lineup": [
+    { "time": "22:30", "name": "Manzone & strong" },
+    { "time": "01:00", "name": "VIKKSTAR", "headliner": true },
+    { "time": "03:00", "name": "Deecee", "b2b": "quim", "closer": true }
+  ],
+  "scene": "starting"
+}
+```
+
+- `headliner` and `closer` are different things: the headliner is the billed act; the closer
+  plays last. A template that needs "the headliner" reads the flag, never "the last slot".
+- `lineup` is published as `show.lineup` state to member overlays.
+
+## 9.2 The time rule
+
+**Times before the day boundary belong to the next calendar day.** With `date: 2026-08-28` and
+`dayBoundary: "12:00"`, a slot at `01:00` is **2026-08-29 01:00** in the show's timezone —
+which is what a club night means. The boundary is configurable (an afternoon show sets it to
+`"06:00"`).
+
+All schedule times are converted once, server-side, to absolute instants using the show's
+`timezone` (IANA name). Clients receive instants; they never re-interpret wall-clock strings, so
+an operator's phone in another timezone shows correct countdowns.
+
+## 9.3 Cues
+
+```json
+{
+  "id": "cue_01J9…",
+  "at": "2026-08-29T05:00:00Z",
+  "label": "Headliner takeover",
+  "action": { "type": "overlay.action", "name": "headliner" },
+  "status": "armed"
+}
+```
+
+Action types:
+
+| Type | Effect |
+|---|---|
+| `show.scene` | `{ "scene": "brb", "transition": "fade" }` on all member overlays |
+| `overlay.action` | fire a template action (`titleCard`, `nowPlaying`, `headliner`…) |
+| `show.slot` | set the current lineup slot |
+| `connector.action` | e.g. `{ "connector": "obs", "name": "setScene", "args": { "scene": "Live" } }` |
+| `media.play` / `media.stop` | play an uploaded clip |
+| `webhook` | call an outbound webhook (06 §6.10) |
+| `sequence` | an ordered list of the above with offsets in ms |
+
+`status` ∈ `armed`, `fired`, `skipped`, `missed`.
+
+## 9.4 Scheduler rules
+
+- The scheduler ticks at least once per second and fires every armed cue whose `at` has
+  passed.
+- **Grace window:** a cue more than **5 minutes** late is marked `missed` without firing. A
+  wrong date or a restart after downtime never replays a night's worth of graphics at once.
+- **Durable before visible:** a cue's `fired` status is written to storage *before* its effect
+  is published, so a crash can't fire it twice.
+- **Timed scenes return server-side:** a scene with `durationMs` + `then` (04 §4.2) schedules
+  its return as part of the take, independent of any client.
+- Operator overrides — fire now, skip, re-arm — are always available and audited.
+- Editing the lineup regenerates generated cues (§9.5) while preserving the `fired` / `skipped`
+  status of cues that still exist, so an edit mid-show doesn't re-fire what already happened.
+
+## 9.5 Generated cues
+
+A show **MAY** generate cues from its lineup with a recipe. The default recipe, per slot:
+- at slot start: `show.slot` + `overlay.action: titleCard`;
+- `introOffsetMin` after start (default 5): `overlay.action: intro` (the Event Intro);
+- every `nowPlayingEveryMin` (default 10) until the next slot: `overlay.action: nowPlaying`;
+- for the slot flagged `headliner`, at its start: `overlay.action: headliner` when the
+  template provides it.
+
+Recipes are data, not code, so a different kind of show (a talk show, a tournament) ships its
+own.
+
+## 9.6 Planned shows
+
+A show configuration **MAY** be saved against a future date. At the day boundary on that date
+the server activates it — lineup, settings, regenerated timeline — with no browser open. Plans
+more than 14 days past are pruned.
