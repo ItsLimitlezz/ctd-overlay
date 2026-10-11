@@ -1,0 +1,1787 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Kit Platform Standard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  :root{
+    --bg:#F7F6F3; --panel:#FFFFFF; --code:#F1EFEB; --ink:#15181B; --dim:#596067; --faint:#878E95;
+    --rule:#E1DDD6; --rule-soft:#ECE9E3; --amber:#9C6420; --amber-bg:#F4E7D3; --amber-line:#D9B47E;
+    --teal:#1C6E7E; --teal-bg:#DCEDF0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+    --disp:'Archivo','IBM Plex Sans',system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0D1013; --panel:#13171B; --code:#171C21; --ink:#E6E4E0; --dim:#9AA2A9; --faint:#6B737A;
+      --rule:#232930; --rule-soft:#1A1F25; --amber:#E2A541; --amber-bg:#23190B; --amber-line:#6E5121;
+      --teal:#5BB2C4; --teal-bg:#0F2329;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0D1013; --panel:#13171B; --code:#171C21; --ink:#E6E4E0; --dim:#9AA2A9; --faint:#6B737A;
+    --rule:#232930; --rule-soft:#1A1F25; --amber:#E2A541; --amber-bg:#23190B; --amber-line:#6E5121;
+    --teal:#5BB2C4; --teal-bg:#0F2329;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.66;-webkit-font-smoothing:antialiased}
+  .shell{display:grid;grid-template-columns:1fr;max-width:1240px;margin:0 auto;padding:0 20px 120px}
+  @media(min-width:1060px){.shell{grid-template-columns:232px minmax(0,1fr);gap:60px;padding:0 40px 120px}}
+
+  nav.toc{display:none}
+  @media(min-width:1060px){
+    nav.toc{display:block;position:sticky;top:0;align-self:start;max-height:100vh;overflow-y:auto;padding:52px 0 40px}
+    nav.toc .brand{font-family:var(--disp);font-weight:800;font-size:15px;letter-spacing:-.01em;margin:0 0 4px}
+    nav.toc .ver{font-family:var(--mono);font-size:11px;color:var(--faint);margin:0 0 22px}
+    nav.toc ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+    nav.toc a{display:grid;grid-template-columns:30px 1fr;align-items:baseline;gap:4px;text-decoration:none;color:var(--dim);font-size:13.5px;padding:5px 6px 5px 0;border-radius:4px}
+    nav.toc a span{font-family:var(--mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+    nav.toc a:hover{color:var(--ink)} nav.toc a:hover span{color:var(--amber)}
+    nav.toc a:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  }
+  main{min-width:0;padding-top:24px}
+
+  section.doc{padding:44px 0 20px;border-top:1px solid var(--rule)}
+  section.doc:first-child{border-top:0}
+  .dochead{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:baseline;margin:0 0 26px}
+  #doc-overview .dochead{display:block;padding:20px 0 6px}
+  .kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber);margin:0 0 14px}
+  .cue{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--amber);letter-spacing:.06em;font-variant-numeric:tabular-nums}
+  h1{font-family:var(--disp);font-weight:800;font-size:clamp(28px,4vw,40px);line-height:1.05;letter-spacing:-.02em;margin:0;text-wrap:balance}
+  #doc-overview h1{font-size:clamp(34px,5.4vw,56px)}
+  h2{font-family:var(--disp);font-weight:700;font-size:21px;letter-spacing:-.012em;margin:40px 0 12px;text-wrap:balance;scroll-margin-top:20px}
+  h3{font-family:var(--disp);font-weight:600;font-size:16.5px;margin:28px 0 10px;scroll-margin-top:20px}
+  h4{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:22px 0 8px}
+  p,ul,ol{max-width:72ch;margin:0 0 14px}
+  ul,ol{padding-left:22px} li{margin-bottom:6px} li::marker{color:var(--faint)}
+  a{color:var(--teal);text-underline-offset:2px}
+  strong{font-weight:600}
+  hr{border:0;border-top:1px dashed var(--rule);margin:32px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--code);border:1px solid var(--rule-soft);border-radius:4px;padding:1px 5px;overflow-wrap:anywhere}
+
+  /* normative keywords carry their weight visibly — MUST > SHOULD > MAY */
+  .kw{font-family:var(--mono);font-size:.74em;font-weight:600;letter-spacing:.08em;border-radius:3px;padding:1px 5px;white-space:nowrap;vertical-align:.08em}
+  .kw.must{color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-line)}
+  .kw.should{color:var(--teal);background:var(--teal-bg);border:1px solid transparent}
+  .kw.may{color:var(--dim);border:1px solid var(--rule)}
+
+  blockquote{margin:0 0 20px;max-width:72ch;padding:16px 20px;border-left:3px solid var(--amber);background:var(--amber-bg);border-radius:0 6px 6px 0}
+  blockquote p{margin:0;font-size:15.5px}
+  #doc-overview blockquote{padding:22px 26px}
+  #doc-overview blockquote p{font-family:var(--disp);font-size:clamp(20px,2.4vw,26px);line-height:1.25;letter-spacing:-.01em}
+
+  .tw{overflow-x:auto;margin:0 0 18px;border:1px solid var(--rule);border-radius:7px;background:var(--panel)}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+  th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:500;padding:10px 13px;border-bottom:1px solid var(--rule);white-space:nowrap}
+  td{padding:10px 13px;border-bottom:1px solid var(--rule-soft);vertical-align:top;color:var(--dim)}
+  tr:last-child td{border-bottom:0}
+  td:first-child{color:var(--ink);font-weight:500}
+  td code{background:transparent;border:0;padding:0;color:var(--ink)}
+
+  .code{position:relative;margin:0 0 18px;border:1px solid var(--rule);border-radius:7px;background:var(--code);overflow-x:auto}
+  .code pre{margin:0;padding:16px 18px;font-family:var(--mono);font-size:12.8px;line-height:1.6;color:var(--ink);tab-size:2}
+  .code pre code{background:none;border:0;padding:0;font-size:inherit;overflow-wrap:normal}
+  .code .lang{position:absolute;top:8px;right:10px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+  code.fname{font-size:.72em;margin-left:8px;color:var(--dim)}
+  footer{border-top:1px solid var(--rule);margin-top:40px;padding-top:18px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+</style>
+
+<div class="shell">
+  <nav class="toc" aria-label="Documents">
+    <p class="brand">Stream Kit Platform Standard</p>
+    <p class="ver">skp/1 · v1.0 draft · 2026-10-09</p>
+    <ol><li><a href="#doc-overview"><span>—</span>Overview</a></li><li><a href="#doc-01-architecture"><span>01</span>Architecture</a></li><li><a href="#doc-02-data-model"><span>02</span>Data model</a></li><li><a href="#doc-03-api"><span>03</span>API</a></li><li><a href="#doc-04-templates"><span>04</span>Templates</a></li><li><a href="#doc-05-animation"><span>05</span>Animation</a></li><li><a href="#doc-06-integrations"><span>06</span>Integrations</a></li><li><a href="#doc-07-security"><span>07</span>Security</a></li><li><a href="#doc-08-admin-ui"><span>08</span>Admin UI</a></li><li><a href="#doc-09-timeline"><span>09</span>Timeline</a></li><li><a href="#doc-10-packaging"><span>10</span>Packaging &amp; deployment</a></li><li><a href="#doc-11-hard-rules"><span>11</span>Hard rules &amp; migration from v0</a></li><li><a href="#schemas"><span>{ }</span>Schemas</a></li></ol>
+  </nav>
+  <main>
+    <section class="doc" id="doc-overview"><header class="dochead"><p class="kicker">Stream Kit Platform Standard · skp/1</p><h1>Stream Kit Platform Standard (SKP) — v1.0 draft</h1></header><p><strong>Status:</strong> Draft · <strong>Date:</strong> 2026-10-09 · <strong>Identifier:</strong> <code>skp/1</code></p>
+<p>A specification for a self-hosted live-stream overlay platform: a server that connects to streaming platforms and OBS, normalizes everything into one data model, and serves styled overlays to OBS browser sources. It is written so that an independent implementation — and independent template authors — can build to it without reading anyone's source code.</p>
+<p>It generalizes the D/PRTMNT Stream Kit (v0), which ran a live club night on this design. Every rule marked as a <strong>hard rule</strong> in <a href="#doc-11-hard-rules">11-hard-rules.md</a> was learned on air.</p>
+<hr>
+<h2 id="doc-overview-the-one-principle">The one principle</h2>
+<blockquote><p><strong>Templates style. The platform connects.</strong></p></blockquote>
+<p>A template never talks to Twitch, Kick, YouTube, Spotify or OBS. It never holds a token. It declares what data it wants and where things go on screen; the platform does the connecting, authenticating, normalizing, queueing, retrying and moderating. A chat template receives a merged, already-moderated stream of chat messages from every platform in one shape — and its whole job is to make them look good.</p>
+<p>Everything else in this standard follows from that sentence.</p>
+<hr>
+<h2 id="doc-overview-documents">Documents</h2>
+<div class="tw"><table><thead><tr><th>#</th><th>Document</th><th>Covers</th></tr></thead><tbody><tr><td>01</td><td><a href="#doc-01-architecture">Architecture</a></td><td>Layers, vocabulary, the data flow, transport</td></tr><tr><td>02</td><td><a href="#doc-02-data-model">Data model</a></td><td>Events, state, every normalized payload</td></tr><tr><td>03</td><td><a href="#doc-03-api">API</a></td><td>REST surface, auth modes, errors, streaming, versioning</td></tr><tr><td>04</td><td><a href="#doc-04-templates">Templates</a></td><td>Package format, manifest, runtime SDK, sandboxing</td></tr><tr><td>05</td><td><a href="#doc-05-animation">Animation</a></td><td>Lifecycle, sequencing, alert queues, sync, performance</td></tr><tr><td>06</td><td><a href="#doc-06-integrations">Integrations</a></td><td>Connector contract; Twitch, Kick, YouTube, Spotify, OBS; other apps</td></tr><tr><td>07</td><td><a href="#doc-07-security">Security</a></td><td>Login, sessions, tokens, secrets at rest, exposure modes</td></tr><tr><td>08</td><td><a href="#doc-08-admin-ui">Admin UI</a></td><td>Navigation, template gallery, previews, theming</td></tr><tr><td>09</td><td><a href="#doc-09-timeline">Timeline</a></td><td>Shows, scheduled cues, the time rules</td></tr><tr><td>10</td><td><a href="#doc-10-packaging">Packaging</a></td><td>TrueNAS, Docker, macOS, Linux; config; updates</td></tr><tr><td>11</td><td><a href="#doc-11-hard-rules">Hard rules</a></td><td>Non-negotiables learned in production; migrating from v0</td></tr><tr><td>—</td><td><a href="#schemas">schemas/</a></td><td>JSON Schemas for manifests, events and payloads</td></tr></tbody></table></div>
+<hr>
+<h2 id="doc-overview-conformance-language">Conformance language</h2>
+<p>The key words <span class="kw must">MUST</span>, <span class="kw must">MUST NOT</span>, <span class="kw must">REQUIRED</span>, <span class="kw should">SHOULD</span>, <span class="kw should">SHOULD NOT</span>, <span class="kw may">MAY</span> and <span class="kw may">OPTIONAL</span> are used as described in RFC 2119 and RFC 8174 when they appear in bold capitals.</p>
+<p>Three conformance targets:</p>
+<div class="tw"><table><thead><tr><th>Target</th><th>Who</th><th>Must satisfy</th></tr></thead><tbody><tr><td><strong>Platform</strong></td><td>The server application</td><td>All documents</td></tr><tr><td><strong>Template</strong></td><td>A template package</td><td>02 (as a consumer), 04, 05, 11</td></tr><tr><td><strong>Integration client</strong></td><td>Any external app using the API</td><td>02, 03, 06 §6.10, 07 §7.5</td></tr></tbody></table></div>
+<hr>
+<h2 id="doc-overview-decisions-this-standard-makes">Decisions this standard makes</h2>
+<p>These are settled. An implementation that departs from one is not SKP-conformant.</p>
+<ol><li><strong>Templates never connect.</strong> No template-originated network requests to third parties for data. Enforced with a Content Security Policy, not just convention. <em>(04)</em></li><li><strong>Overlay URLs are permanent.</strong> Nothing configurable lives in an overlay URL — not the theme, not settings, not the template version. Changing any of it re-renders the sources already in OBS. Only an explicit key rotation changes a URL. <em>(01, 11)</em></li><li><strong>HTTP to our own clients; no WebSocket.</strong> Overlays and the admin UI receive live data over Server-Sent Events with a polling fallback — plain HTTP that survives OBS's embedded browser, reverse proxies and flaky Wi-Fi. The platform <em>does</em> open WebSocket connections outward where a third party requires it (obs-websocket, Twitch EventSub). <em>(01)</em></li><li><strong>The server owns the show.</strong> Scheduled cues fire on the server's clock. Closing every browser never stops a broadcast. <em>(09)</em></li><li><strong>Bring your own platform credentials.</strong> Each installation registers its own Twitch, Kick, Google and Spotify developer apps. A self-hosted app cannot share one client ID: Spotify caps development-mode apps at a handful of users and gates extended access behind organization review, and every platform requires redirect URIs registered to <em>your</em> host. The admin UI walks the user through it. <em>(06)</em></li><li><strong>Never show a wrong number.</strong> Missing or failed data hides; only real data renders. <em>(02)</em></li><li><strong>Single tenant, multiple users.</strong> One installation serves one streamer or crew, with role-based accounts. Multi-tenant hosting is out of scope for v1.</li><li><strong>No native dependencies in the core.</strong> So it ships as a single executable on macOS and Linux and a small multi-arch image for TrueNAS. Media transcoding uses an external ffmpeg when present and is reported as unavailable when not. <em>(10)</em></li></ol>
+<hr>
+<h2 id="doc-overview-non-goals-for-v1">Non-goals for v1</h2>
+<ul><li>A drag-and-drop canvas editor. Templates position their own elements and expose layout as settings. Composition happens in OBS by stacking overlay sources.</li><li>Streaming or encoding video. OBS does that.</li><li>Sending chat messages or moderating on platforms. Read-only for v1; the connector contract reserves capabilities for it.</li><li>Hosted multi-tenant SaaS.</li></ul>
+<hr>
+<h2 id="doc-overview-glossary">Glossary</h2>
+<div class="tw"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody><tr><td><strong>Platform</strong></td><td>The server application this standard specifies.</td></tr><tr><td><strong>Connector</strong></td><td>Platform code that integrates one service (Twitch, OBS…).</td></tr><tr><td><strong>Connection</strong></td><td>One authorized account on a service, created by a user through a connector.</td></tr><tr><td><strong>Template</strong></td><td>An installable design package: markup, styles, assets, manifest.</td></tr><tr><td><strong>Overlay</strong></td><td>A configured instance of a template, with its own settings and its own permanent URL.</td></tr><tr><td><strong>Scene</strong></td><td>A named state of an overlay (<code>starting</code>, <code>program</code>, <code>brb</code>…).</td></tr><tr><td><strong>Show</strong></td><td>A group of overlays that share scene state and a timeline — e.g. a horizontal and a vertical feed driven together.</td></tr><tr><td><strong>Timeline</strong></td><td>A show's list of scheduled cues.</td></tr><tr><td><strong>Cue</strong></td><td>An action scheduled for an absolute time.</td></tr><tr><td><strong>Event</strong></td><td>Something that happened (a chat message, a follow). Ephemeral.</td></tr><tr><td><strong>State</strong></td><td>A current value (viewer count, now playing, active scene). Snapshot-able.</td></tr><tr><td><strong>Bus</strong></td><td>The in-process router that carries events and state from connectors to overlays.</td></tr><tr><td><strong>Overlay key</strong></td><td>A per-overlay, read-only capability token that lets OBS load an overlay without logging in.</td></tr></tbody></table></div></section><section class="doc" id="doc-01-architecture"><header class="dochead"><span class="cue">01</span><h1>Architecture</h1></header><h2 id="doc-01-architecture-1-1-layers">1.1 Layers</h2>
+<div class="code"><pre><code> ┌──────────── services ────────────┐
+ │ Twitch  Kick  YouTube  Spotify OBS│   third parties
+ └───┬──────┬─────┬───────┬──────┬───┘
+     │      │     │       │      │      outbound: HTTPS, WebSocket, inbound webhooks
+ ┌───▼──────▼─────▼───────▼──────▼───┐
+ │            CONNECTORS             │   auth, polling, subscriptions, retries,
+ │  normalize → events + state       │   rate limits, moderation, health
+ └────────────────┬──────────────────┘
+                  │
+ ┌────────────────▼──────────────────┐
+ │               BUS                  │   routing, state store, replay buffer,
+ │   timeline scheduler · alert queue │   per-overlay filtering, clock
+ └──────┬─────────────────────┬──────┘
+        │ SSE / poll          │ SSE / REST
+ ┌──────▼───────┐      ┌──────▼──────────────┐
+ │   OVERLAYS   │      │ ADMIN UI · API      │
+ │ template +   │      │ users, external     │
+ │ runtime SDK  │      │ apps, Stream Deck   │
+ └──────────────┘      └─────────────────────┘
+   OBS browser sources</code></pre></div>
+<p>Data flows one way for display: <strong>service → connector → bus → overlay → template</strong>. Control flows the other way: <strong>admin/API → bus → connector</strong> (e.g. "switch OBS to the BRB scene").</p>
+<p>A template sits at the very end of the display flow and has no path back into connectors.</p>
+<h2 id="doc-01-architecture-1-2-components">1.2 Components</h2>
+<h3 id="doc-01-architecture-core">Core</h3>
+<p>The single server process. It <span class="kw must">MUST</span> contain: HTTP server, authentication, storage, the bus, the timeline scheduler, the connector host, the template registry, and the overlay runtime host. It <span class="kw must">MUST</span> run as one process with no required sidecar services.</p>
+<h3 id="doc-01-architecture-connectors">Connectors</h3>
+<p>One per service. Each implements the contract in <a href="#doc-06-integrations">06-integrations.md</a>: it authenticates, keeps a live link to its service, emits normalized events and state, reports health, and optionally exposes actions. A failing connector <span class="kw must">MUST NOT</span> affect the core or other connectors.</p>
+<h3 id="doc-01-architecture-bus">Bus</h3>
+<p>Owns all live data. It <span class="kw must">MUST</span>:</p>
+<ul><li>hold current <strong>state</strong> as a key/value store (dotted keys, see 02);</li><li>route <strong>events</strong> to subscribers filtered by what each overlay's template declared it consumes;</li><li>keep a short <strong>replay buffer</strong> per overlay so a reconnecting client resumes without gaps (see §1.5);</li><li>stamp every message with server time.</li></ul>
+<h3 id="doc-01-architecture-overlay-runtime">Overlay runtime</h3>
+<p>Serves an overlay's page, injects the runtime SDK, delivers that overlay's data, manages scene changes, alert queues and animation lifecycle, and hands the template only what it declared. Specified in <a href="#doc-04-templates">04-templates.md</a> and <a href="#doc-05-animation">05-animation.md</a>.</p>
+<h3 id="doc-01-architecture-admin-ui">Admin UI</h3>
+<p>A web app served by the core. Specified in <a href="#doc-08-admin-ui">08-admin-ui.md</a>. It uses the same public API as any external integration client — there is no private admin API.</p>
+<h2 id="doc-01-architecture-1-3-the-object-model">1.3 The object model</h2>
+<div class="code"><pre><code>Installation
+ ├── Users ─────────────── roles: owner · admin · operator · viewer
+ ├── Connections ───────── one per authorized service account
+ ├── Templates ─────────── installed packages, versioned
+ ├── Overlays ──────────── template + settings + bindings → permanent URL
+ │     └── (optional) member of one Show
+ ├── Shows ─────────────── overlays sharing scene state + one Timeline
+ │     └── Timeline ── Cues
+ ├── Media ─────────────── uploaded clips and images
+ └── Webhooks ──────────── outbound subscriptions to other apps</code></pre></div>
+<ul><li>An <strong>Overlay</strong> pins one template version. Upgrading the template is an explicit action.</li><li>An overlay <span class="kw may">MAY</span> belong to at most one <strong>Show</strong>. Taking a scene on a show changes the scene of every member overlay together — this is how a horizontal and a vertical feed stay in lockstep. An overlay outside a show has its own scene.</li><li><strong>Bindings</strong> say which connections feed an overlay: e.g. a chat overlay bound to the Twitch, Kick and YouTube connections receives all three merged. Unbound data never reaches it.</li></ul>
+<h2 id="doc-01-architecture-1-4-overlay-urls">1.4 Overlay URLs</h2>
+<div class="code"><pre><code>https://&lt;host&gt;/o/&lt;slug&gt;?key=&lt;overlay-key&gt;[&amp;canvas=&lt;w&gt;x&lt;h&gt;]</code></pre></div>
+<ul><li><code>slug</code> — human-readable, unique, chosen by the user (<code>friday-main</code>, <code>chat-vertical</code>).</li><li><code>key</code> — the overlay key (see 07). Required when the installation is in <code>public</code> exposure mode; <span class="kw may">MAY</span> be waived per overlay in <code>local</code>/<code>lan</code> mode at the owner's choice.</li><li><code>canvas</code> — selects one of the template's declared canvases when it declares several. It is a property of the OBS source's size, not of the design, so it is the one allowed parameter.</li></ul>
+<p><strong>Permanence (hard rule).</strong> The URL <span class="kw must">MUST NOT</span> change when settings, bindings, the template version, the active theme or the show membership change. The overlay re-renders in place. The URL changes only when a user explicitly renames the slug or rotates the key, and the UI <span class="kw must">MUST</span> warn that OBS sources will need updating.</p>
+<p>Development and preview <span class="kw may">MAY</span> add override parameters (see 04 §4.9); production links generated by the UI <span class="kw must">MUST NOT</span> contain them.</p>
+<h2 id="doc-01-architecture-1-5-transport">1.5 Transport</h2>
+<h3 id="doc-01-architecture-to-our-own-clients-http-only">To our own clients: HTTP only</h3>
+<p>Overlays and the admin UI <span class="kw must">MUST</span> be served live data over <strong>Server-Sent Events</strong> (<code>text/event-stream</code>), with an HTTP polling fallback. The platform <span class="kw must">MUST NOT</span> require WebSocket between itself and its own clients.</p>
+<p>Reasons, all observed in production: OBS's embedded browser handles plain HTTP reliably; SSE reconnects automatically and resumes from <code>Last-Event-ID</code>; it passes every reverse proxy and TLS terminator without upgrade configuration; and a dropped connection degrades to a poll rather than to a dead source.</p>
+<div class="tw"><table><thead><tr><th>Channel</th><th>Endpoint</th><th>Purpose</th></tr></thead><tbody><tr><td>Snapshot</td><td><code>GET /o/&lt;slug&gt;/snapshot</code></td><td>Full current state for this overlay + a cursor</td></tr><tr><td>Stream</td><td><code>GET /o/&lt;slug&gt;/stream</code></td><td>SSE: events and state changes after the cursor</td></tr><tr><td>Poll</td><td><code>GET /o/&lt;slug&gt;/poll?cursor=&lt;c&gt;</code></td><td>Fallback: everything since the cursor, as JSON</td></tr></tbody></table></div>
+<p>Client behaviour (implemented by the runtime SDK, not by templates):</p>
+<ol><li>Fetch the snapshot. Render.</li><li>Open the stream with <code>Last-Event-ID</code> = snapshot cursor.</li><li>If the stream fails twice within 30 s, switch to polling every 700 ms (1500 ms in lite mode) and retry the stream every 60 s.</li></ol>
+<p>The server <span class="kw must">MUST</span> keep each overlay's replay buffer for at least <strong>120 seconds or 500 messages</strong>, whichever is larger. If a cursor is older than the buffer, the server responds <code>410 Gone</code> and the client re-fetches the snapshot.</p>
+<p>SSE messages <span class="kw must">MUST</span> carry <code>id:</code> (the cursor) and <code>event:</code> (the envelope <code>type</code>), and the server <span class="kw must">MUST</span> send a comment heartbeat (<code>: hb</code>) at least every 15 s so idle proxies don't cut the connection.</p>
+<h3 id="doc-01-architecture-to-third-parties-whatever-they-require">To third parties: whatever they require</h3>
+<p>Connectors open outbound WebSocket connections where a service demands it (obs-websocket, Twitch EventSub WebSocket), call REST APIs, and receive inbound webhooks (Kick events). That traffic never reaches a template.</p>
+<h2 id="doc-01-architecture-1-6-time">1.6 Time</h2>
+<ul><li>The server clock is authoritative. Every envelope carries <code>ts</code> (server epoch milliseconds).</li><li>The runtime estimates skew from snapshot and stream timestamps and exposes <code>SK.clock.now()</code> as server time. Countdowns, REC timers and synchronized animations <span class="kw must">MUST</span> use it.</li><li>One-shot visual triggers carry a server <code>startAt</code> and a duration; each client shows them for that window on server time. This keeps a horizontal and a vertical source on two different machines visually in sync.</li><li>Show-time interpretation (the day boundary, time zones) is defined in <a href="#doc-09-timeline">09-timeline.md</a>.</li></ul>
+<h2 id="doc-01-architecture-1-7-failure-isolation">1.7 Failure isolation</h2>
+<ul><li>A thrown error in any request handler, scheduler tick or connector <span class="kw must">MUST</span> be caught, logged, and leave the process serving.</li><li>A connector crash <span class="kw must">MUST</span> restart that connector with exponential backoff (base 1 s, factor 2, cap 5 min, ±20 % jitter) without touching others.</li><li>Overlays <span class="kw must">MUST</span> keep rendering their last good state when the server is unreachable, and silently resume when it returns.</li></ul></section><section class="doc" id="doc-02-data-model"><header class="dochead"><span class="cue">02</span><h1>Data model</h1></header><p>Every piece of live data in the platform is either an <strong>event</strong> or <strong>state</strong>, wrapped in one envelope. Connectors produce them, templates and external apps consume them, and none of them need to know which service a value came from unless they want to.</p>
+<h2 id="doc-02-data-model-2-1-envelope">2.1 Envelope</h2>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;id&quot;: &quot;01J9Z6M3Q8T6C9V4PZ7XKQ2N1H&quot;,
+  &quot;type&quot;: &quot;chat.message&quot;,
+  &quot;ts&quot;: 1791582412345,
+  &quot;src&quot;: { &quot;connector&quot;: &quot;twitch&quot;, &quot;connection&quot;: &quot;con_7f3a&quot;, &quot;platform&quot;: &quot;twitch&quot; },
+  &quot;data&quot;: { }
+}</code></pre></div>
+<div class="tw"><table><thead><tr><th>Field</th><th>Rule</th></tr></thead><tbody><tr><td><code>id</code></td><td><span class="kw must">MUST</span> be unique and sortable by creation time (ULID recommended). Doubles as the SSE cursor.</td></tr><tr><td><code>type</code></td><td><span class="kw must">MUST</span> be a registered type (§2.6) or a namespaced custom type (§2.7).</td></tr><tr><td><code>ts</code></td><td>Server epoch milliseconds at which the platform accepted the event.</td></tr><tr><td><code>src</code></td><td>Where it came from. <code>platform</code> is the user-facing service name; <code>connection</code> identifies the account. Core-originated envelopes use <code>{ &quot;connector&quot;: &quot;core&quot; }</code>.</td></tr><tr><td><code>data</code></td><td>Type-specific payload, defined below.</td></tr></tbody></table></div>
+<p>Schema: <a href="#schema-envelope">schemas/envelope.schema.json</a>.</p>
+<h2 id="doc-02-data-model-2-2-events-vs-state">2.2 Events vs state</h2>
+<div class="tw"><table><thead><tr><th></th><th>Event</th><th>State</th></tr></thead><tbody><tr><td>Meaning</td><td>Something happened</td><td>Something <em>is</em></td></tr><tr><td>Example</td><td>a chat message, a follow, a cue fired</td><td>viewer count, now playing, active scene</td></tr><tr><td>In snapshot</td><td>No (except the chat buffer, §2.3)</td><td>Yes, always</td></tr><tr><td>Delivery</td><td>Once, in order</td><td>Latest value wins; changes arrive as <code>state.changed</code></td></tr><tr><td>Missed while disconnected</td><td>Replayed from buffer, else lost</td><td>Recovered from the next snapshot</td></tr></tbody></table></div>
+<h3 id="doc-02-data-model-state-changes">State changes</h3>
+<div class="code"><span class="lang">json</span><pre><code>{ &quot;type&quot;: &quot;state.changed&quot;, &quot;data&quot;: { &quot;key&quot;: &quot;viewers.total&quot;, &quot;value&quot;: 1159, &quot;prev&quot;: 1140 } }</code></pre></div>
+<p>State keys are dotted lowercase. Values <span class="kw must">MUST</span> be JSON. A key that has no current value <span class="kw must">MUST</span> be absent rather than <code>null</code> or <code>0</code> — see §2.8.</p>
+<h2 id="doc-02-data-model-2-3-chat">2.3 Chat</h2>
+<p>Chat is the most demanding stream, so the platform does the heavy lifting: it merges platforms, parses emotes into fragments, applies deletions and bans, and keeps a rolling buffer so a template that loads mid-stream isn't empty.</p>
+<h3 id="doc-02-data-model-chat-message"><code>chat.message</code></h3>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;id&quot;: &quot;msg_01J9Z6…&quot;,
+  &quot;platformMessageId&quot;: &quot;b6c1e…&quot;,
+  &quot;channel&quot;: &quot;dprtmnt&quot;,
+  &quot;user&quot;: {
+    &quot;id&quot;: &quot;twitch:12345&quot;,
+    &quot;login&quot;: &quot;trapment&quot;,
+    &quot;name&quot;: &quot;Trapment&quot;,
+    &quot;color&quot;: &quot;#16E0FF&quot;,
+    &quot;avatar&quot;: &quot;https://…/profile_image.png&quot;,
+    &quot;roles&quot;: [&quot;subscriber&quot;, &quot;vip&quot;],
+    &quot;badges&quot;: [ { &quot;id&quot;: &quot;subscriber/12&quot;, &quot;label&quot;: &quot;12-month subscriber&quot;, &quot;image&quot;: &quot;https://…&quot; } ]
+  },
+  &quot;text&quot;: &quot;that drop 🔥 PogChamp&quot;,
+  &quot;fragments&quot;: [
+    { &quot;type&quot;: &quot;text&quot;,  &quot;text&quot;: &quot;that drop 🔥 &quot; },
+    { &quot;type&quot;: &quot;emote&quot;, &quot;text&quot;: &quot;PogChamp&quot;, &quot;image&quot;: &quot;https://…/3.0&quot;, &quot;animated&quot;: false }
+  ],
+  &quot;reply&quot;: null,
+  &quot;highlighted&quot;: false,
+  &quot;action&quot;: false
+}</code></pre></div>
+<ul><li><code>user.id</code> <span class="kw must">MUST</span> be prefixed with the platform (<code>twitch:</code>, <code>kick:</code>, <code>youtube:</code>) so IDs never collide across platforms.</li><li><code>roles</code> is normalized across platforms to this closed set: <code>broadcaster</code>, <code>moderator</code>, <code>vip</code>, <code>subscriber</code>, <code>member</code>, <code>verified</code>, <code>founder</code>, <code>artist</code>, <code>bot</code>. A template styles roles, not platform-specific badge IDs.</li><li><code>fragments</code> types: <code>text</code>, <code>emote</code>, <code>mention</code>, <code>link</code>, <code>cheermote</code>. Concatenating every fragment's <code>text</code> <span class="kw must">MUST</span> reproduce <code>text</code>.</li><li><code>color</code> <span class="kw may">MAY</span> be absent (YouTube has none). Templates <span class="kw must">MUST</span> handle that.</li><li>Third-party emote sets (7TV, BTTV, FFZ) <span class="kw may">MAY</span> be resolved by an optional connector into <code>emote</code> fragments; templates see no difference.</li></ul>
+<h3 id="doc-02-data-model-chat-message-deleted"><code>chat.message.deleted</code></h3>
+<p><code>{ &quot;messageId&quot;: &quot;msg_01J9Z6…&quot; }</code> — the template <span class="kw must">MUST</span> remove it from screen. The runtime also removes it from its buffer and from any not-yet-rendered queue.</p>
+<h3 id="doc-02-data-model-chat-user-cleared"><code>chat.user.cleared</code></h3>
+<p><code>{ &quot;userId&quot;: &quot;twitch:12345&quot; }</code> — a ban or timeout: remove all of that user's messages.</p>
+<h3 id="doc-02-data-model-chat-cleared"><code>chat.cleared</code></h3>
+<p><code>{}</code> — the channel's chat was cleared: remove everything.</p>
+<h3 id="doc-02-data-model-chat-buffer-in-the-snapshot">Chat buffer in the snapshot</h3>
+<p>The snapshot <span class="kw must">MUST</span> include <code>chat.recent</code>: the last N messages (N declared by the template, default 50, max 200) that are still visible after moderation, oldest first.</p>
+<h2 id="doc-02-data-model-2-4-alerts">2.4 Alerts</h2>
+<p>Alerts are one event family with a common core so a template can style them uniformly and differentiate by <code>kind</code>.</p>
+<p>Type: <code>alert.&lt;kind&gt;</code> · Common payload:</p>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;kind&quot;: &quot;subscription&quot;,
+  &quot;user&quot;: { &quot;id&quot;: &quot;kick:991&quot;, &quot;name&quot;: &quot;BIA&quot;, &quot;avatar&quot;: &quot;https://…&quot; },
+  &quot;amount&quot;: { &quot;value&quot;: 1, &quot;unit&quot;: &quot;months&quot; },
+  &quot;tier&quot;: &quot;1&quot;,
+  &quot;message&quot;: { &quot;text&quot;: &quot;first sub!&quot;, &quot;fragments&quot;: [ ] },
+  &quot;gift&quot;: null
+}</code></pre></div>
+<div class="tw"><table><thead><tr><th>Kind</th><th><code>amount.unit</code></th><th>Platforms</th></tr></thead><tbody><tr><td><code>follow</code></td><td>—</td><td>Twitch, Kick</td></tr><tr><td><code>subscription</code></td><td><code>months</code></td><td>Twitch, Kick</td></tr><tr><td><code>gift</code></td><td><code>count</code> (subs gifted)</td><td>Twitch, Kick</td></tr><tr><td><code>cheer</code></td><td><code>bits</code></td><td>Twitch</td></tr><tr><td><code>kicks</code></td><td><code>kicks</code></td><td>Kick</td></tr><tr><td><code>raid</code></td><td><code>viewers</code></td><td>Twitch, Kick (host)</td></tr><tr><td><code>membership</code></td><td><code>months</code></td><td>YouTube</td></tr><tr><td><code>superchat</code></td><td><code>currency</code> + <code>value</code></td><td>YouTube (Super Chat, Super Sticker)</td></tr><tr><td><code>tip</code></td><td><code>currency</code> + <code>value</code></td><td>external donation services via API</td></tr></tbody></table></div>
+<p>Money amounts <span class="kw must">MUST</span> carry an ISO 4217 <code>currency</code> and a decimal <code>value</code> as a string (<code>&quot;5.00&quot;</code>), never a float. The platform <span class="kw must">MUST NOT</span> convert currencies.</p>
+<p>Alerts are queued by the runtime per overlay, never by the template — see 05 §5.5.</p>
+<h2 id="doc-02-data-model-2-5-state-keys">2.5 State keys</h2>
+<div class="tw"><table><thead><tr><th>Key</th><th>Value</th><th>Source</th></tr></thead><tbody><tr><td><code>viewers.total</code></td><td>integer — sum across bound platforms</td><td>core</td></tr><tr><td><code>viewers.&lt;platform&gt;</code></td><td>integer</td><td>connector</td></tr><tr><td><code>viewers.stale</code></td><td><code>true</code> while a value is being held through an error</td><td>core</td></tr><tr><td><code>stream.&lt;platform&gt;.live</code></td><td>boolean</td><td>connector</td></tr><tr><td><code>stream.&lt;platform&gt;.title</code></td><td>string</td><td>connector</td></tr><tr><td><code>stream.&lt;platform&gt;.startedAt</code></td><td>epoch ms</td><td>connector</td></tr><tr><td><code>music.nowPlaying</code></td><td>Track object (§2.5.1)</td><td>music connector</td></tr><tr><td><code>obs.scene</code></td><td>string — current program scene</td><td>OBS</td></tr><tr><td><code>obs.streaming</code></td><td>boolean</td><td>OBS</td></tr><tr><td><code>obs.recording</code></td><td>boolean</td><td>OBS</td></tr><tr><td><code>show.scene</code></td><td>string — the overlay's active scene</td><td>core</td></tr><tr><td><code>show.lineup</code></td><td>array of slots (see 09)</td><td>core</td></tr><tr><td><code>show.currentSlot</code></td><td>integer index</td><td>core</td></tr><tr><td><code>show.recStartedAt</code></td><td>epoch ms</td><td>core</td></tr><tr><td><code>overlay.settings</code></td><td>the overlay's resolved settings</td><td>core</td></tr></tbody></table></div>
+<h3 id="doc-02-data-model-2-5-1-track">2.5.1 Track</h3>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;title&quot;: &quot;Strobe&quot;, &quot;artists&quot;: [&quot;deadmau5&quot;], &quot;album&quot;: &quot;For Lack of a Better Name&quot;,
+  &quot;art&quot;: &quot;https://i.scdn.co/image/…&quot;, &quot;url&quot;: &quot;https://open.spotify.com/track/…&quot;,
+  &quot;durationMs&quot;: 637000, &quot;progressMs&quot;: 120400, &quot;progressAt&quot;: 1791582412000,
+  &quot;playing&quot;: true, &quot;source&quot;: &quot;spotify&quot;
+}</code></pre></div>
+<p><code>progressAt</code> is the server time at which <code>progressMs</code> was true. The runtime interpolates progress locally between updates; templates read <code>SK.music.progress()</code> and never poll.</p>
+<h2 id="doc-02-data-model-2-6-registered-event-types">2.6 Registered event types</h2>
+<div class="tw"><table><thead><tr><th>Type</th><th>Payload</th></tr></thead><tbody><tr><td><code>state.changed</code></td><td>§2.2</td></tr><tr><td><code>chat.message</code>, <code>chat.message.deleted</code>, <code>chat.user.cleared</code>, <code>chat.cleared</code></td><td>§2.3</td></tr><tr><td><code>alert.&lt;kind&gt;</code></td><td>§2.4</td></tr><tr><td><code>show.scene.changed</code></td><td><code>{ &quot;scene&quot;: &quot;brb&quot;, &quot;prev&quot;: &quot;program&quot;, &quot;transition&quot;: &quot;cut&quot; }</code></td></tr><tr><td><code>show.trigger</code></td><td><code>{ &quot;name&quot;: &quot;titleCard&quot;, &quot;args&quot;: { }, &quot;startAt&quot;: 1791582412000, &quot;durationMs&quot;: 7000 }</code></td></tr><tr><td><code>show.cue.fired</code></td><td><code>{ &quot;cueId&quot;: &quot;cue_…&quot;, &quot;action&quot;: &quot;…&quot; }</code></td></tr><tr><td><code>media.play</code>, <code>media.stop</code></td><td><code>{ &quot;mediaId&quot;: &quot;…&quot;, &quot;url&quot;: &quot;/media/…&quot; }</code></td></tr><tr><td><code>system.connection</code></td><td>connection health change (06 §6.3)</td></tr><tr><td><code>system.notice</code></td><td><code>{ &quot;level&quot;: &quot;info&quot; }</code> — operator-facing, never rendered on air</td></tr></tbody></table></div>
+<h2 id="doc-02-data-model-2-7-custom-types">2.7 Custom types</h2>
+<p>External apps and connectors outside this standard <span class="kw must">MUST</span> use one of:</p>
+<ul><li><code>custom.&lt;name&gt;</code> — installation-local, ad hoc;</li><li><code>x-&lt;vendor&gt;.&lt;name&gt;</code> — published by a third-party integration (<code>x-streamdeck.button</code>).</li></ul>
+<p>State keys follow the same rule: <code>custom.*</code> or <code>x-&lt;vendor&gt;.*</code>. Unprefixed types and keys are reserved for this standard. The platform <span class="kw must">MUST</span> reject unprefixed custom publishes with <code>422</code>.</p>
+<h2 id="doc-02-data-model-2-8-absence-staleness-and-zero">2.8 Absence, staleness and zero</h2>
+<p>This is a hard rule (11 §H6). For any value displayed on air:</p>
+<ul><li><strong>Unknown</strong> → the key is absent. Templates hide the element.</li><li><strong>Real zero</strong> → <code>0</code>. Only when a service authoritatively reported zero (e.g. a channel that is verifiably offline).</li><li><strong>Error</strong> → hold the last good value for up to 120 s with <code>&lt;key&gt;.stale = true</code>, then remove the key.</li></ul>
+<p>A connector <span class="kw must">MUST NOT</span> publish <code>0</code> because a request failed.</p>
+<h2 id="doc-02-data-model-2-9-size-and-rate-limits">2.9 Size and rate limits</h2>
+<ul><li>An envelope <span class="kw must">MUST NOT</span> exceed 64 KiB serialized. Chat messages longer than 1000 characters are truncated by the connector with <code>&quot;truncated&quot;: true</code>.</li><li>The bus <span class="kw must">MUST</span> coalesce <code>state.changed</code> for the same key to at most 10 per second per overlay.</li><li>If an overlay's outbound queue exceeds 1000 envelopes, the platform drops the oldest <code>chat.message</code> events first and sets <code>chat.dropped</code> in the next envelope's metadata.</li></ul></section><section class="doc" id="doc-03-api"><header class="dochead"><span class="cue">03</span><h1>API</h1></header><p>One API serves the admin UI, external apps, bots and hardware controllers. There is no private admin API: anything the UI can do, an authorized client can do.</p>
+<h2 id="doc-03-api-3-1-conventions">3.1 Conventions</h2>
+<div class="tw"><table><thead><tr><th>Topic</th><th>Rule</th></tr></thead><tbody><tr><td>Base path</td><td><code>/api/v1</code>. A breaking change ships as <code>/api/v2</code>; v1 stays served for at least one major release.</td></tr><tr><td>Format</td><td>JSON (<code>application/json; charset=utf-8</code>) for bodies and responses.</td></tr><tr><td>Description</td><td>The platform <span class="kw must">MUST</span> serve an OpenAPI 3.1 document at <code>/api/v1/openapi.json</code>.</td></tr><tr><td>IDs</td><td>Opaque strings with a type prefix: <code>ovl_</code>, <code>tpl_</code>, <code>con_</code>, <code>usr_</code>, <code>cue_</code>, <code>show_</code>, <code>med_</code>, <code>whk_</code>.</td></tr><tr><td>Time</td><td>ISO 8601 UTC in resource bodies (<code>2026-08-29T05:00:00Z</code>); epoch ms only in live envelopes.</td></tr><tr><td>Names</td><td><code>camelCase</code> fields; plural resource paths.</td></tr><tr><td>Pagination</td><td>Cursor based: <code>?limit=50&amp;cursor=…</code> → <code>{ &quot;items&quot;: [], &quot;next&quot;: &quot;…&quot; }</code>. Max limit 200.</td></tr><tr><td>Concurrency</td><td>Mutable resources return <code>ETag</code>. <code>PATCH</code>/<code>PUT</code> <span class="kw must">MUST</span> accept <code>If-Match</code>; a stale tag returns <code>412</code>. Two operators editing one overlay can't silently overwrite each other.</td></tr><tr><td>Idempotency</td><td><code>POST</code> accepts <code>Idempotency-Key</code>; a repeat within 24 h returns the original result. Required for anything a hardware button might fire twice.</td></tr></tbody></table></div>
+<h2 id="doc-03-api-3-2-errors">3.2 Errors</h2>
+<p>RFC 9457 problem details, <code>application/problem+json</code>:</p>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;type&quot;: &quot;https://skp.dev/errors/quota-exhausted&quot;,
+  &quot;title&quot;: &quot;YouTube quota exhausted&quot;,
+  &quot;status&quot;: 429,
+  &quot;detail&quot;: &quot;Daily quota resets at midnight Pacific time. Chat will resume then.&quot;,
+  &quot;instance&quot;: &quot;/api/v1/connections/con_7f3a/test&quot;
+}</code></pre></div>
+<p><code>detail</code> <span class="kw must">MUST</span> say what happened and what to do — it is shown to operators verbatim. Stack traces <span class="kw must">MUST NOT</span> appear in responses.</p>
+<h2 id="doc-03-api-3-3-authentication-modes">3.3 Authentication modes</h2>
+<div class="tw"><table><thead><tr><th>Mode</th><th>Used by</th><th>How</th></tr></thead><tbody><tr><td>Session</td><td>Admin UI</td><td>HttpOnly cookie + CSRF header (07 §7.3)</td></tr><tr><td>API token</td><td>External apps, bots, Stream Deck</td><td><code>Authorization: Bearer skp_pat_…</code>, scoped (07 §7.5)</td></tr><tr><td>Overlay key</td><td>OBS browser sources</td><td><code>?key=</code> on <code>/o/*</code> only; read-only, one overlay (07 §7.6)</td></tr><tr><td>Webhook signature</td><td>Inbound service events</td><td>Per-service verification (07 §7.9)</td></tr></tbody></table></div>
+<p>Session cookies <span class="kw must">MUST NOT</span> authorize <code>/o/*</code>, and overlay keys <span class="kw must">MUST NOT</span> authorize <code>/api/*</code>.</p>
+<h3 id="doc-03-api-token-scopes">Token scopes</h3>
+<p><code>overlays:read</code>, <code>overlays:write</code>, <code>overlays:control</code> (take scenes, fire actions), <code>templates:read</code>, <code>templates:write</code>, <code>connections:read</code>, <code>connections:write</code>, <code>timeline:read</code>, <code>timeline:write</code>, <code>events:read</code> (SSE), <code>events:publish</code>, <code>state:write</code>, <code>media:write</code>, <code>users:admin</code>, <code>system:admin</code>.</p>
+<h2 id="doc-03-api-3-4-resources">3.4 Resources</h2>
+<h3 id="doc-03-api-auth-users">Auth &amp; users</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET /setup</code> · <code>POST /setup</code></td><td>First-run: create the owner (07 §7.2). Disabled once an owner exists.</td></tr><tr><td><code>POST /auth/login</code> · <code>POST /auth/logout</code></td><td>Session start/end</td></tr><tr><td><code>GET /auth/session</code></td><td>Current user, role, CSRF token</td></tr><tr><td><code>POST /auth/totp/enroll</code> · <code>POST /auth/totp/verify</code> · <code>DELETE /auth/totp</code></td><td>Two-factor</td></tr><tr><td><code>GET/POST /users</code> · <code>PATCH/DELETE /users/{id}</code></td><td>Accounts and roles</td></tr><tr><td><code>GET/POST /tokens</code> · <code>DELETE /tokens/{id}</code></td><td>API tokens (secret shown once)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-templates">Templates</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET /templates</code></td><td>Installed templates (filter <code>?category=</code>)</td></tr><tr><td><code>POST /templates</code></td><td>Install: upload <code>.skp</code> package (multipart) or <code>{ &quot;url&quot;: &quot;…&quot; }</code></td></tr><tr><td><code>GET /templates/{id}</code></td><td>Manifest, versions, preview images</td></tr><tr><td><code>GET /templates/{id}/versions</code></td><td>Installed versions</td></tr><tr><td><code>DELETE /templates/{id}</code></td><td>Uninstall (refused while an overlay pins it)</td></tr><tr><td><code>POST /templates/validate</code></td><td>Lint a package without installing (04 §4.11)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-overlays">Overlays</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET/POST /overlays</code></td><td>List · create from a template</td></tr><tr><td><code>GET/PATCH/DELETE /overlays/{id}</code></td><td>Read · update settings/bindings/slug · delete</td></tr><tr><td><code>POST /overlays/{id}/upgrade</code></td><td>Move to a newer template version (settings migrated, 04 §4.10)</td></tr><tr><td><code>POST /overlays/{id}/key/rotate</code></td><td>New overlay key — <strong>breaks the OBS URL</strong>; UI must confirm</td></tr><tr><td><code>GET /overlays/{id}/url</code></td><td>Production URL(s) per canvas</td></tr><tr><td><code>PUT /overlays/{id}/scene</code></td><td><code>{ &quot;scene&quot;: &quot;brb&quot;, &quot;transition&quot;: &quot;fade&quot; }</code></td></tr><tr><td><code>POST /overlays/{id}/actions/{name}</code></td><td>Fire a template action (04 §4.6)</td></tr><tr><td><code>POST /overlays/{id}/simulate</code></td><td>Inject sample events into this overlay only (08 §8.5)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-shows-timeline">Shows &amp; timeline</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET/POST /shows</code> · <code>GET/PATCH/DELETE /shows/{id}</code></td><td>Shows and their member overlays</td></tr><tr><td><code>PUT /shows/{id}/scene</code></td><td>Take a scene on every member overlay</td></tr><tr><td><code>POST /shows/{id}/triggers/{name}</code></td><td>One-shot trigger to all members</td></tr><tr><td><code>GET/POST /shows/{id}/cues</code> · <code>PATCH/DELETE /shows/{id}/cues/{cueId}</code></td><td>Timeline</td></tr><tr><td><code>POST /shows/{id}/cues/{cueId}/fire</code> · <code>/skip</code> · <code>/rearm</code></td><td>Operator overrides</td></tr><tr><td><code>POST /shows/{id}/cues/build</code></td><td>Regenerate cues from the lineup (09 §9.5)</td></tr><tr><td><code>GET/POST /shows/{id}/plans</code></td><td>Pre-planned future dates (09 §9.6)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-connections">Connections</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET /connectors</code></td><td>Available connectors, capabilities, required credentials</td></tr><tr><td><code>GET/POST /connections</code> · <code>DELETE /connections/{id}</code></td><td>Accounts</td></tr><tr><td><code>POST /connections/{id}/authorize</code></td><td>Start OAuth or device flow → <code>{ &quot;url&quot; }</code> or <code>{ &quot;userCode&quot;, &quot;verificationUri&quot; }</code></td></tr><tr><td><code>GET /oauth/callback/{connector}</code></td><td>OAuth redirect target (outside <code>/api/v1</code>, public)</td></tr><tr><td><code>POST /connections/{id}/test</code></td><td>Live check, returns health</td></tr><tr><td><code>POST /connections/{id}/actions/{name}</code></td><td>Connector actions (<code>obs.setScene</code>)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-live-data">Live data</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET /events</code></td><td>SSE of everything the token may read (<code>?types=chat.*,alert.*</code>)</td></tr><tr><td><code>POST /events</code></td><td>Publish a custom event (scope <code>events:publish</code>, §2.7)</td></tr><tr><td><code>GET /state</code> · <code>GET /state/{key}</code></td><td>Current state</td></tr><tr><td><code>PUT /state/{key}</code></td><td>Set a <code>custom.*</code> / <code>x-*</code> key (scope <code>state:write</code>)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-media-webhooks-system">Media, webhooks, system</h3>
+<div class="tw"><table><thead><tr><th>Method · Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>POST /media</code> · <code>GET /media</code> · <code>DELETE /media/{id}</code></td><td>Uploads; transcoded when ffmpeg is present</td></tr><tr><td><code>GET/POST /webhooks</code> · <code>DELETE /webhooks/{id}</code> · <code>GET /webhooks/{id}/deliveries</code></td><td>Outbound webhooks (06 §6.10)</td></tr><tr><td><code>POST /hooks/{connector}</code> · <code>POST /hooks/custom/{id}</code></td><td>Inbound webhooks (outside <code>/api/v1</code>)</td></tr><tr><td><code>GET /system/health</code> · <code>GET /system/info</code></td><td>Status, version, capabilities (e.g. <code>ffmpeg: false</code>)</td></tr><tr><td><code>POST /system/backup</code> · <code>POST /system/restore</code></td><td>Export/import (10 §10.7)</td></tr><tr><td><code>GET /system/audit</code></td><td>Audit log (owner/admin)</td></tr></tbody></table></div>
+<h3 id="doc-03-api-overlay-facing-overlay-key">Overlay-facing (overlay key)</h3>
+<div class="tw"><table><thead><tr><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code>GET /o/{slug}</code></td><td>The overlay page</td></tr><tr><td><code>GET /o/{slug}/snapshot</code> · <code>/stream</code> · <code>/poll</code></td><td>Live data (01 §1.5)</td></tr><tr><td><code>GET /o/{slug}/t/*</code></td><td>The pinned template version's static assets</td></tr><tr><td><code>GET /sdk/v1/sk.js</code></td><td>The runtime SDK</td></tr></tbody></table></div>
+<p>These responses send <code>Referrer-Policy: no-referrer</code> and <code>Cache-Control: no-store</code> (except versioned assets, which are immutable and cacheable).</p>
+<h2 id="doc-03-api-3-5-rate-limits">3.5 Rate limits</h2>
+<p>Every authenticated response carries <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code>. Defaults: 600 requests/min per token; 10 login attempts/15 min per IP and per account; <code>POST /events</code> 60/s per token. Over limit returns <code>429</code> with <code>Retry-After</code>.</p>
+<h2 id="doc-03-api-3-6-example-a-stream-deck-button">3.6 Example: a Stream Deck button</h2>
+<div class="code"><span class="lang">http</span><pre><code>POST /api/v1/shows/show_sat/scene HTTP/1.1
+Authorization: Bearer skp_pat_6vZ…
+Idempotency-Key: 2b7c1d4e-brb-press-0412
+Content-Type: application/json
+
+{ &quot;scene&quot;: &quot;brb&quot;, &quot;transition&quot;: &quot;fade&quot; }</code></pre></div>
+<div class="code"><span class="lang">http</span><pre><code>HTTP/1.1 200 OK
+ETag: &quot;show_sat-r48&quot;
+
+{ &quot;id&quot;: &quot;show_sat&quot;, &quot;scene&quot;: &quot;brb&quot;, &quot;overlays&quot;: [&quot;ovl_h&quot;, &quot;ovl_v&quot;] }</code></pre></div></section><section class="doc" id="doc-04-templates"><header class="dochead"><span class="cue">04</span><h1>Templates</h1></header><p>A template is a design. It decides how things look, where they sit and how they move. It does not decide where data comes from — that is the platform's job (README, "The one principle").</p>
+<p>A template can be as large as a whole show package (countdown, BRB, timetable, intros) or as small as a single chat box. Users compose several in OBS by stacking overlay sources.</p>
+<h2 id="doc-04-templates-4-1-package-format">4.1 Package format</h2>
+<p>A template is a ZIP archive with the extension <code>.skp</code>:</p>
+<div class="code"><pre><code>vikkstar-event/
+├── template.json        manifest (REQUIRED)
+├── index.html           entry document (REQUIRED, path configurable)
+├── template.css
+├── template.js
+├── assets/              images, fonts, video, Lottie JSON
+├── previews/            screenshots shown in the gallery (REQUIRED: at least one)
+└── LICENSE</code></pre></div>
+<ul><li>Total size <span class="kw must">MUST NOT</span> exceed 100 MiB; a single file 50 MiB.</li><li>Paths are relative, lowercase recommended, no <code>..</code>, no absolute paths, no symlinks. The platform <span class="kw must">MUST</span> reject archives violating this (zip-slip protection).</li><li>Everything the template loads at runtime <span class="kw must">MUST</span> be inside the package, except the images the data itself points to (avatars, emotes, album art) and fonts from allowed hosts (§4.8).</li></ul>
+<h2 id="doc-04-templates-4-2-manifest">4.2 Manifest</h2>
+<p><code>template.json</code>. Schema: <a href="#schema-template">schemas/template.schema.json</a>.</p>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;standard&quot;: &quot;skp/1&quot;,
+  &quot;id&quot;: &quot;com.dprtmnt.vikkstar-event&quot;,
+  &quot;name&quot;: &quot;VIKKSTAR × D/PRTMNT&quot;,
+  &quot;version&quot;: &quot;1.2.0&quot;,
+  &quot;description&quot;: &quot;Gold poster-led event package with headliner takeover intro.&quot;,
+  &quot;author&quot;: { &quot;name&quot;: &quot;D/PRTMNT&quot;, &quot;url&quot;: &quot;https://dprtmnt.com&quot; },
+  &quot;license&quot;: &quot;proprietary&quot;,
+  &quot;category&quot;: &quot;show&quot;,
+  &quot;tags&quot;: [&quot;event&quot;, &quot;dj&quot;, &quot;gold&quot;],
+  &quot;entry&quot;: &quot;index.html&quot;,
+  &quot;previews&quot;: [&quot;previews/starting.jpg&quot;, &quot;previews/program.jpg&quot;],
+
+  &quot;engines&quot;: { &quot;obs&quot;: &quot;&gt;=30&quot; },
+
+  &quot;canvases&quot;: [
+    { &quot;id&quot;: &quot;h&quot;, &quot;width&quot;: 1920, &quot;height&quot;: 1080, &quot;default&quot;: true },
+    { &quot;id&quot;: &quot;v&quot;, &quot;width&quot;: 1080, &quot;height&quot;: 1920 }
+  ],
+
+  &quot;scenes&quot;: [
+    { &quot;id&quot;: &quot;starting&quot;,  &quot;label&quot;: &quot;Starting Soon&quot;, &quot;core&quot;: &quot;starting&quot; },
+    { &quot;id&quot;: &quot;program&quot;,   &quot;label&quot;: &quot;Live · In-set&quot;, &quot;core&quot;: &quot;program&quot;, &quot;transparent&quot;: true },
+    { &quot;id&quot;: &quot;brb&quot;,       &quot;label&quot;: &quot;Be Right Back&quot;, &quot;core&quot;: &quot;brb&quot; },
+    { &quot;id&quot;: &quot;lineup&quot;,    &quot;label&quot;: &quot;Timetable&quot;,     &quot;core&quot;: &quot;lineup&quot; },
+    { &quot;id&quot;: &quot;outro&quot;,     &quot;label&quot;: &quot;Thanks For Watching&quot;, &quot;core&quot;: &quot;outro&quot; },
+    { &quot;id&quot;: &quot;bg&quot;,        &quot;label&quot;: &quot;Animated Background&quot;, &quot;core&quot;: &quot;bg&quot; },
+    { &quot;id&quot;: &quot;intro&quot;,     &quot;label&quot;: &quot;Event Intro&quot;,   &quot;core&quot;: &quot;intro&quot;, &quot;durationMs&quot;: 8000, &quot;then&quot;: &quot;program&quot; },
+    { &quot;id&quot;: &quot;headliner&quot;, &quot;label&quot;: &quot;Headliner Intro&quot;, &quot;durationMs&quot;: 8000, &quot;then&quot;: &quot;program&quot; }
+  ],
+
+  &quot;consumes&quot;: {
+    &quot;state&quot;:  [&quot;show.*&quot;, &quot;viewers.total&quot;, &quot;viewers.stale&quot;, &quot;music.nowPlaying&quot;],
+    &quot;events&quot;: [&quot;show.trigger&quot;, &quot;alert.*&quot;],
+    &quot;chat&quot;:   { &quot;recent&quot;: 0 }
+  },
+
+  &quot;settings&quot;: { &quot;$ref&quot;: &quot;#/definitions/settings&quot; },
+
+  &quot;actions&quot;: [
+    { &quot;id&quot;: &quot;titleCard&quot;,  &quot;label&quot;: &quot;DJ title card&quot;,  &quot;durationMs&quot;: 7000 },
+    { &quot;id&quot;: &quot;nowPlaying&quot;, &quot;label&quot;: &quot;Now playing&quot;,    &quot;durationMs&quot;: 22000 },
+    { &quot;id&quot;: &quot;chipOpening&quot;,&quot;label&quot;: &quot;Opening DJ chip&quot;,&quot;durationMs&quot;: 10000 }
+  ],
+
+  &quot;alerts&quot;: { &quot;mode&quot;: &quot;serial&quot;, &quot;maxConcurrent&quot;: 1, &quot;minDisplayMs&quot;: 4000, &quot;gapMs&quot;: 600 },
+
+  &quot;fonts&quot;: [&quot;https://fonts.googleapis.com/css2?family=Archivo:wght@700;900&quot;]
+}</code></pre></div>
+<h3 id="doc-04-templates-field-rules">Field rules</h3>
+<ul><li><code>id</code> — reverse-DNS, globally unique, immutable for the life of the template.</li><li><code>version</code> — SemVer. A <strong>major</strong> bump means existing overlays' settings may not migrate automatically (§4.10).</li><li><code>category</code> — one of <code>show</code> (multi-scene package), <code>chat</code>, <code>alerts</code>, <code>now-playing</code>, <code>lower-third</code>, <code>background</code>, <code>ticker</code>, <code>goal</code>, <code>scoreboard</code>, <code>widget</code>.</li><li><code>scenes[].core</code> — maps the scene to a <strong>core scene</strong> so shows, timelines and buttons work across templates: <code>auto</code>, <code>starting</code>, <code>program</code>, <code>brb</code>, <code>lineup</code>, <code>outro</code>, <code>bg</code>, <code>intro</code>. A scene without <code>core</code> is a template <strong>extra</strong> (e.g. <code>headliner</code>). A <code>show</code>-category template <span class="kw must">MUST</span> provide <code>starting</code>, <code>program</code>, <code>brb</code> and <code>outro</code>; it <span class="kw should">SHOULD</span> provide all eight.</li><li><code>scenes[].then</code> + <code>durationMs</code> — a timed scene that returns automatically. The <strong>server</strong> performs the return (09 §9.3), so it happens even if no browser is watching.</li><li><code>consumes</code> — least privilege. The runtime delivers only matching state keys and event types; everything else never leaves the server. Wildcards: <code>alert.*</code>, <code>show.*</code>.</li><li><code>chat.recent</code> — how many buffered messages the snapshot includes (0–200). <code>chat.max</code> — the most messages the template keeps on screen; the runtime unmounts older ones (05 §5.6).</li></ul>
+<h2 id="doc-04-templates-4-3-settings-schema">4.3 Settings schema</h2>
+<p>Templates declare user-editable settings with a JSON Schema (draft 2020-12) subset. The admin UI generates the form from it — templates never ship their own settings UI.</p>
+<div class="code"><span class="lang">json</span><pre><code>&quot;definitions&quot;: {
+  &quot;settings&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;headliner&quot;:  { &quot;type&quot;: &quot;string&quot;, &quot;title&quot;: &quot;Headliner&quot;, &quot;x-skp-bind&quot;: &quot;show.headliner&quot; },
+      &quot;accent&quot;:     { &quot;type&quot;: &quot;string&quot;, &quot;format&quot;: &quot;color&quot;, &quot;title&quot;: &quot;Accent&quot;, &quot;default&quot;: &quot;#EFC33F&quot; },
+      &quot;starStyle&quot;:  { &quot;type&quot;: &quot;string&quot;, &quot;title&quot;: &quot;Logo treatment&quot;, &quot;enum&quot;: [&quot;rake&quot;,&quot;rise&quot;,&quot;ghost&quot;,&quot;stamp&quot;],
+                      &quot;x-skp-labels&quot;: [&quot;Gold rake&quot;,&quot;Rise reveal&quot;,&quot;Ghost trail&quot;,&quot;Stamp + ring&quot;], &quot;default&quot;: &quot;rake&quot; },
+      &quot;showPoster&quot;: { &quot;type&quot;: &quot;boolean&quot;, &quot;title&quot;: &quot;Poster art&quot;, &quot;default&quot;: true },
+      &quot;scanlines&quot;:  { &quot;type&quot;: &quot;boolean&quot;, &quot;title&quot;: &quot;Scanlines&quot;, &quot;default&quot;: true },
+      &quot;chatX&quot;:      { &quot;type&quot;: &quot;integer&quot;, &quot;title&quot;: &quot;Chat position X&quot;, &quot;minimum&quot;: 0, &quot;maximum&quot;: 1920,
+                      &quot;x-skp-widget&quot;: &quot;position&quot;, &quot;x-skp-axis&quot;: &quot;x&quot; },
+      &quot;poster&quot;:     { &quot;type&quot;: &quot;string&quot;, &quot;title&quot;: &quot;Poster image&quot;, &quot;x-skp-widget&quot;: &quot;media&quot;, &quot;x-skp-accept&quot;: &quot;image/*&quot; }
+    }
+  }
+}</code></pre></div>
+<p>Supported: <code>string</code>, <code>number</code>, <code>integer</code>, <code>boolean</code>, <code>enum</code>, <code>array</code> of primitives, nested <code>object</code> (rendered as a group), <code>default</code>, <code>minimum</code>/<code>maximum</code>, <code>maxLength</code>, <code>pattern</code>, <code>format: color | uri | date | time</code>.</p>
+<p>Extensions (<code>x-skp-*</code>):</p>
+<div class="tw"><table><thead><tr><th>Key</th><th>Effect</th></tr></thead><tbody><tr><td><code>x-skp-widget</code></td><td><code>color</code>, <code>font</code>, <code>media</code>, <code>position</code>, <code>size</code>, <code>slider</code>, <code>textarea</code>, <code>code</code></td></tr><tr><td><code>x-skp-labels</code></td><td>Display labels for <code>enum</code> values</td></tr><tr><td><code>x-skp-group</code></td><td>Groups fields into a collapsible section</td></tr><tr><td><code>x-skp-bind</code></td><td>Default the value from a state key (still overridable)</td></tr><tr><td><code>x-skp-showIf</code></td><td><code>{ &quot;field&quot;: &quot;showPoster&quot;, &quot;equals&quot;: true }</code> conditional display</td></tr><tr><td><code>x-skp-preview</code></td><td><code>&quot;live&quot;</code> — update the preview on every keystroke instead of on blur</td></tr></tbody></table></div>
+<p>Design tokens are just settings: a template that exposes <code>accent</code>, <code>fontDisplay</code> and <code>radius</code> lets a user restyle it without code.</p>
+<h2 id="doc-04-templates-4-4-runtime-sdk">4.4 Runtime SDK</h2>
+<p>The runtime injects <code>/sdk/v1/sk.js</code> before the template's scripts and exposes a frozen global <code>SK</code>. Templates <span class="kw must">MUST</span> obtain all live data through it.</p>
+<div class="code"><span class="lang">js</span><pre><code>SK.ready(() =&gt; { /* snapshot loaded, settings resolved, safe to render */ });
+
+// settings
+SK.settings                       // resolved values (defaults applied)
+SK.onSettings(s =&gt; restyle(s))    // live edits from the admin UI
+
+// state
+SK.state(&#x27;viewers.total&#x27;)         // current value or undefined
+SK.onState(&#x27;viewers.total&#x27;, (v, prev) =&gt; …)   // also fires once on ready
+SK.onState(&#x27;show.*&#x27;, (key, v) =&gt; …)
+
+// events
+SK.on(&#x27;alert.*&#x27;, e =&gt; …)          // only types declared in consumes
+SK.on(&#x27;show.trigger&#x27;, e =&gt; …)
+
+// scenes
+SK.scene                          // current scene id
+SK.onScene((scene, prev, transition) =&gt; …)
+
+// actions this template declared
+SK.action(&#x27;titleCard&#x27;, ({ args, startAt, durationMs }) =&gt; showCard(args))
+
+// chat helper (merged, moderated, buffered)
+SK.chat.recent()                  // array, oldest first
+SK.chat.onAdd(m =&gt; …); SK.chat.onRemove(id =&gt; …); SK.chat.onClear(() =&gt; …)
+
+// music helper
+SK.music.track()                  // Track or undefined
+SK.music.progress()               // interpolated ms
+
+// alerts: the runtime queues; the template renders one at a time
+SK.alerts.render(async (alert, el) =&gt; { … resolves when exit animation is done … })
+
+// animation lifecycle (see 05)
+SK.mount(el, { enter: &#x27;rise&#x27;, durationMs: 600 })
+SK.unmount(el)                    // resolves after the exit animation
+
+// time &amp; environment
+SK.clock.now()                    // server time
+SK.clock.at(ts, fn)               // run fn at a server time
+SK.canvas                         // { id, width, height }
+SK.env                            // { preview, lite, reducedMotion, obs }
+SK.asset(&#x27;assets/poster-h.jpg&#x27;)   // versioned, cacheable URL
+SK.log.warn(&#x27;…&#x27;)                  // forwarded to the platform&#x27;s template log</code></pre></div>
+<p>The SDK <span class="kw must">MUST</span> be dependency-free, under 25 KB gzipped, and run in the browser engine of the oldest OBS version the platform supports (10 §10.2).</p>
+<h2 id="doc-04-templates-4-5-rendering-contract">4.5 Rendering contract</h2>
+<ul><li>The runtime sets <code>&lt;html data-skp-canvas=&quot;h&quot; data-skp-scene=&quot;program&quot;&gt;</code> and scales a fixed stage of the canvas size to the viewport. Templates lay out in canvas pixels and never compute scaling themselves.</li><li>The page background <span class="kw must">MUST</span> be transparent unless the active scene declares otherwise. OBS composites the overlay over the camera.</li><li>A template <span class="kw must">MUST</span> render something sensible with empty data: before the snapshot, with no connections bound, and with every optional key absent.</li><li>A template <span class="kw must">MUST NOT</span> depend on <code>requestAnimationFrame</code> for correctness. Use timers, CSS animations or <code>SK.clock.at</code> (05 §5.7).</li></ul>
+<h2 id="doc-04-templates-4-6-actions">4.6 Actions</h2>
+<p>Actions are named moments a template can perform: a title card, a now-playing lower third, a schedule chip, a goal celebration. Declaring them in the manifest makes them appear as buttons in the admin UI, as cue actions on the timeline, and as <code>POST /overlays/{id}/actions/{name}</code> — with no extra work.</p>
+<p>The runtime calls the registered handler with <code>{ args, startAt, durationMs }</code>. The template shows the element from <code>startAt</code> for <code>durationMs</code> on server time, then hides it. A trigger that arrives after its window has passed <span class="kw must">MUST NOT</span> be shown.</p>
+<h2 id="doc-04-templates-4-7-scenes-and-transitions">4.7 Scenes and transitions</h2>
+<p>The runtime owns scene switching: it mounts the incoming scene container (<code>&lt;section data-skp-scene-root=&quot;brb&quot;&gt;</code>), runs the outgoing scene's exit and the incoming scene's enter (05 §5.4), then removes the old container. A template provides each scene's markup by either:</p>
+<ul><li><strong>declarative</strong> — <code>&lt;template data-skp-scene=&quot;brb&quot;&gt;…&lt;/template&gt;</code> blocks in <code>index.html</code>; or</li><li><strong>imperative</strong> — <code>SK.defineScene(&#x27;brb&#x27;, ctx =&gt; element)</code>.</li></ul>
+<h2 id="doc-04-templates-4-8-sandbox-and-content-security-policy">4.8 Sandbox and Content Security Policy</h2>
+<p>Templates are third-party code running inside OBS and inside the admin UI's preview. The platform <span class="kw must">MUST</span> serve overlay pages with:</p>
+<div class="code"><pre><code>Content-Security-Policy:
+  default-src &#x27;none&#x27;;
+  script-src &#x27;self&#x27;;
+  style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27; https://fonts.googleapis.com;
+  font-src &#x27;self&#x27; https://fonts.gstatic.com data:;
+  img-src &#x27;self&#x27; data: https:;
+  media-src &#x27;self&#x27; blob:;
+  connect-src &#x27;self&#x27;;
+  frame-ancestors &#x27;self&#x27;;
+  base-uri &#x27;none&#x27;;
+  form-action &#x27;none&#x27;</code></pre></div>
+<p><code>connect-src &#x27;self&#x27;</code> is what makes "templates never connect" enforceable: a template cannot fetch from a third party even if it tries. <code>img-src https:</code> exists because avatars, emotes and album art legitimately come from platform CDNs. Additional font hosts <span class="kw may">MAY</span> be allowed only if listed in <code>fonts</code>.</p>
+<p>In the admin UI, previews <span class="kw must">MUST</span> load in <code>&lt;iframe sandbox=&quot;allow-scripts&quot;&gt;</code> — <em>without</em> <code>allow-same-origin</code> — so a template can never read the operator's session or the admin DOM. Overlay endpoints authorize by key, not cookie, and answer <code>GET</code> with <code>Access-Control-Allow-Origin: *</code>, which is what lets the opaque-origin preview still stream data.</p>
+<p>A template <span class="kw must">MUST NOT</span> receive tokens, credentials, other overlays' data, or any state key it did not declare.</p>
+<h2 id="doc-04-templates-4-9-preview-overrides">4.9 Preview overrides</h2>
+<p>For development and the admin UI only, the overlay URL accepts: <code>?scene=&lt;id&gt;</code> (force a scene), <code>?bg=dark</code> (opaque backdrop), <code>?lite=1</code> (drop GPU-heavy layers — mobile previews), <code>?mock=1</code> (sample data, 08 §8.5), <code>?debug=1</code> (diagnostic HUD), <code>?settings=&lt;base64&gt;</code> (unsaved settings being edited). URLs generated for OBS <span class="kw must">MUST NOT</span> include them.</p>
+<h2 id="doc-04-templates-4-10-versioning-and-migration">4.10 Versioning and migration</h2>
+<ul><li>Overlays pin <code>id@version</code>. Installing a newer version never changes running overlays.</li><li><code>POST /overlays/{id}/upgrade</code> migrates settings: unchanged keys copy over, removed keys drop, new keys take defaults. A template <span class="kw may">MAY</span> ship <code>migrate.js</code> exporting <code>migrate(fromVersion, settings) → settings</code> for renames; it runs server-side in an isolated context with no I/O.</li><li>Across a <strong>major</strong> version the UI <span class="kw must">MUST</span> show what will change before upgrading.</li></ul>
+<h2 id="doc-04-templates-4-11-validation">4.11 Validation</h2>
+<p><code>POST /templates/validate</code> (and the same check on install) <span class="kw must">MUST</span> verify: manifest against the schema; <code>standard</code> is supported; every referenced file exists; previews exist; no path escapes; scene and action IDs unique; <code>show</code> templates provide the required core scenes; the entry renders without throwing under <code>?mock=1</code> in a headless check when available. Errors block install; warnings (e.g. a missing <code>bg</code> scene) are shown.</p>
+<h2 id="doc-04-templates-4-12-a-minimal-template">4.12 A minimal template</h2>
+<div class="code"><span class="lang">html</span><pre><code>&lt;!-- index.html --&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;template.css&quot;&gt;
+&lt;template data-skp-scene=&quot;program&quot;&gt;
+  &lt;div class=&quot;viewers&quot; hidden&gt;&lt;span class=&quot;dot&quot;&gt;&lt;/span&gt;&lt;b&gt;&lt;/b&gt;&lt;/div&gt;
+&lt;/template&gt;
+&lt;script src=&quot;template.js&quot;&gt;&lt;/script&gt;</code></pre></div>
+<div class="code"><span class="lang">js</span><pre><code>// template.js
+SK.ready(() =&gt; {
+  SK.onState(&#x27;viewers.total&#x27;, v =&gt; {
+    const el = document.querySelector(&#x27;.viewers&#x27;);
+    el.hidden = v === undefined;                       // absent → hidden, never &quot;0&quot;
+    if (v !== undefined) el.querySelector(&#x27;b&#x27;).textContent = v.toLocaleString();
+  });
+});</code></pre></div>
+<p>That is the entire integration with Twitch, Kick and YouTube viewer counts.</p></section><section class="doc" id="doc-05-animation"><header class="dochead"><span class="cue">05</span><h1>Animation</h1></header><p>Animation is where templates spend their effort, so the platform gives them a small, strict contract: a lifecycle for every element, a scheduler that is synchronized to server time, and queues for things that arrive in bursts. Templates write the motion; the runtime decides when.</p>
+<h2 id="doc-05-animation-5-1-engines">5.1 Engines</h2>
+<p>Templates <span class="kw may">MAY</span> animate with any of:</p>
+<div class="tw"><table><thead><tr><th>Engine</th><th>Use</th><th>Notes</th></tr></thead><tbody><tr><td>CSS transitions &amp; keyframes</td><td>Default for everything</td><td>Cheapest; survive tab throttling</td></tr><tr><td>Web Animations API</td><td>Sequenced, seekable motion</td><td><code>element.animate()</code>; seekable in previews</td></tr><tr><td>Lottie</td><td>Designer-made vector animation</td><td>Bundle the player in the package; no CDN</td></tr><tr><td>Video (WebM VP9 with alpha)</td><td>Stingers, complex intros</td><td>Plays muted; audio belongs in OBS</td></tr><tr><td>Canvas 2D / WebGL</td><td>Particles, generative backgrounds</td><td>Budget carefully (§5.8)</td></tr></tbody></table></div>
+<p>All animation <span class="kw must">MUST</span> be self-contained in the package.</p>
+<h2 id="doc-05-animation-5-2-element-lifecycle">5.2 Element lifecycle</h2>
+<p>Every element the runtime shows or hides moves through four states, exposed as an attribute so CSS can target them:</p>
+<div class="code"><pre><code>  (absent) ──mount──► enter ──► idle ──unmount──► exit ──► (removed)</code></pre></div>
+<div class="code"><span class="lang">css</span><pre><code>.card[data-skp-state=&quot;enter&quot;] { animation: rise .6s cubic-bezier(.2,.7,.2,1) both; }
+.card[data-skp-state=&quot;idle&quot;]  { animation: breathe 4s ease-in-out infinite; }
+.card[data-skp-state=&quot;exit&quot;]  { animation: drop .45s ease-in both; }</code></pre></div>
+<ul><li><code>SK.mount(el, opts)</code> inserts the element with <code>data-skp-state=&quot;enter&quot;</code>, then switches to <code>idle</code> after the enter duration.</li><li><code>SK.unmount(el)</code> sets <code>exit</code> and removes the element after the exit duration. It returns a promise.</li><li>Duration is resolved in order: <code>opts.durationMs</code> → CSS custom property <code>--skp-enter-ms</code> / <code>--skp-exit-ms</code> → the computed animation duration → 0.</li><li>The runtime <span class="kw must">MUST NOT</span> wait on <code>animationend</code> alone. It uses the resolved duration plus 50 ms as a deadline, because <code>animationend</code> does not fire on elements that are hidden or in a throttled source. (Hard rule 11 §H9.)</li></ul>
+<h2 id="doc-05-animation-5-3-synchronized-timing">5.3 Synchronized timing</h2>
+<p>Two sources on two machines — a horizontal and a vertical feed — must hit the same beat.</p>
+<ul><li>Every trigger carries <code>startAt</code> in server time (02 §2.6). The runtime begins the element's enter at <code>startAt</code> on <code>SK.clock.now()</code>, not on receipt.</li><li>If a trigger arrives late but inside its window, the runtime <span class="kw should">SHOULD</span> start it immediately and offset WAAPI/CSS animations by the lateness (<code>animation-delay: -Xms</code>) so it lands on the same final frame as on-time clients.</li><li>If the window has passed, it is dropped.</li><li><code>SK.clock.at(ts, fn)</code> schedules a callback against server time; it re-checks on a 250 ms timer, so it stays correct across clock corrections and throttled tabs.</li></ul>
+<h2 id="doc-05-animation-5-4-scene-transitions">5.4 Scene transitions</h2>
+<p>On a scene change the runtime:</p>
+<ol><li>mounts the incoming scene root in <code>enter</code>;</li><li>sets the outgoing root to <code>exit</code>;</li><li>removes the outgoing root after its exit duration.</li></ol>
+<p>Both overlap by default (crossfade). A template controls the look entirely in CSS:</p>
+<div class="code"><span class="lang">css</span><pre><code>[data-skp-scene-root][data-skp-state=&quot;enter&quot;] { animation: sceneIn .5s ease both; }
+[data-skp-scene-root][data-skp-state=&quot;exit&quot;]  { animation: sceneOut .5s ease both; }</code></pre></div>
+<p>The transition name requested by the operator (<code>cut</code>, <code>fade</code>, <code>stinger</code>, or a template-defined name) is exposed as <code>data-skp-transition</code> on both roots. <code>cut</code> <span class="kw must">MUST</span> skip animations entirely. A template <span class="kw may">MAY</span> declare a stinger:</p>
+<div class="code"><span class="lang">json</span><pre><code>&quot;transitions&quot;: [ { &quot;id&quot;: &quot;stinger&quot;, &quot;media&quot;: &quot;assets/stinger.webm&quot;, &quot;cutAtMs&quot;: 420 } ]</code></pre></div>
+<p>The runtime plays the video over both scenes and swaps them at <code>cutAtMs</code>.</p>
+<h2 id="doc-05-animation-5-5-alert-queue">5.5 Alert queue</h2>
+<p>Alerts arrive in bursts (a gift of 50 subs is 51 events). The runtime — not the template — queues them per overlay according to the manifest:</p>
+<div class="tw"><table><thead><tr><th><code>alerts</code> field</th><th>Meaning</th><th>Default</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>serial</code> (one at a time) or <code>stack</code> (several visible)</td><td><code>serial</code></td></tr><tr><td><code>maxConcurrent</code></td><td>for <code>stack</code></td><td>3</td></tr><tr><td><code>minDisplayMs</code></td><td>minimum time on screen</td><td>4000</td></tr><tr><td><code>gapMs</code></td><td>pause between alerts</td><td>500</td></tr><tr><td><code>maxQueue</code></td><td>alerts held before the oldest low-priority ones are dropped</td><td>50</td></tr><tr><td><code>coalesce</code></td><td>merge a gift burst into one <code>alert.gift</code> with the total</td><td><code>true</code></td></tr></tbody></table></div>
+<p>Priority, highest first: <code>raid</code>, <code>superchat</code>/<code>tip</code>, <code>gift</code>, <code>subscription</code>, <code>membership</code>, <code>cheer</code>/<code>kicks</code>, <code>follow</code>. The operator can pause, skip and replay alerts from the admin UI.</p>
+<p>The template supplies only the renderer:</p>
+<div class="code"><span class="lang">js</span><pre><code>SK.alerts.render(async (alert, el) =&gt; {
+  el.innerHTML = `&lt;b&gt;${alert.user.name}&lt;/b&gt; ${verb(alert)}`;
+  await SK.mount(el, { durationMs: 600 });
+  await wait(Math.max(SK.settings.alertHoldMs, 4000));
+  await SK.unmount(el);
+});</code></pre></div>
+<h2 id="doc-05-animation-5-6-chat-animation">5.6 Chat animation</h2>
+<p>The chat helper handles pacing: when messages arrive faster than a template can animate, the runtime batches them into frames of at most 4 messages per 250 ms and caps on-screen messages at the template's <code>chat.max</code> (default 30), unmounting the oldest with their exit animation. Deleted messages unmount immediately with their exit animation; a <code>chat.cleared</code> exits everything at once.</p>
+<h2 id="doc-05-animation-5-7-timers-versus-animation-frames">5.7 Timers versus animation frames</h2>
+<p><code>requestAnimationFrame</code> <span class="kw must">MUST NOT</span> gate correctness. OBS can stop delivering frames to a source that isn't currently painting, and a browser preview tab in the background is throttled to roughly one timer per second. Use CSS or WAAPI for motion (the compositor keeps running) and timers or <code>SK.clock.at</code> for state. <code>requestAnimationFrame</code> is fine for canvas drawing loops whose pause is harmless.</p>
+<h2 id="doc-05-animation-5-8-performance-budget">5.8 Performance budget</h2>
+<p>One OBS scene often holds four or more overlay sources, each its own browser.</p>
+<ul><li>Animate <code>transform</code> and <code>opacity</code> only. Never animate <code>width</code>, <code>height</code>, <code>top</code>, <code>left</code>, <code>box-shadow</code> or <code>filter: blur()</code> in loops.</li><li><strong>Do not use <code>backdrop-filter</code></strong> to blur the camera: a browser source only sees its own page, so it blurs nothing useful and costs GPU. Darken with a translucent fill; blur the camera with an OBS filter.</li><li><strong>Do not use <code>mix-blend-mode</code> on transparent overlays.</strong> With nothing beneath it inside the page, <code>multiply</code> composites to black and covers the camera.</li><li>At most two infinite animations per scene in <code>idle</code>; prefer <code>steps()</code> for texture loops.</li><li>Canvas/WebGL: cap at 30 fps unless the effect needs 60; stop the loop when its scene exits.</li><li>Large images: decode ahead (<code>img.decode()</code>) before the first animated reveal, or the first showing stutters.</li><li>Lite mode (<code>SK.env.lite</code>): the runtime adds <code>data-skp-lite</code> to <code>&lt;html&gt;</code>; templates <span class="kw should">SHOULD</span> drop blurs, grain, particles and video under it. Mobile previews use it so several overlay iframes don't exhaust a phone's GPU memory.</li></ul>
+<h2 id="doc-05-animation-5-9-reduced-motion-and-previews">5.9 Reduced motion and previews</h2>
+<ul><li>In the admin UI only, the runtime honours <code>prefers-reduced-motion</code> by setting <code>data-skp-reduced-motion</code>; templates <span class="kw should">SHOULD</span> shorten or skip motion under it. On air, OBS sources always animate.</li><li>Preview scrubbing: the admin UI <span class="kw may">MAY</span> pause and seek a template by setting <code>currentTime</code> on every animation from <code>document.getAnimations()</code>. Templates that use CSS or WAAPI get this for free; canvas loops should read <code>SK.clock.now()</code> rather than wall time to stay scrubbable.</li></ul></section><section class="doc" id="doc-06-integrations"><header class="dochead"><span class="cue">06</span><h1>Integrations</h1></header><p>The platform does all connecting. This document defines the contract every connector meets, then the specifics for each service in v1, then how other apps plug in.</p>
+<blockquote><p><strong>Verified 2026-10-09.</strong> Platform APIs change. Each service section lists what was confirmed against official documentation or developer announcements on that date. Implementers <span class="kw must">MUST</span> re-check scopes, endpoints and limits against the linked sources before release and update this file.</p></blockquote>
+<h2 id="doc-06-integrations-6-1-connector-contract">6.1 Connector contract</h2>
+<div class="code"><span class="lang">ts</span><pre><code>interface Connector {
+  id: string                         // &quot;twitch&quot;
+  name: string                       // &quot;Twitch&quot;
+  capabilities: Capability[]         // see 6.2
+  credentials: CredentialSpec        // what the user must supply (client ID, secret, password…)
+  auth: &#x27;oauth-pkce&#x27; | &#x27;oauth-code&#x27; | &#x27;device-code&#x27; | &#x27;client-credentials&#x27;
+      | &#x27;password&#x27; | &#x27;none&#x27;
+  requiresPublicUrl?: boolean        // true if the service pushes to us (webhooks)
+
+  start(ctx: ConnectorContext): Promise&lt;void&gt;
+  stop(): Promise&lt;void&gt;
+  health(): Health                    // see 6.3
+  actions?: Record&lt;string, ActionSpec&gt;
+}
+
+interface ConnectorContext {
+  connection: Connection              // decrypted credentials + tokens, in memory only
+  publish(envelope: EnvelopeInput): void       // events
+  setState(key: string, value: unknown): void   // state; undefined = remove
+  saveTokens(tokens: TokenSet): Promise&lt;void&gt;  // persisted encrypted
+  http: HttpClient                    // timeouts, retries, 429 handling built in
+  log: Logger                         // redacts secrets
+  publicUrl?: string                  // SKP_PUBLIC_URL, when set
+  schedule(ms: number, fn: () =&gt; void): Cancel
+}</code></pre></div>
+<p>A connector <span class="kw must">MUST</span>:</p>
+<ul><li>never block the event loop or throw out of <code>start</code>; failures become <code>health.status = &quot;error&quot;</code>;</li><li>refresh tokens before expiry (at 80 % of lifetime) and once more on any <code>401</code>, then stop and report <code>needs-reauth</code> rather than retrying in a loop;</li><li>honour <code>429</code> and <code>Retry-After</code>; back off exponentially with jitter on <code>5xx</code> and network errors (base 1 s, ×2, cap 5 min);</li><li>stop calling a service whose quota is exhausted until the documented reset, and say so in <code>health.detail</code>;</li><li>publish only normalized types (02) — never raw service payloads;</li><li>follow the absence rules (02 §2.8): never publish <code>0</code> for a failure;</li><li>deduplicate pushed events by the service's message ID for at least 10 minutes;</li><li>keep credentials and tokens in memory only via <code>ctx.connection</code>, never in logs or envelopes.</li></ul>
+<h2 id="doc-06-integrations-6-2-capabilities">6.2 Capabilities</h2>
+<div class="tw"><table><thead><tr><th>Capability</th><th>Produces</th></tr></thead><tbody><tr><td><code>chat.read</code></td><td><code>chat.*</code> events</td></tr><tr><td><code>alerts</code></td><td><code>alert.*</code> events</td></tr><tr><td><code>viewers</code></td><td><code>viewers.&lt;platform&gt;</code> state</td></tr><tr><td><code>stream.status</code></td><td><code>stream.&lt;platform&gt;.*</code> state</td></tr><tr><td><code>music</code></td><td><code>music.nowPlaying</code> state</td></tr><tr><td><code>obs</code></td><td><code>obs.*</code> state; scene/source actions</td></tr><tr><td><code>chat.write</code>, <code>moderation</code></td><td>reserved for v2</td></tr></tbody></table></div>
+<p>The UI uses capabilities to show users what each connection will feed and which overlays can bind to it.</p>
+<h2 id="doc-06-integrations-6-3-health">6.3 Health</h2>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;status&quot;: &quot;connected&quot;,
+  &quot;detail&quot;: &quot;Receiving chat · 2 subscriptions active&quot;,
+  &quot;since&quot;: &quot;2026-10-09T02:14:00Z&quot;,
+  &quot;lastEventAt&quot;: &quot;2026-10-09T02:31:12Z&quot;,
+  &quot;quota&quot;: { &quot;used&quot;: 3120, &quot;limit&quot;: 10000, &quot;resetsAt&quot;: &quot;2026-10-09T07:00:00Z&quot; },
+  &quot;warnings&quot;: []
+}</code></pre></div>
+<p><code>status</code> ∈ <code>disabled</code>, <code>connecting</code>, <code>connected</code>, <code>degraded</code> (partially working — e.g. Kick viewers OK but chat unavailable), <code>needs-reauth</code>, <code>error</code>. Every change publishes <code>system.connection</code>. The dashboard shows all connections at a glance.</p>
+<h2 id="doc-06-integrations-6-4-authorization-flows">6.4 Authorization flows</h2>
+<p>Every installation registers its own developer apps (README decision 5). The admin UI <span class="kw must">MUST</span> include, per connector, step-by-step instructions with the exact redirect URI to register, copied from the installation's configuration.</p>
+<div class="tw"><table><thead><tr><th>Flow</th><th>When</th><th>Redirect URI needed</th></tr></thead><tbody><tr><td><strong>Device code</strong></td><td>Preferred wherever offered (Twitch). The user opens a short URL on any device and types a code. Works behind NAT, on a NAS, with no public URL.</td><td>No</td></tr><tr><td><strong>Auth code + PKCE</strong></td><td>Kick, Google, Spotify</td><td>Yes — <code>SKP_PUBLIC_URL/oauth/callback/&lt;connector&gt;</code>, or a loopback URL for a desktop install</td></tr><tr><td><strong>Client credentials</strong></td><td>App-only reads (viewer counts)</td><td>No</td></tr><tr><td><strong>Password</strong></td><td>obs-websocket</td><td>No</td></tr></tbody></table></div>
+<p>OAuth requests <span class="kw must">MUST</span> use <code>state</code> bound to the user's session and <span class="kw must">MUST</span> use PKCE (S256) whenever the service supports it, even for confidential clients.</p>
+<hr>
+<h2 id="doc-06-integrations-6-5-twitch">6.5 Twitch</h2>
+<p><strong>Auth:</strong> Device Code Flow (generally available; supports public and confidential app types), falling back to Authorization Code. One user token from the broadcaster's account serves an installed app — no separate bot account. App token (client credentials) for public reads.</p>
+<p><strong>Chat — EventSub over WebSocket.</strong></p>
+<ul><li>Connect to the EventSub WebSocket endpoint; on the welcome message, create subscriptions using its session ID before the documented deadline; handle <code>session_keepalive</code>, <code>session_reconnect</code> (connect to the new URL before closing the old) and revocations.</li><li><code>channel.chat.message</code> with condition <code>broadcaster_user_id</code> + <code>user_id</code>, where <code>user_id</code> <span class="kw must">MUST</span> be the account that owns the token (mismatches return 403). Scope: <code>user:read:chat</code> (formerly <code>chat:read</code>). Bot scopes (<code>user:bot</code>, <code>channel:bot</code>) are only needed for webhook or Conduit transports, which v1 does not use.</li><li>Moderation: <code>channel.chat.message_delete</code> → <code>chat.message.deleted</code>; <code>channel.chat.clear_user_messages</code> → <code>chat.user.cleared</code>; <code>channel.chat.clear</code> → <code>chat.cleared</code>.</li><li><code>channel.chat.notification</code> carries subs, resubs, gift bombs, raids and announcements as they appear in chat; map to <code>alert.*</code> where the dedicated subscription isn't used, and dedupe against it.</li><li>Emotes arrive as fragments with IDs; resolve to the emote CDN. Badges resolve via the global and channel chat-badge endpoints, cached for 24 h.</li></ul>
+<p><strong>Alerts:</strong> <code>channel.follow</code> (v2, <code>moderator:read:followers</code>), <code>channel.subscribe</code>, <code>channel.subscription.gift</code>, <code>channel.subscription.message</code> (<code>channel:read:subscriptions</code>), <code>channel.cheer</code> (<code>bits:read</code>), <code>channel.raid</code>.</p>
+<p><strong>Viewers &amp; status:</strong> <code>GET /helix/streams?user_login=&lt;login&gt;</code> → <code>data[0].viewer_count</code>; an empty <code>data</code> array means offline (authoritative zero). <code>stream.online</code> / <code>stream.offline</code> via EventSub update <code>stream.twitch.live</code> instantly.</p>
+<p><strong>Sources:</strong> dev.twitch.tv/docs/eventsub, dev.twitch.tv/docs/chat/authenticating, dev.twitch.tv/docs/authentication/getting-tokens-oauth.</p>
+<hr>
+<h2 id="doc-06-integrations-6-6-kick">6.6 Kick</h2>
+<p><strong>Auth:</strong> OAuth 2.1 with PKCE for the broadcaster's user token; client credentials for public reads. The broadcaster must authorize the installation's app before any of their events flow.</p>
+<p><strong>Viewers &amp; status:</strong> <code>GET https://api.kick.com/public/v1/channels?slug=&lt;slug&gt;</code> with <code>Authorization: Bearer &lt;token&gt;</code> → <code>data[0].stream.viewer_count</code> and <code>stream.is_live</code>.</p>
+<p><strong>Chat and alerts — webhooks only.</strong> Kick's public API delivers events (<code>chat.message.sent</code>, follows, subscriptions, gifts, kicks, livestream status) exclusively by <strong>webhook</strong>: the installation subscribes via <code>POST /public/v1/events/subscriptions</code> (scope <code>events:subscribe</code>) and Kick POSTs each event to a public HTTPS URL. Consequences the platform <span class="kw must">MUST</span> handle:</p>
+<ul><li><strong>A public URL is required.</strong> In <code>local</code> or <code>lan</code> exposure mode (07 §7.8), the Kick connector runs <strong>degraded</strong>: viewer count and live status work; chat and alerts are unavailable, and the UI says exactly that and how to fix it (public mode, or a tunnel that provides HTTPS).</li><li><strong>Verify every delivery.</strong> Check the signature header against Kick's public key (fetched from <code>/public/v1/public-key</code>, cached, refetched on verification failure), require a fresh timestamp (±5 min), and dedupe on the message ID.</li><li><strong>Re-subscribe defensively.</strong> Kick removes subscriptions whose endpoint fails for about a day. On startup and every 6 hours, list subscriptions and recreate missing ones.</li><li><strong>Expect gaps.</strong> Developers have reported stalled chat delivery. Health <span class="kw must">MUST</span> turn <code>degraded</code> when no chat event has arrived for 10 minutes while the channel is live.</li></ul>
+<p>An unofficial Pusher-based chat feed exists and works without a public URL. It is not part of Kick's public API. A connector <span class="kw may">MAY</span> offer it only as an explicit opt-in labelled "Unofficial — may break without notice", never as the default.</p>
+<p><strong>Viewer-count caveat:</strong> when a streamer hides their viewer count, the official API reports 0 while unofficial sources report the real number. The platform uses the official value.</p>
+<p><strong>Sources:</strong> docs.kick.com, github.com/KickEngineering/KickDevDocs (webhook security, events).</p>
+<hr>
+<h2 id="doc-06-integrations-6-7-youtube">6.7 YouTube</h2>
+<p><strong>Auth:</strong> Google OAuth (Authorization Code + PKCE), scope <code>youtube.readonly</code>, with the user's own Google Cloud project.</p>
+<p><strong>Quota is the constraint.</strong> The YouTube Data API grants <strong>10,000 units per day by default</strong>, resetting at midnight Pacific time. Every request — including failed ones — costs at least one unit. The connector <span class="kw must">MUST</span>:</p>
+<ul><li>keep a running unit estimate and expose it in <code>health.quota</code>;</li><li>on <code>quotaExceeded</code>, stop all YouTube calls until the reset and set health to <code>degraded</code> with the reset time. Treating it as a rate limit and retrying has burned entire days of quota in real deployments;</li><li>let the owner set a daily budget below the quota, leaving headroom for other tools.</li></ul>
+<p><strong>Finding the chat:</strong> <code>liveBroadcasts.list</code> (<code>broadcastStatus=active</code>, <code>mine=true</code>) → <code>snippet.liveChatId</code>. Re-check every 5 minutes while not live; stop when live.</p>
+<p><strong>Chat:</strong> prefer <code>liveChatMessages.streamList</code> — a server-streaming connection Google recommends for low latency and quota efficiency. Fall back to <code>liveChatMessages.list</code>, honouring the returned <code>pollingIntervalMillis</code> and <code>nextPageToken</code> exactly; never poll faster. The quota cost of <code>streamList</code> was not documented at verification time; measure it in the Cloud Console before release and record it here.</p>
+<p><strong>Alerts</strong> arrive as chat items by <code>snippet.type</code>: <code>superChatEvent</code>, <code>superStickerEvent</code> → <code>alert.superchat</code>; <code>newSponsorEvent</code>, <code>memberMilestoneChatEvent</code> → <code>alert.membership</code>.</p>
+<p><strong>Viewers:</strong> <code>videos.list?part=liveStreamingDetails&amp;id=&lt;videoId&gt;</code> → <code>liveStreamingDetails.concurrentViewers</code> (absent when hidden or offline → key absent). Poll no faster than every 30 s.</p>
+<p><strong>Sources:</strong> developers.google.com/youtube/v3/live/docs, developers.google.com/youtube/v3/determine_quota_cost.</p>
+<hr>
+<h2 id="doc-06-integrations-6-8-spotify">6.8 Spotify</h2>
+<p><strong>Auth:</strong> Authorization Code + PKCE, scopes <code>user-read-currently-playing</code> and <code>user-read-playback-state</code>. Register the redirect URI exactly; for a desktop install use a loopback IP redirect (<code>http://127.0.0.1:&lt;port&gt;/oauth/callback/spotify</code>) — confirm Spotify's current redirect rules at implementation.</p>
+<p><strong>Every installer brings their own app, and must have Premium.</strong> Since February 2026, Spotify development-mode apps require the app owner to hold an active Spotify Premium subscription and are limited to a small number of users; extended access is restricted to organizations meeting review criteria. A self-hosted platform therefore cannot ship a shared client ID. The setup guide <span class="kw must">MUST</span> say so plainly, before the user starts.</p>
+<p><strong>Now playing:</strong> <code>GET https://api.spotify.com/v1/me/player/currently-playing</code> — <code>200</code> with <code>item</code>, or <code>204</code> when nothing is playing (key <code>music.nowPlaying</code> removed). Poll every 3 s while playing, every 15 s while paused or idle; on <code>429</code> wait <code>Retry-After</code>. Use <code>progress_ms</code> with the response <code>timestamp</code> to fill <code>progressMs</code> / <code>progressAt</code>; the runtime interpolates.</p>
+<p><strong>Other music sources:</strong> anything that can <code>PUT /api/v1/state/custom.music</code> (a desktop helper, a DJ-software bridge) can feed a now-playing template. A connector <span class="kw may">MAY</span> map such a source to <code>music.nowPlaying</code> so music templates work unchanged.</p>
+<p><strong>Sources:</strong> developer.spotify.com/documentation/web-api, the February 2026 migration guide, and the April 2025 extended-access criteria announcement.</p>
+<hr>
+<h2 id="doc-06-integrations-6-9-obs-studio">6.9 OBS Studio</h2>
+<p>OBS has no webhooks; integration is through <strong>obs-websocket</strong>, built into OBS Studio since 28. The platform connects as a <strong>client</strong> to OBS, which listens on port <strong>4455</strong> by default (configurable in OBS under Tools → WebSocket Server Settings).</p>
+<p><strong>Handshake (protocol v5):</strong></p>
+<ol><li>Server sends <code>Hello</code> (op 0) with <code>authentication.challenge</code> and <code>authentication.salt</code> when a password is set.</li><li>Client computes <code>secret = base64(sha256(password + salt))</code>, then <code>auth = base64(sha256(secret + challenge))</code>.</li><li>Client sends <code>Identify</code> (op 1) with <code>rpcVersion</code>, <code>authentication</code> and <code>eventSubscriptions</code> (a bitmask; use the <code>All</code> value of the protocol version being targeted — it grew when the Canvases category was added, so don't hardcode a number).</li><li>Server replies <code>Identified</code> (op 2). Then: <code>Request</code> (6) / <code>RequestResponse</code> (7), <code>Event</code> (5), <code>RequestBatch</code> (8) / <code>RequestBatchResponse</code> (9), <code>Reidentify</code> (3).</li></ol>
+<p><strong>State:</strong> <code>obs.scene</code> from <code>GetCurrentProgramScene</code> and the <code>CurrentProgramSceneChanged</code> event; <code>obs.streaming</code> from <code>GetStreamStatus</code> / <code>StreamStateChanged</code>; <code>obs.recording</code> from <code>RecordStateChanged</code>.</p>
+<p><strong>Actions:</strong> <code>obs.setScene</code> (<code>SetCurrentProgramScene</code>), <code>obs.listScenes</code> (<code>GetSceneList</code>), <code>obs.toggleSource</code>, and <code>obs.addOverlay</code> — creates a browser source for an overlay via <code>CreateInput</code> with the overlay URL and the canvas width/height, so "Add to OBS" is one click.</p>
+<p><strong>Scene mapping.</strong> An overlay or show <span class="kw may">MAY</span> map OBS scenes to overlay scenes (<code>&quot;BRB&quot; → brb</code>, <code>&quot;Live&quot; → program</code>). When OBS changes scene, the platform takes the mapped overlay scene — the operator switches once, in OBS, and the graphics follow. Timeline cues <span class="kw may">MAY</span> do the reverse with <code>obs.setScene</code>.</p>
+<p><strong>Placement and security.</strong> OBS usually runs on the streaming PC while the platform runs on a NAS, so the connection is LAN-to-LAN. A password is <span class="kw must">REQUIRED</span>. obs-websocket <span class="kw must">MUST NOT</span> be port-forwarded to the internet; the UI warns if the configured host is not a private address. Reconnect with backoff when OBS closes — it restarts often.</p>
+<p><strong>Sources:</strong> github.com/obsproject/obs-websocket — docs/generated/protocol.md.</p>
+<hr>
+<h2 id="doc-06-integrations-6-10-connecting-other-apps">6.10 Connecting other apps</h2>
+<h3 id="doc-06-integrations-inbound">Inbound</h3>
+<div class="tw"><table><thead><tr><th>Mechanism</th><th>Use</th></tr></thead><tbody><tr><td>REST with API token</td><td>Bots, scripts, Stream Deck / Bitfocus Companion HTTP actions, game integrations</td></tr><tr><td><code>POST /api/v1/events</code></td><td>Push custom events onto the bus (<code>custom.*</code>, <code>x-&lt;vendor&gt;.*</code>)</td></tr><tr><td><code>PUT /api/v1/state/{key}</code></td><td>Set custom state a template can display</td></tr><tr><td><code>POST /hooks/custom/{id}</code></td><td>A generic inbound webhook with its own secret; a JSON mapping turns the payload into an event (<code>{ &quot;type&quot;: &quot;alert.tip&quot;, &quot;map&quot;: { &quot;user.name&quot;: &quot;$.donor&quot;, &quot;amount.value&quot;: &quot;$.amount&quot; } }</code>) — this is how donation services without a connector plug in</td></tr></tbody></table></div>
+<h3 id="doc-06-integrations-outbound-webhooks">Outbound webhooks</h3>
+<p>Users subscribe a URL to event types. Each delivery:</p>
+<ul><li>is a <code>POST</code> of the envelope with <code>Content-Type: application/json</code>;</li><li>carries <code>SKP-Signature: t=&lt;unix-seconds&gt;,v1=&lt;hex HMAC-SHA256 of &quot;&lt;t&gt;.&lt;raw body&gt;&quot;&gt;</code> keyed with the webhook's secret, plus <code>SKP-Delivery: &lt;id&gt;</code>;</li><li>is retried on non-2xx with backoff (1 min, 5 min, 30 min, 2 h, 12 h) then marked failed;</li><li>is logged (status, latency, response excerpt) and replayable from the UI.</li></ul>
+<p>Receivers <span class="kw must">MUST</span> reject timestamps older than 5 minutes and duplicate delivery IDs.</p>
+<h3 id="doc-06-integrations-live-stream-for-apps">Live stream for apps</h3>
+<p><code>GET /api/v1/events</code> (SSE, token with <code>events:read</code>) gives dashboards, bots and companion apps the same live feed overlays get, filtered by <code>?types=</code>.</p>
+<h3 id="doc-06-integrations-server-side-connector-plugins">Server-side connector plugins</h3>
+<p>A connector <span class="kw may">MAY</span> be added as a plugin (a directory with <code>connector.json</code> and an ES module implementing §6.1). Plugins run in-process with full trust; installing one is an owner-only action and the UI <span class="kw must">MUST</span> say it grants access to credentials.</p></section><section class="doc" id="doc-07-security"><header class="dochead"><span class="cue">07</span><h1>Security</h1></header><p>The platform runs on someone's NAS or laptop and is often port-forwarded so a phone can run the show from anywhere. Internet scanners will find it within hours. This document is what makes that safe.</p>
+<h2 id="doc-07-security-7-1-threat-model">7.1 Threat model</h2>
+<div class="tw"><table><thead><tr><th>Asset</th><th>Threat</th><th>Primary control</th></tr></thead><tbody><tr><td>Platform OAuth tokens &amp; API keys</td><td>Theft → hijacked channel</td><td>Encryption at rest (§7.7); never sent to browsers or templates</td></tr><tr><td>Admin access</td><td>Credential stuffing, session theft</td><td>Strong hashing, rate limits, 2FA, secure cookies</td></tr><tr><td>Live broadcast</td><td>Someone takes scenes or posts a fake alert on air</td><td>Roles; CSRF; scoped tokens</td></tr><tr><td>Overlay pages</td><td>Data scraping, URL leakage</td><td>Per-overlay read-only keys, rotatable</td></tr><tr><td>The host</td><td>Crafted uploads, path traversal, crashing requests</td><td>Input validation, sandboxed media processing, crash isolation</td></tr><tr><td>Operators</td><td>Malicious template</td><td>CSP sandbox (04 §4.8); templates never hold secrets</td></tr></tbody></table></div>
+<h2 id="doc-07-security-7-2-first-run-setup">7.2 First-run setup</h2>
+<p>There are <strong>no default credentials</strong>, ever.</p>
+<ul><li>On first start with no owner account, the platform prints a one-time <strong>setup code</strong> to its log (and, on desktop, shows it in the app window).</li><li><code>POST /api/v1/setup</code> requires that code and creates the owner. The code expires after 1 hour or first use; a restart issues a new one.</li><li>In <code>public</code> exposure mode the setup endpoint <span class="kw must">MUST</span> additionally refuse requests that do not come from a loopback or private address, so an exposed fresh install cannot be claimed by a stranger who finds it first.</li></ul>
+<h2 id="doc-07-security-7-3-passwords-and-sessions">7.3 Passwords and sessions</h2>
+<p><strong>Hashing.</strong> Passwords <span class="kw must">MUST</span> be hashed with a memory-hard KDF:</p>
+<ul><li><strong>scrypt</strong> — N = 2¹⁷, r = 8, p = 1, 16-byte random salt, 32-byte output (available in the Node.js standard library, keeping the core dependency-free); or</li><li><strong>Argon2id</strong> — m = 19 MiB, t = 2, p = 1, where a native implementation is acceptable.</li></ul>
+<p>Store <code>alg$params$salt$hash</code> so parameters can be raised later; rehash on next login when they change. Minimum length 12, maximum 256; check against a bundled list of common passwords; no composition rules.</p>
+<p><strong>Sessions.</strong></p>
+<ul><li>Session IDs: 256 bits from a CSPRNG. Store only their SHA-256 server-side.</li><li>Cookie: <code>HttpOnly</code>, <code>SameSite=Lax</code>, <code>Path=/</code>. Over HTTPS: <code>Secure</code> and the <code>__Host-</code> name prefix (<code>__Host-skp_session</code>). Over plain HTTP on a LAN: <code>skp_session</code> without <code>Secure</code>.</li><li>Idle timeout 12 h; absolute lifetime 30 days ("keep me signed in") or 24 h otherwise.</li><li>Rotate the session ID on login and on any privilege change. Invalidate all of a user's sessions on password change, 2FA change or role change.</li><li>Users can see and revoke their active sessions (device, IP, last seen).</li></ul>
+<p><strong>CSRF.</strong> State-changing requests (<code>POST</code>, <code>PUT</code>, <code>PATCH</code>, <code>DELETE</code>) authenticated by cookie <span class="kw must">MUST</span> carry <code>X-SKP-CSRF</code> equal to the session's CSRF token (from <code>GET /auth/session</code>), and the <code>Origin</code> header, when present, <span class="kw must">MUST</span> match the platform's origin. Token-authenticated requests are exempt.</p>
+<p><strong>Login protection.</strong> 10 failed attempts per account or per IP within 15 minutes triggers an exponential delay (1 s → 2 s → … → 15 min). Error messages never reveal whether the account exists. Failed and successful logins go to the audit log.</p>
+<h2 id="doc-07-security-7-4-two-factor-authentication">7.4 Two-factor authentication</h2>
+<p>TOTP (RFC 6238, SHA-1, 6 digits, 30 s, ±1 step) with 10 single-use recovery codes stored hashed. In <code>public</code> mode 2FA <span class="kw should">SHOULD</span> be required for owner and admin roles and the UI nags until it is enabled. WebAuthn passkeys <span class="kw may">MAY</span> be supported in addition.</p>
+<h2 id="doc-07-security-7-5-roles-and-api-tokens">7.5 Roles and API tokens</h2>
+<div class="tw"><table><thead><tr><th>Capability</th><th>owner</th><th>admin</th><th>operator</th><th>viewer</th></tr></thead><tbody><tr><td>Take scenes, fire actions &amp; cues, pause alerts</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr><tr><td>Edit overlays, timeline, lineup</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr><tr><td>Install templates, manage media</td><td>✓</td><td>✓</td><td></td><td></td></tr><tr><td>Manage connections &amp; credentials</td><td>✓</td><td>✓</td><td></td><td></td></tr><tr><td>Manage users, exposure, backups, plugins</td><td>✓</td><td></td><td></td><td></td></tr><tr><td>View dashboard &amp; previews</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr></tbody></table></div>
+<p>Operators are who runs the show on the night; they cannot see or change credentials.</p>
+<p><strong>API tokens</strong> — <code>skp_pat_</code> + 32 random bytes (base62). Shown once at creation; stored as SHA-256. Each has scopes (03 §3.3), an optional expiry, an optional IP allow-list, and a last-used timestamp. A token can never exceed its creator's role.</p>
+<h2 id="doc-07-security-7-6-overlay-keys">7.6 Overlay keys</h2>
+<p>OBS browser sources can't log in, so overlays use capability URLs.</p>
+<ul><li><code>skp_ovl_</code> + 24 random bytes, one per overlay.</li><li>Grants read access to that overlay's page, assets, snapshot and stream — nothing else.</li><li>Stored encrypted (not hashed), because the UI must be able to show the URL again for copying.</li><li>Rotating it is explicit and warns that OBS sources must be updated.</li><li>Overlay responses send <code>Referrer-Policy: no-referrer</code>; the platform <span class="kw must">MUST</span> redact <code>key=</code> values from access logs and error reports.</li><li>In <code>local</code>/<code>lan</code> mode the owner <span class="kw may">MAY</span> mark an overlay "no key required".</li></ul>
+<h2 id="doc-07-security-7-7-secrets-at-rest">7.7 Secrets at rest</h2>
+<p>All third-party credentials, OAuth tokens, overlay keys and webhook secrets <span class="kw must">MUST</span> be encrypted with <strong>AES-256-GCM</strong> (random 96-bit nonce per record, record ID as associated data).</p>
+<ul><li>The 32-byte <strong>master key</strong> comes from <code>SKP_MASTER_KEY</code> (base64) or <code>SKP_MASTER_KEY_FILE</code>.</li><li>If neither is set on first start, the platform generates one into the config directory with <code>0600</code> permissions — deliberately <strong>outside</strong> the data directory — and warns that backing up data without the key makes secrets unrecoverable.</li><li>Ciphertexts carry a key ID so the key can be rotated (<code>skp key rotate</code> re-encrypts in place).</li><li>Decrypted secrets live only in connector memory.</li></ul>
+<h2 id="doc-07-security-7-8-exposure-modes">7.8 Exposure modes</h2>
+<p><code>SKP_EXPOSURE</code> declares how reachable the installation is. The platform enforces the matching posture and shows it on the dashboard.</p>
+<div class="tw"><table><thead><tr><th>Mode</th><th>Binds</th><th>Requires</th><th>Notes</th></tr></thead><tbody><tr><td><code>local</code></td><td>127.0.0.1</td><td>—</td><td>Single machine (desktop install default)</td></tr><tr><td><code>lan</code></td><td>all interfaces; serves only private/loopback clients</td><td>Login</td><td>Default for TrueNAS/Docker</td></tr><tr><td><code>public</code></td><td>all interfaces</td><td>TLS, login, <code>SKP_PUBLIC_URL</code></td><td>Needed for remote control and Kick webhooks</td></tr></tbody></table></div>
+<p>In <code>public</code> mode the platform <span class="kw must">MUST</span> refuse to start unless TLS is available — either its own certificate (<code>SKP_TLS_CERT</code>, <code>SKP_TLS_KEY</code>) or a trusted reverse proxy (<code>SKP_TRUST_PROXY</code> set to the proxy's address, with <code>X-Forwarded-Proto: https</code>). Recommended: a reverse proxy such as Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS. <code>X-Forwarded-*</code> headers <span class="kw must">MUST</span> be ignored unless they come from a configured trusted proxy.</p>
+<h2 id="doc-07-security-7-9-inbound-webhooks">7.9 Inbound webhooks</h2>
+<ul><li><strong>Kick:</strong> verify the signature with Kick's published public key, require a fresh timestamp, dedupe by message ID (06 §6.6).</li><li><strong>Custom hooks:</strong> each has its own secret; accept HMAC-SHA256 over <code>&quot;&lt;timestamp&gt;.&lt;raw body&gt;&quot;</code> in a <code>SKP-Signature</code> header, or a shared secret header for services that can't sign; reject timestamps older than 5 minutes.</li><li>Verification uses the <strong>raw</strong> request body, before JSON parsing, with a constant-time compare.</li><li>Unverified deliveries return <code>401</code> and are counted, not logged in full.</li></ul>
+<h2 id="doc-07-security-7-10-http-hardening">7.10 HTTP hardening</h2>
+<div class="tw"><table><thead><tr><th>Header</th><th>Admin UI &amp; API</th><th>Overlay pages</th></tr></thead><tbody><tr><td><code>Content-Security-Policy</code></td><td>strict: <code>default-src &#x27;self&#x27;; frame-ancestors &#x27;none&#x27;; object-src &#x27;none&#x27;</code> (+ <code>frame-src &#x27;self&#x27;</code> for previews)</td><td>04 §4.8</td></tr><tr><td><code>Strict-Transport-Security</code></td><td>when served over HTTPS: <code>max-age=31536000</code></td><td>same</td></tr><tr><td><code>X-Content-Type-Options</code></td><td><code>nosniff</code></td><td><code>nosniff</code></td></tr><tr><td><code>Referrer-Policy</code></td><td><code>same-origin</code></td><td><code>no-referrer</code></td></tr><tr><td><code>Cross-Origin-Opener-Policy</code></td><td><code>same-origin</code></td><td>—</td></tr><tr><td>CORS</td><td>none by default; per-origin allow-list for external web apps</td><td><code>*</code> for <code>GET</code> only, no credentials</td></tr></tbody></table></div>
+<h2 id="doc-07-security-7-11-input-uploads-and-processing">7.11 Input, uploads and processing</h2>
+<ul><li>Validate every request body against its schema; reject unknown fields on writes.</li><li>Resolve every filesystem path and confirm it stays inside its root directory.</li><li>URL-decoding errors and malformed requests return <code>400</code> — they <span class="kw must">MUST NOT</span> crash the process.</li><li>Uploads: size caps (media 600 MiB, templates 100 MiB), at most 2 concurrent transcodes, partial files deleted on abort, content type sniffed rather than trusted.</li><li>ffmpeg is invoked with an argument array (never a shell), a fixed output directory, a time limit and lowered priority.</li><li>Template archives are extracted with zip-slip and zip-bomb protection (ratio and total-size caps).</li><li>Outbound requests the platform makes on a user's behalf (template install from URL, webhook delivery) <span class="kw must">MUST</span> block private, loopback and link-local destinations unless the owner enables them, to prevent server-side request forgery.</li></ul>
+<h2 id="doc-07-security-7-12-audit-log">7.12 Audit log</h2>
+<p>Append-only record of: logins (success and failure), session revocations, user and role changes, token creation and revocation, connection changes, template installs, overlay key rotations, exposure changes, backups and restores. Each entry: time, actor, IP, action, target. Retained 90 days by default. Never contains secrets.</p>
+<h2 id="doc-07-security-7-13-backups">7.13 Backups</h2>
+<p><code>POST /system/backup</code> produces an archive of configuration, overlays, timelines, templates and media. Secrets inside stay encrypted with the master key; the export <span class="kw may">MAY</span> additionally be wrapped with a user passphrase (scrypt-derived key, AES-256-GCM) for off-site storage. Restore requires owner role and the matching master key or passphrase.</p></section><section class="doc" id="doc-08-admin-ui"><header class="dochead"><span class="cue">08</span><h1>Admin UI</h1></header><p>The admin UI is for a person running a stream, often from a phone, often under pressure. It uses only the public API (03).</p>
+<h2 id="doc-08-admin-ui-8-1-navigation">8.1 Navigation</h2>
+<div class="tw"><table><thead><tr><th>Section</th><th>Job</th></tr></thead><tbody><tr><td><strong>Live</strong></td><td>The show-night console: previews, take scenes, fire actions and cues, pause alerts, connection health. The default landing page once set up.</td></tr><tr><td><strong>Overlays</strong></td><td>Every overlay: preview, settings form, bindings, URL with "Copy" and "Add to OBS".</td></tr><tr><td><strong>Templates</strong></td><td>The gallery: installed templates, install new, versions.</td></tr><tr><td><strong>Shows</strong></td><td>Shows, member overlays, lineup, timeline, planned dates.</td></tr><tr><td><strong>Connections</strong></td><td>Twitch, Kick, YouTube, Spotify, OBS, custom hooks — status and setup.</td></tr><tr><td><strong>Media</strong></td><td>Uploaded clips and images.</td></tr><tr><td><strong>Settings</strong></td><td>Appearance, users, tokens, webhooks, security, exposure, backups, about.</td></tr></tbody></table></div>
+<p>On screens narrower than 760 px the navigation collapses into a menu, and destructive actions (reset, delete, rotate key) <span class="kw must">MUST</span> live behind a menu and a confirmation — never as a top-level button that can be hit by a thumb mid-show.</p>
+<h2 id="doc-08-admin-ui-8-2-template-gallery">8.2 Template gallery</h2>
+<p>The path a non-technical user takes: <strong>browse → preview → use → copy into OBS.</strong></p>
+<ul><li>Cards show the template's preview image, name, author, category and canvases.</li><li>Filters by category (show package, chat, alerts, now playing, lower thirds, backgrounds…) and search by name or tag.</li><li>A detail view renders the template <strong>live with sample data</strong> (§8.5) at each canvas, lists its scenes and actions, and shows which connections it can use.</li><li><strong>Use template</strong> creates an overlay: pick a name/slug, bind connections (pre-selected from what's connected and what the template consumes), and land on the overlay page with its URL ready to copy.</li><li>Installing from a file or URL shows the validation result (04 §4.11) and, for templates from outside the bundled set, a plain-language note that templates are code and run in OBS.</li></ul>
+<h2 id="doc-08-admin-ui-8-3-overlay-page">8.3 Overlay page</h2>
+<ul><li>Live preview at each canvas, scaled, with a scene picker; on mobile, previews load on tap and in lite mode.</li><li>Settings form generated from the template's schema (04 §4.3), grouped, with live preview.</li><li>Bindings: which connections feed this overlay.</li><li>The URL, with <strong>Copy</strong>, <strong>Add to OBS</strong> (when OBS is connected, creates the browser source at the right size), and the exact browser-source size to set.</li><li>A clear note that the URL never changes when settings, theme or template version change.</li></ul>
+<h2 id="doc-08-admin-ui-8-4-live-console">8.4 Live console</h2>
+<ul><li>Previews of the show's overlays (H and V).</li><li>Scene buttons for the show's scenes, labelled with the template's names for them, with the active one highlighted. Template extras (e.g. Headliner Intro) appear only when the active template provides them.</li><li>Action buttons for every declared template action.</li><li>Timeline: next cue with a countdown in server time, "Trigger now" and "Skip", and the full cue list with done/upcoming state.</li><li>Alert queue controls: pause, skip, replay last.</li><li>Connection strip: one chip per connection with status colour and the viewer total.</li><li>Everything works one-handed on a phone; tap targets at least 44 × 44 px.</li></ul>
+<h2 id="doc-08-admin-ui-8-5-sample-data-and-simulation">8.5 Sample data and simulation</h2>
+<p>Templates are designed and checked without going live.</p>
+<ul><li><code>?mock=1</code> makes the runtime feed an overlay realistic sample data: a lineup, a chat stream with every role, emotes, a long name, a deleted message; one alert of every kind including a gift burst; a track with progress; viewer counts that change.</li><li>The overlay page has a <strong>Simulate</strong> panel that injects individual events into that overlay only (<code>POST /overlays/{id}/simulate</code>): "Send chat message", "Follow", "Gift 25 subs", "Raid", "Change track", "Drop viewers to absent" — so a template author can watch each state.</li><li>Simulated envelopes are tagged <code>src.connector = &quot;simulator&quot;</code> and <span class="kw must">MUST NOT</span> reach overlays other than the one targeted, or outbound webhooks.</li></ul>
+<h2 id="doc-08-admin-ui-8-6-appearance">8.6 Appearance</h2>
+<p>The admin UI is themable without code:</p>
+<ul><li>light, dark, or follow system;</li><li>an accent colour;</li><li>density (comfortable / compact);</li><li>an optional logo and display name for the installation.</li></ul>
+<p>Preferences are stored per user. The UI is built on design tokens (CSS custom properties) so an installation <span class="kw may">MAY</span> ship a custom admin theme as a token file. Changing the admin theme never affects overlays.</p>
+<h2 id="doc-08-admin-ui-8-7-connections-setup">8.7 Connections setup</h2>
+<p>Each connector's setup screen walks through registering the developer app: the exact redirect URI to paste (copied from this installation's configuration), the scopes being requested and why, and service-specific warnings written in plain language — for example <em>"Kick only sends chat to servers reachable from the internet. In LAN mode you'll get the viewer count but not chat."</em> or <em>"Spotify requires the app owner to have Premium."</em></p>
+<h2 id="doc-08-admin-ui-8-8-accessibility-and-copy">8.8 Accessibility and copy</h2>
+<ul><li>WCAG 2.2 AA: contrast, visible focus, full keyboard operation, labelled controls, <code>prefers-reduced-motion</code> honoured in the UI.</li><li>Copy names things by what users recognize ("Viewer count", "Chat"), not internals ("state key", "envelope").</li><li>Errors say what happened and what to do; success says what changed ("Scene changed to BRB").</li><li>Every destructive confirmation names its consequence ("OBS sources using this URL will stop working").</li></ul></section><section class="doc" id="doc-09-timeline"><header class="dochead"><span class="cue">09</span><h1>Timeline</h1></header><p>A show runs itself. The server builds a schedule of cues and fires them on its own clock, so a broadcast advances with every browser closed and survives a restart mid-show.</p>
+<h2 id="doc-09-timeline-9-1-show">9.1 Show</h2>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;id&quot;: &quot;show_sat&quot;,
+  &quot;name&quot;: &quot;Saturday TAKEOVER&quot;,
+  &quot;overlays&quot;: [&quot;ovl_main_h&quot;, &quot;ovl_main_v&quot;],
+  &quot;date&quot;: &quot;2026-08-28&quot;,
+  &quot;timezone&quot;: &quot;America/Toronto&quot;,
+  &quot;dayBoundary&quot;: &quot;12:00&quot;,
+  &quot;goLive&quot;: &quot;22:30&quot;,
+  &quot;lineup&quot;: [
+    { &quot;time&quot;: &quot;22:30&quot;, &quot;name&quot;: &quot;Manzone &amp; strong&quot; },
+    { &quot;time&quot;: &quot;01:00&quot;, &quot;name&quot;: &quot;VIKKSTAR&quot;, &quot;headliner&quot;: true },
+    { &quot;time&quot;: &quot;03:00&quot;, &quot;name&quot;: &quot;Deecee&quot;, &quot;b2b&quot;: &quot;quim&quot;, &quot;closer&quot;: true }
+  ],
+  &quot;scene&quot;: &quot;starting&quot;
+}</code></pre></div>
+<ul><li><code>headliner</code> and <code>closer</code> are different things: the headliner is the billed act; the closer plays last. A template that needs "the headliner" reads the flag, never "the last slot".</li><li><code>lineup</code> is published as <code>show.lineup</code> state to member overlays.</li></ul>
+<h2 id="doc-09-timeline-9-2-the-time-rule">9.2 The time rule</h2>
+<p><strong>Times before the day boundary belong to the next calendar day.</strong> With <code>date: 2026-08-28</code> and <code>dayBoundary: &quot;12:00&quot;</code>, a slot at <code>01:00</code> is <strong>2026-08-29 01:00</strong> in the show's timezone — which is what a club night means. The boundary is configurable (an afternoon show sets it to <code>&quot;06:00&quot;</code>).</p>
+<p>All schedule times are converted once, server-side, to absolute instants using the show's <code>timezone</code> (IANA name). Clients receive instants; they never re-interpret wall-clock strings, so an operator's phone in another timezone shows correct countdowns.</p>
+<h2 id="doc-09-timeline-9-3-cues">9.3 Cues</h2>
+<div class="code"><span class="lang">json</span><pre><code>{
+  &quot;id&quot;: &quot;cue_01J9…&quot;,
+  &quot;at&quot;: &quot;2026-08-29T05:00:00Z&quot;,
+  &quot;label&quot;: &quot;Headliner takeover&quot;,
+  &quot;action&quot;: { &quot;type&quot;: &quot;overlay.action&quot;, &quot;name&quot;: &quot;headliner&quot; },
+  &quot;status&quot;: &quot;armed&quot;
+}</code></pre></div>
+<p>Action types:</p>
+<div class="tw"><table><thead><tr><th>Type</th><th>Effect</th></tr></thead><tbody><tr><td><code>show.scene</code></td><td><code>{ &quot;scene&quot;: &quot;brb&quot;, &quot;transition&quot;: &quot;fade&quot; }</code> on all member overlays</td></tr><tr><td><code>overlay.action</code></td><td>fire a template action (<code>titleCard</code>, <code>nowPlaying</code>, <code>headliner</code>…)</td></tr><tr><td><code>show.slot</code></td><td>set the current lineup slot</td></tr><tr><td><code>connector.action</code></td><td>e.g. <code>{ &quot;connector&quot;: &quot;obs&quot;, &quot;name&quot;: &quot;setScene&quot;, &quot;args&quot;: { &quot;scene&quot;: &quot;Live&quot; } }</code></td></tr><tr><td><code>media.play</code> / <code>media.stop</code></td><td>play an uploaded clip</td></tr><tr><td><code>webhook</code></td><td>call an outbound webhook (06 §6.10)</td></tr><tr><td><code>sequence</code></td><td>an ordered list of the above with offsets in ms</td></tr></tbody></table></div>
+<p><code>status</code> ∈ <code>armed</code>, <code>fired</code>, <code>skipped</code>, <code>missed</code>.</p>
+<h2 id="doc-09-timeline-9-4-scheduler-rules">9.4 Scheduler rules</h2>
+<ul><li>The scheduler ticks at least once per second and fires every armed cue whose <code>at</code> has passed.</li><li><strong>Grace window:</strong> a cue more than <strong>5 minutes</strong> late is marked <code>missed</code> without firing. A wrong date or a restart after downtime never replays a night's worth of graphics at once.</li><li><strong>Durable before visible:</strong> a cue's <code>fired</code> status is written to storage <em>before</em> its effect is published, so a crash can't fire it twice.</li><li><strong>Timed scenes return server-side:</strong> a scene with <code>durationMs</code> + <code>then</code> (04 §4.2) schedules its return as part of the take, independent of any client.</li><li>Operator overrides — fire now, skip, re-arm — are always available and audited.</li><li>Editing the lineup regenerates generated cues (§9.5) while preserving the <code>fired</code> / <code>skipped</code> status of cues that still exist, so an edit mid-show doesn't re-fire what already happened.</li></ul>
+<h2 id="doc-09-timeline-9-5-generated-cues">9.5 Generated cues</h2>
+<p>A show <span class="kw may">MAY</span> generate cues from its lineup with a recipe. The default recipe, per slot:</p>
+<ul><li>at slot start: <code>show.slot</code> + <code>overlay.action: titleCard</code>;</li><li><code>introOffsetMin</code> after start (default 5): <code>overlay.action: intro</code> (the Event Intro);</li><li>every <code>nowPlayingEveryMin</code> (default 10) until the next slot: <code>overlay.action: nowPlaying</code>;</li><li>for the slot flagged <code>headliner</code>, at its start: <code>overlay.action: headliner</code> when the template provides it.</li></ul>
+<p>Recipes are data, not code, so a different kind of show (a talk show, a tournament) ships its own.</p>
+<h2 id="doc-09-timeline-9-6-planned-shows">9.6 Planned shows</h2>
+<p>A show configuration <span class="kw may">MAY</span> be saved against a future date. At the day boundary on that date the server activates it — lineup, settings, regenerated timeline — with no browser open. Plans more than 14 days past are pruned.</p></section><section class="doc" id="doc-10-packaging"><header class="dochead"><span class="cue">10</span><h1>Packaging &amp; deployment</h1></header><p>One codebase, three ways to install, the same behaviour everywhere.</p>
+<h2 id="doc-10-packaging-10-1-targets">10.1 Targets</h2>
+<div class="tw"><table><thead><tr><th>Target</th><th>Artifact</th><th>Default exposure</th></tr></thead><tbody><tr><td><strong>TrueNAS SCALE</strong> (24.10+, Docker-based apps)</td><td>OCI image, <code>linux/amd64</code> + <code>linux/arm64</code></td><td><code>lan</code></td></tr><tr><td><strong>Linux</strong> — Docker / Podman</td><td>same image</td><td><code>lan</code></td></tr><tr><td><strong>Linux</strong> — native</td><td>single executable (x64, arm64) + systemd unit</td><td><code>lan</code></td></tr><tr><td><strong>macOS</strong> — native</td><td>signed, notarized universal app (arm64 + x64) as <code>.dmg</code></td><td><code>local</code></td></tr></tbody></table></div>
+<p>Windows is out of scope for v1 but <span class="kw must">MUST NOT</span> be precluded: use OS APIs for paths, never hardcode <code>/</code>, and keep native dependencies out of the core (README decision 8).</p>
+<h2 id="doc-10-packaging-10-2-runtime-baseline">10.2 Runtime baseline</h2>
+<ul><li>Server: a current Node.js LTS release (22 or later), or an equivalent runtime producing a single self-contained executable (Node.js Single Executable Applications or similar).</li><li>Storage: SQLite. Node's built-in <code>node:sqlite</code> keeps the core dependency-free — confirm its stability level for the Node version you ship. A JSON-file store is acceptable for very small installs if every write is atomic (§10.6).</li><li>Overlays: the browser engine embedded in <strong>OBS Studio 30+</strong> (Chromium 103 or later at the time of writing). The runtime SDK and bundled templates <span class="kw must">MUST</span> work there; templates declare their own minimum in <code>engines.obs</code>.</li><li>Media: ffmpeg is optional. Found on <code>PATH</code> or via <code>SKP_FFMPEG</code>; bundled in the container image. Without it, <code>GET /system/info</code> reports <code>ffmpeg: false</code> and uploads are stored as-is with a warning that HEVC clips will not play in OBS.</li><li>Footprint target: under 150 MB RAM idle with 10 overlays and 4 connections; runs on a Raspberry Pi 4–class device or a low-end NAS.</li></ul>
+<h2 id="doc-10-packaging-10-3-container-image">10.3 Container image</h2>
+<ul><li>Non-root by default: UID/GID <strong>568</strong> (the TrueNAS <code>apps</code> user), overridable with <code>PUID</code>/<code>PGID</code>.</li><li>Volumes: <code>/data</code> (database, media, templates) and <code>/config</code> (master key, config file) — <strong>separate on purpose</strong>, so a data backup never contains the key that decrypts its secrets.</li><li>Port <strong>4848</strong>.</li><li><code>HEALTHCHECK</code> against <code>GET /healthz</code>, which returns <code>200 ok</code> with no version or detail and needs no authentication.</li><li><code>TZ</code> set from the environment; <code>tzdata</code> included.</li><li>Read-only root filesystem supported; writes only to <code>/data</code>, <code>/config</code> and <code>/tmp</code>.</li></ul>
+<h3 id="doc-10-packaging-truenas-scale-install-via-yaml">TrueNAS SCALE (Install via YAML)</h3>
+<div class="code"><span class="lang">yaml</span><pre><code>services:
+  skp:
+    image: ghcr.io/&lt;owner&gt;/skp:1
+    restart: unless-stopped
+    ports: [&quot;4848:4848&quot;]
+    environment:
+      TZ: America/Toronto
+      SKP_EXPOSURE: lan
+      SKP_PUBLIC_URL: &quot;&quot;            # set when exposed publicly (OAuth redirects, Kick webhooks)
+    volumes:
+      - /mnt/tank/apps/skp/data:/data
+      - /mnt/tank/apps/skp/config:/config
+    healthcheck:
+      test: [&quot;CMD&quot;, &quot;wget&quot;, &quot;-qO-&quot;, &quot;http://127.0.0.1:4848/healthz&quot;]
+      interval: 30s
+      timeout: 5s
+      retries: 3</code></pre></div>
+<h2 id="doc-10-packaging-10-4-native-installs">10.4 Native installs</h2>
+<h3 id="doc-10-packaging-macos">macOS</h3>
+<ul><li>Code-signed with a Developer ID and <strong>notarized</strong> — without it Gatekeeper blocks the app and most users give up.</li><li>Runs as a per-user LaunchAgent; an optional menu-bar companion shows status, the setup code, and "Open dashboard".</li><li>Data: <code>~/Library/Application Support/SKP/</code>. Config and master key: <code>~/Library/Application Support/SKP/config/</code>. Logs: <code>~/Library/Logs/SKP/</code>.</li><li>Default exposure <code>local</code>; switching to <code>lan</code> lets OBS on another machine reach it.</li></ul>
+<h3 id="doc-10-packaging-linux">Linux</h3>
+<ul><li>Tarball with the executable, plus optional <code>.deb</code> / <code>.rpm</code>.</li><li>systemd unit with a dedicated <code>skp</code> user, <code>StateDirectory=skp</code>, <code>ConfigurationDirectory=skp</code>, <code>NoNewPrivileges=yes</code>, <code>ProtectSystem=strict</code>, <code>ProtectHome=yes</code>, <code>PrivateTmp=yes</code>.</li><li>Data <code>/var/lib/skp</code>, config <code>/etc/skp</code>; or <code>$XDG_DATA_HOME/skp</code> when run per-user.</li></ul>
+<h2 id="doc-10-packaging-10-5-configuration">10.5 Configuration</h2>
+<p>Precedence: <strong>command-line flags &gt; environment variables &gt; <code>config.json</code> &gt; defaults.</strong></p>
+<div class="tw"><table><thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead><tbody><tr><td><code>SKP_PORT</code></td><td><code>4848</code></td><td>HTTP(S) port</td></tr><tr><td><code>SKP_HOST</code></td><td>by exposure</td><td>Bind address override</td></tr><tr><td><code>SKP_DATA_DIR</code></td><td>per OS (§10.4) / <code>/data</code></td><td>Database, media, templates</td></tr><tr><td><code>SKP_CONFIG_DIR</code></td><td>per OS / <code>/config</code></td><td>Config file, master key</td></tr><tr><td><code>SKP_EXPOSURE</code></td><td><code>lan</code> (server) · <code>local</code> (desktop)</td><td>07 §7.8</td></tr><tr><td><code>SKP_PUBLIC_URL</code></td><td>—</td><td>External HTTPS origin; required in <code>public</code> mode</td></tr><tr><td><code>SKP_TLS_CERT</code> / <code>SKP_TLS_KEY</code></td><td>—</td><td>Built-in TLS</td></tr><tr><td><code>SKP_TRUST_PROXY</code></td><td>—</td><td>Address(es) of a trusted reverse proxy</td></tr><tr><td><code>SKP_MASTER_KEY</code> / <code>SKP_MASTER_KEY_FILE</code></td><td>generated</td><td>07 §7.7</td></tr><tr><td><code>SKP_FFMPEG</code></td><td><code>ffmpeg</code> on PATH</td><td>Media transcoding</td></tr><tr><td><code>SKP_LOG_LEVEL</code></td><td><code>info</code></td><td><code>debug</code>·<code>info</code>·<code>warn</code>·<code>error</code></td></tr><tr><td><code>TZ</code></td><td>system</td><td>Default timezone for new shows</td></tr></tbody></table></div>
+<p>The platform <span class="kw must">MUST</span> validate configuration at startup and exit with a specific message on any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_PROXY").</p>
+<h2 id="doc-10-packaging-10-6-storage-rules">10.6 Storage rules</h2>
+<ul><li>Schema migrations are versioned and forward-only. Before migrating, the platform writes a backup of the database next to it.</li><li>Every non-database file write is atomic: write to a temp file in the same directory, <code>fsync</code>, then rename over the target. A crash mid-write never leaves a corrupt file.</li><li>Corrupt or unreadable state at startup is moved aside (<code>*.corrupt-&lt;timestamp&gt;</code>) and reported, never silently replaced with defaults.</li></ul>
+<h2 id="doc-10-packaging-10-7-updates-and-backups">10.7 Updates and backups</h2>
+<ul><li>Versions follow SemVer. The container publishes <code>:1</code>, <code>:1.4</code>, <code>:1.4.2</code> and <code>:latest</code>.</li><li>Updating is pulling a newer image or installing a newer build; migrations run on start.</li><li>Downgrading across a schema migration is not supported — restore the pre-migration backup.</li><li>The desktop app <span class="kw may">MAY</span> check for updates; it is opt-in and sends nothing but the version.</li><li>No telemetry by default.</li></ul>
+<h2 id="doc-10-packaging-10-8-logging-and-observability">10.8 Logging and observability</h2>
+<ul><li>Structured JSON lines: <code>ts</code>, <code>level</code>, <code>msg</code>, <code>component</code>, and context. Stdout in containers; rotating files (10 × 10 MB) on native installs.</li><li>Secrets, tokens, overlay keys, cookies and <code>Authorization</code> headers are redacted at the logger, not at call sites.</li><li>Unexpected errors also go to <code>crash.log</code> in the data directory with stack traces, kept for 30 days, and surface on the dashboard.</li><li><code>GET /metrics</code> (Prometheus format) <span class="kw may">MAY</span> be enabled for admins: connector health, events per second, connected overlays, scheduler lag.</li></ul></section><section class="doc" id="doc-11-hard-rules"><header class="dochead"><span class="cue">11</span><h1>Hard rules &amp; migration from v0</h1></header><p>Each rule below was learned by something breaking during a live show or its rehearsal. They are normative: an implementation that violates one is not conformant, however well it does everything else.</p>
+<h2 id="doc-11-hard-rules-hard-rules">Hard rules</h2>
+<p><strong>H1 · Templates never connect.</strong> A template has no credentials and no route to a third party. <em>Why:</em> integration code spread across designs is unmaintainable and leaks tokens into a browser anyone can inspect. <em>(04 §4.8)</em></p>
+<p><strong>H2 · Overlay URLs are permanent.</strong> Nothing configurable goes in an OBS URL — not the theme, the viewer-count mode, settings or the template version. <em>Why:</em> v0 put an event theme and a viewer flag in the URL; every toggle minted new links and sent the operator back into OBS to re-paste sources minutes before doors. <em>(01 §1.4)</em></p>
+<p><strong>H3 · The server owns the show.</strong> Cues fire on the server. <em>Why:</em> v0 first ran its rundown in the browser; closing the laptop stopped the show. <em>(09)</em></p>
+<p><strong>H4 · Durable before visible.</strong> Persist a cue's fired state before publishing its effect. <em>Why:</em> otherwise a crash between the two fires it again on restart. <em>(09 §9.4)</em></p>
+<p><strong>H5 · No retroactive mass-fire.</strong> Cues more than 5 minutes late are marked missed, not fired. <em>Why:</em> a wrong date or a restart replayed an entire night of title cards at once. <em>(09 §9.4)</em></p>
+<p><strong>H6 · Never show a wrong number.</strong> Unknown is hidden; errors hold the last good value briefly, then hide; only an authoritative report renders <code>0</code>. <em>Why:</em> a failed API that renders "0 viewers" on stream is worse than showing nothing. <em>(02 §2.8)</em></p>
+<p><strong>H7 · Times before the day boundary belong to the next day.</strong> <em>Why:</em> a Friday show with a 1:00 AM headliner must schedule him for Saturday 1:00 AM; every naive implementation puts him on Friday at 1 AM, before doors. <em>(09 §9.2)</em></p>
+<p><strong>H8 · Headliner and closer are different.</strong> <em>Why:</em> v0 used "the CLOSER slot" as the headliner; on a bill where the closer wasn't the billed act, the event's Starting Soon card showed the wrong DJ. <em>(09 §9.1)</em></p>
+<p><strong>H9 · Never gate correctness on <code>requestAnimationFrame</code> or <code>animationend</code>.</strong> Use timers and deadlines. <em>Why:</em> OBS stops frames to sources that aren't painting, background tabs throttle timers to about once a second, and <code>animationend</code> never fires on a hidden element — each of these froze v0 overlays at some point. <em>(05 §5.2, §5.7)</em></p>
+<p><strong>H10 · Respect what a browser source can't see.</strong> <code>backdrop-filter</code> can't blur the camera; <code>mix-blend-mode: multiply</code> on a transparent page composites to black. <em>Why:</em> both shipped in v0 and blacked out or did nothing on air. <em>(05 §5.8)</em></p>
+<p><strong>H11 · Nothing a client sends may crash the process.</strong> <em>Why:</em> v0 crashed about weekly because a scanner's malformed URL threw in <code>decodeURIComponent</code> outside any handler. <em>(01 §1.7, 07 §7.11)</em></p>
+<p><strong>H12 · Transcode phone video.</strong> <em>Why:</em> iPhone <code>.MOV</code> is usually HEVC, which OBS's browser can't decode; the clip silently didn't play. Convert to H.264 MP4 and bake in rotation. <em>(10 §10.2)</em></p>
+<p><strong>H13 · Phones get lite previews, loaded on tap.</strong> <em>Why:</em> two live overlay iframes with blur and grain exhausted iOS Safari's GPU memory and crash-looped the control page. <em>(05 §5.8, 08 §8.3)</em></p>
+<p><strong>H14 · Beat OBS's cache.</strong> App files are <code>no-store</code>; template assets are versioned and immutable. <em>Why:</em> OBS kept serving stale overlay code after updates. <em>(03 §3.4)</em></p>
+<p><strong>H15 · Setup lives on the server.</strong> <em>Why:</em> v0 kept the setup in browser storage; switching from the LAN address to the public one, or to a phone, showed an empty kit and the night's lineup had to be re-entered. <em>(01 §1.2)</em></p>
+<p><strong>H16 · Concurrent edits are detected, not lost.</strong> ETags and <code>If-Match</code> on every mutable resource. <em>Why:</em> an initial page load pushed its stale copy over a newer server copy and erased an operator's work. <em>(03 §3.1)</em></p>
+<p><strong>H17 · UI tolerates missing optional elements.</strong> Pages initialize defensively — a field moved to another page, or hidden by a template, never throws during startup. <em>Why:</em> moving one setting to the Settings page made the main page crash on load and render no links at all. <em>(08)</em></p>
+<p><strong>H18 · Respect platform quotas as hard stops.</strong> On quota exhaustion, stop until reset. <em>Why:</em> retrying a YouTube <code>quotaExceeded</code> as if it were a rate limit has consumed whole days of quota in other streaming tools. <em>(06 §6.7)</em></p>
+<p><strong>H19 · Test against the clock.</strong> Every scheduled behaviour is tested by setting it a few minutes ahead and watching it fire on a running server, not only by unit tests. <em>Why:</em> v0's time bugs (after-midnight, grace window, timezone) all passed reasoning and failed reality until tested this way.</p>
+<p><strong>H20 · Destructive actions are never one tap away.</strong> Reset, delete and key rotation sit behind a menu and a confirmation that names the consequence. <em>Why:</em> the v0 reset button sat in the phone toolbar next to navigation.</p>
+<hr>
+<h2 id="doc-11-hard-rules-migrating-from-v0-d-prtmnt-stream-kit">Migrating from v0 (D/PRTMNT Stream Kit)</h2>
+<p>v0 is the working prototype this standard generalizes. Mapping:</p>
+<div class="tw"><table><thead><tr><th>v0</th><th>SKP</th></tr></thead><tbody><tr><td><code>/overlay?feed=h&amp;scene=bus</code></td><td><code>/o/&lt;slug&gt;?canvas=h</code> on an overlay that belongs to a show</td></tr><tr><td>"Live Bus · H / V"</td><td>a <strong>Show</strong> with two member overlays</td></tr><tr><td>Standalone scene links</td><td>overlays outside a show, or <code>?scene=</code> preview overrides</td></tr><tr><td><code>scene=main</code> / <code>auto</code></td><td>core scene <code>auto</code></td></tr><tr><td>Event packs (<code>shared/events.js</code>)</td><td><strong>Templates</strong> (<code>template.json</code>)</td></tr><tr><td><code>THEME_BUILDERS.vikstarr</code></td><td>the VIKKSTAR template's scenes</td></tr><tr><td>Base TAKEOVER look</td><td>the TAKEOVER template; The Line and POV become its extra scenes</td></tr><tr><td><code>CORE_SCENES</code> / <code>BASE_EXTRAS</code></td><td><code>scenes[].core</code> vs extras in each manifest</td></tr><tr><td><code>evOpts</code> toggles, star treatment</td><td>template settings schema</td></tr><tr><td>Base64 <code>cfg</code> on the live channel</td><td>Show and Overlay resources; no config in URLs</td></tr><tr><td><code>GET /api/live</code></td><td><code>/o/&lt;slug&gt;/snapshot</code> + <code>/stream</code></td></tr><tr><td><code>np</code> / <code>title</code> counters <code>{n, dur}</code></td><td><code>show.trigger</code> with <code>startAt</code> + <code>durationMs</code></td></tr><tr><td><code>sched</code> chips (opening / on-at)</td><td>template actions <code>chipOpening</code> / <code>chipOnAt</code></td></tr><tr><td><code>clubintro</code></td><td><code>overlay.action: intro</code> (Event Intro)</td></tr><tr><td><code>headliner</code> scene</td><td>template extra scene <code>headliner</code> + <code>overlay.action: headliner</code></td></tr><tr><td><code>rundown.json</code></td><td>timeline cues</td></tr><tr><td><code>kit.json</code></td><td>show + overlay settings</td></tr><tr><td><code>shows.json</code> (planned shows)</td><td>show plans (09 §9.6)</td></tr><tr><td><code>viewers.json</code></td><td>Twitch and Kick <strong>connections</strong>, encrypted</td></tr><tr><td><code>live.viewers</code></td><td><code>viewers.total</code>, <code>viewers.&lt;platform&gt;</code>, <code>viewers.stale</code></td></tr><tr><td>REC anchor <code>recStartedAt</code></td><td><code>show.recStartedAt</code></td></tr><tr><td>Line clip upload</td><td>media + <code>media.play</code></td></tr><tr><td><code>/settings</code> page</td><td>Settings + Connections sections</td></tr><tr><td>No login</td><td>users, roles, sessions, overlay keys</td></tr></tbody></table></div>
+<p>Suggested order for the new build: storage and auth → overlays and the runtime SDK with mock data → port the TAKEOVER and VIKKSTAR designs as the first two templates → shows and timeline → Twitch and OBS connectors → Kick, YouTube, Spotify → packaging.</p></section><section class="doc" id="schemas"><header class="dochead"><span class="cue">{ }</span><h1>Schemas</h1></header><p>JSON Schema (draft 2020-12) files shipped in <code>docs/standard/schemas/</code>. Implementations validate against these; template authors run them in their build.</p><h3 id="schema-alert">alert.&lt;kind&gt; payload <code class="fname">schemas/alert.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/alert.schema.json&quot;,
+  &quot;title&quot;: &quot;alert.&lt;kind&gt; payload&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;kind&quot;,
+    &quot;user&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;kind&quot;: {
+      &quot;enum&quot;: [
+        &quot;follow&quot;,
+        &quot;subscription&quot;,
+        &quot;gift&quot;,
+        &quot;cheer&quot;,
+        &quot;kicks&quot;,
+        &quot;raid&quot;,
+        &quot;membership&quot;,
+        &quot;superchat&quot;,
+        &quot;tip&quot;
+      ]
+    },
+    &quot;user&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;name&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;id&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;name&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;avatar&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;format&quot;: &quot;uri&quot;
+        },
+        &quot;anonymous&quot;: {
+          &quot;type&quot;: &quot;boolean&quot;
+        }
+      }
+    },
+    &quot;amount&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;value&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;string&quot;
+          ],
+          &quot;description&quot;: &quot;Integer for counts; decimal string for money (\&quot;5.00\&quot;).&quot;
+        },
+        &quot;unit&quot;: {
+          &quot;enum&quot;: [
+            &quot;months&quot;,
+            &quot;count&quot;,
+            &quot;bits&quot;,
+            &quot;kicks&quot;,
+            &quot;viewers&quot;,
+            &quot;currency&quot;
+          ]
+        },
+        &quot;currency&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;pattern&quot;: &quot;^[A-Z]{3}$&quot;
+        }
+      },
+      &quot;if&quot;: {
+        &quot;properties&quot;: {
+          &quot;unit&quot;: {
+            &quot;const&quot;: &quot;currency&quot;
+          }
+        }
+      },
+      &quot;then&quot;: {
+        &quot;required&quot;: [
+          &quot;currency&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;value&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;pattern&quot;: &quot;^\\d+(\\.\\d{1,4})?$&quot;
+          }
+        }
+      }
+    },
+    &quot;tier&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;message&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;text&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;fragments&quot;: {
+          &quot;type&quot;: &quot;array&quot;
+        }
+      }
+    },
+    &quot;gift&quot;: {
+      &quot;oneOf&quot;: [
+        {
+          &quot;type&quot;: &quot;null&quot;
+        },
+        {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;recipients&quot;: {
+              &quot;type&quot;: &quot;array&quot;,
+              &quot;items&quot;: {
+                &quot;type&quot;: &quot;string&quot;
+              }
+            },
+            &quot;total&quot;: {
+              &quot;type&quot;: &quot;integer&quot;
+            }
+          }
+        }
+      ]
+    },
+    &quot;coalesced&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 1,
+      &quot;description&quot;: &quot;Number of source events merged into this one (05 \u00a75.5).&quot;
+    }
+  }
+}</code></pre></div><h3 id="schema-chat-message">chat.message payload <code class="fname">schemas/chat-message.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/chat-message.schema.json&quot;,
+  &quot;title&quot;: &quot;chat.message payload&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;,
+    &quot;user&quot;,
+    &quot;text&quot;,
+    &quot;fragments&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;platformMessageId&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;channel&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;user&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;id&quot;,
+        &quot;name&quot;,
+        &quot;roles&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;id&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;pattern&quot;: &quot;^(twitch|kick|youtube|custom):.+$&quot;
+        },
+        &quot;login&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;name&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;color&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;pattern&quot;: &quot;^#[0-9A-Fa-f]{6}$&quot;
+        },
+        &quot;avatar&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;format&quot;: &quot;uri&quot;
+        },
+        &quot;roles&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;uniqueItems&quot;: true,
+          &quot;items&quot;: {
+            &quot;enum&quot;: [
+              &quot;broadcaster&quot;,
+              &quot;moderator&quot;,
+              &quot;vip&quot;,
+              &quot;subscriber&quot;,
+              &quot;member&quot;,
+              &quot;verified&quot;,
+              &quot;founder&quot;,
+              &quot;artist&quot;,
+              &quot;bot&quot;
+            ]
+          }
+        },
+        &quot;badges&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;items&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;required&quot;: [
+              &quot;id&quot;
+            ],
+            &quot;properties&quot;: {
+              &quot;id&quot;: {
+                &quot;type&quot;: &quot;string&quot;
+              },
+              &quot;label&quot;: {
+                &quot;type&quot;: &quot;string&quot;
+              },
+              &quot;image&quot;: {
+                &quot;type&quot;: &quot;string&quot;,
+                &quot;format&quot;: &quot;uri&quot;
+              }
+            }
+          }
+        }
+      }
+    },
+    &quot;text&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;maxLength&quot;: 1000
+    },
+    &quot;truncated&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;
+    },
+    &quot;fragments&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;type&quot;,
+          &quot;text&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;type&quot;: {
+            &quot;enum&quot;: [
+              &quot;text&quot;,
+              &quot;emote&quot;,
+              &quot;mention&quot;,
+              &quot;link&quot;,
+              &quot;cheermote&quot;
+            ]
+          },
+          &quot;text&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;image&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;format&quot;: &quot;uri&quot;
+          },
+          &quot;animated&quot;: {
+            &quot;type&quot;: &quot;boolean&quot;
+          },
+          &quot;url&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;format&quot;: &quot;uri&quot;
+          },
+          &quot;userId&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;amount&quot;: {
+            &quot;type&quot;: &quot;integer&quot;
+          }
+        }
+      }
+    },
+    &quot;reply&quot;: {
+      &quot;oneOf&quot;: [
+        {
+          &quot;type&quot;: &quot;null&quot;
+        },
+        {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;messageId&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            },
+            &quot;userName&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            },
+            &quot;text&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            }
+          }
+        }
+      ]
+    },
+    &quot;highlighted&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;
+    },
+    &quot;action&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;description&quot;: &quot;/me message&quot;
+    }
+  }
+}</code></pre></div><h3 id="schema-connection-health">Connection health <code class="fname">schemas/connection-health.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/connection-health.schema.json&quot;,
+  &quot;title&quot;: &quot;Connection health&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;status&quot;,
+    &quot;since&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;status&quot;: {
+      &quot;enum&quot;: [
+        &quot;disabled&quot;,
+        &quot;connecting&quot;,
+        &quot;connected&quot;,
+        &quot;degraded&quot;,
+        &quot;needs-reauth&quot;,
+        &quot;error&quot;
+      ]
+    },
+    &quot;detail&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;Operator-facing, plain language.&quot;
+    },
+    &quot;since&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;lastEventAt&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;quota&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;used&quot;: {
+          &quot;type&quot;: &quot;integer&quot;
+        },
+        &quot;limit&quot;: {
+          &quot;type&quot;: &quot;integer&quot;
+        },
+        &quot;resetsAt&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;format&quot;: &quot;date-time&quot;
+        }
+      }
+    },
+    &quot;warnings&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;
+      }
+    }
+  }
+}</code></pre></div><h3 id="schema-cue">Timeline cue <code class="fname">schemas/cue.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/cue.schema.json&quot;,
+  &quot;title&quot;: &quot;Timeline cue&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;,
+    &quot;at&quot;,
+    &quot;action&quot;,
+    &quot;status&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^cue_&quot;
+    },
+    &quot;at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;,
+      &quot;description&quot;: &quot;Absolute instant, resolved server-side (09 \u00a79.2).&quot;
+    },
+    &quot;label&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;maxLength&quot;: 120
+    },
+    &quot;generated&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;description&quot;: &quot;Created by a lineup recipe (09 \u00a79.5).&quot;
+    },
+    &quot;status&quot;: {
+      &quot;enum&quot;: [
+        &quot;armed&quot;,
+        &quot;fired&quot;,
+        &quot;skipped&quot;,
+        &quot;missed&quot;
+      ]
+    },
+    &quot;firedAt&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;action&quot;: {
+      &quot;$ref&quot;: &quot;#/$defs/action&quot;
+    }
+  },
+  &quot;$defs&quot;: {
+    &quot;action&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;type&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;type&quot;: {
+          &quot;enum&quot;: [
+            &quot;show.scene&quot;,
+            &quot;overlay.action&quot;,
+            &quot;show.slot&quot;,
+            &quot;connector.action&quot;,
+            &quot;media.play&quot;,
+            &quot;media.stop&quot;,
+            &quot;webhook&quot;,
+            &quot;sequence&quot;
+          ]
+        },
+        &quot;scene&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;transition&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;name&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;args&quot;: {
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;slot&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 0
+        },
+        &quot;connector&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;mediaId&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;webhookId&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;steps&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;items&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;required&quot;: [
+              &quot;offsetMs&quot;,
+              &quot;action&quot;
+            ],
+            &quot;properties&quot;: {
+              &quot;offsetMs&quot;: {
+                &quot;type&quot;: &quot;integer&quot;,
+                &quot;minimum&quot;: 0
+              },
+              &quot;action&quot;: {
+                &quot;$ref&quot;: &quot;#/$defs/action&quot;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre></div><h3 id="schema-envelope">SKP envelope <code class="fname">schemas/envelope.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/envelope.schema.json&quot;,
+  &quot;title&quot;: &quot;SKP envelope&quot;,
+  &quot;description&quot;: &quot;Wraps every event and state change on the bus (02 \u00a72.1).&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;,
+    &quot;type&quot;,
+    &quot;ts&quot;,
+    &quot;src&quot;,
+    &quot;data&quot;
+  ],
+  &quot;additionalProperties&quot;: false,
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 10,
+      &quot;description&quot;: &quot;Unique, time-sortable (ULID recommended). Doubles as the SSE cursor.&quot;
+    },
+    &quot;type&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^(state\\.changed|chat\\.(message|message\\.deleted|user\\.cleared|cleared)|alert\\.[a-z]+|show\\.(scene\\.changed|trigger|cue\\.fired)|media\\.(play|stop)|system\\.(connection|notice)|custom\\.[a-z0-9_.-]+|x-[a-z0-9-]+\\.[a-z0-9_.-]+)$&quot;
+    },
+    &quot;ts&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0,
+      &quot;description&quot;: &quot;Server epoch milliseconds.&quot;
+    },
+    &quot;src&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;connector&quot;
+      ],
+      &quot;additionalProperties&quot;: false,
+      &quot;properties&quot;: {
+        &quot;connector&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;connection&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;platform&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;twitch&quot;,
+            &quot;kick&quot;,
+            &quot;youtube&quot;,
+            &quot;spotify&quot;,
+            &quot;obs&quot;,
+            &quot;core&quot;,
+            &quot;simulator&quot;,
+            &quot;custom&quot;
+          ]
+        }
+      }
+    },
+    &quot;data&quot;: {
+      &quot;type&quot;: &quot;object&quot;
+    },
+    &quot;meta&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;chatDropped&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 0
+        }
+      }
+    }
+  }
+}</code></pre></div><h3 id="schema-show">Show <code class="fname">schemas/show.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/show.schema.json&quot;,
+  &quot;title&quot;: &quot;Show&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;,
+    &quot;name&quot;,
+    &quot;overlays&quot;,
+    &quot;date&quot;,
+    &quot;timezone&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^show_&quot;
+    },
+    &quot;name&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;overlays&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;pattern&quot;: &quot;^ovl_&quot;
+      }
+    },
+    &quot;date&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date&quot;
+    },
+    &quot;timezone&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;IANA zone, e.g. America/Toronto.&quot;
+    },
+    &quot;dayBoundary&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^([01]\\d|2[0-3]):[0-5]\\d$&quot;,
+      &quot;default&quot;: &quot;12:00&quot;
+    },
+    &quot;goLive&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^([01]\\d|2[0-3]):[0-5]\\d$&quot;
+    },
+    &quot;scene&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;lineup&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;time&quot;,
+          &quot;name&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;time&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;pattern&quot;: &quot;^([01]\\d|2[0-3]):[0-5]\\d$&quot;
+          },
+          &quot;name&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;b2b&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;headliner&quot;: {
+            &quot;type&quot;: &quot;boolean&quot;
+          },
+          &quot;closer&quot;: {
+            &quot;type&quot;: &quot;boolean&quot;
+          }
+        }
+      }
+    },
+    &quot;obsSceneMap&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: {
+        &quot;type&quot;: &quot;string&quot;
+      },
+      &quot;description&quot;: &quot;OBS scene name \u2192 overlay scene id (06 \u00a76.9).&quot;
+    },
+    &quot;recipe&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;description&quot;: &quot;Cue generation recipe (09 \u00a79.5).&quot;
+    }
+  }
+}</code></pre></div><h3 id="schema-template">SKP template manifest (template.json) <code class="fname">schemas/template.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/template.schema.json&quot;,
+  &quot;title&quot;: &quot;SKP template manifest (template.json)&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;standard&quot;,
+    &quot;id&quot;,
+    &quot;name&quot;,
+    &quot;version&quot;,
+    &quot;category&quot;,
+    &quot;entry&quot;,
+    &quot;previews&quot;,
+    &quot;canvases&quot;,
+    &quot;scenes&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;standard&quot;: {
+      &quot;const&quot;: &quot;skp/1&quot;
+    },
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[a-z0-9]+(\\.[a-z0-9-]+){2,}$&quot;,
+      &quot;description&quot;: &quot;Reverse-DNS, immutable.&quot;
+    },
+    &quot;name&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1,
+      &quot;maxLength&quot;: 80
+    },
+    &quot;version&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$&quot;
+    },
+    &quot;description&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;maxLength&quot;: 500
+    },
+    &quot;author&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;name&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;name&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;url&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;format&quot;: &quot;uri&quot;
+        }
+      }
+    },
+    &quot;license&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;category&quot;: {
+      &quot;enum&quot;: [
+        &quot;show&quot;,
+        &quot;chat&quot;,
+        &quot;alerts&quot;,
+        &quot;now-playing&quot;,
+        &quot;lower-third&quot;,
+        &quot;background&quot;,
+        &quot;ticker&quot;,
+        &quot;goal&quot;,
+        &quot;scoreboard&quot;,
+        &quot;widget&quot;
+      ]
+    },
+    &quot;tags&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;
+      },
+      &quot;maxItems&quot;: 12
+    },
+    &quot;entry&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;default&quot;: &quot;index.html&quot;
+    },
+    &quot;previews&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;minItems&quot;: 1,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;
+      }
+    },
+    &quot;engines&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;obs&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        }
+      }
+    },
+    &quot;canvases&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;minItems&quot;: 1,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;id&quot;,
+          &quot;width&quot;,
+          &quot;height&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;id&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;pattern&quot;: &quot;^[a-z0-9-]+$&quot;
+          },
+          &quot;width&quot;: {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;minimum&quot;: 64,
+            &quot;maximum&quot;: 7680
+          },
+          &quot;height&quot;: {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;minimum&quot;: 64,
+            &quot;maximum&quot;: 7680
+          },
+          &quot;default&quot;: {
+            &quot;type&quot;: &quot;boolean&quot;
+          }
+        }
+      }
+    },
+    &quot;scenes&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;minItems&quot;: 1,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;id&quot;,
+          &quot;label&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;id&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;pattern&quot;: &quot;^[a-z][a-z0-9-]*$&quot;
+          },
+          &quot;label&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;core&quot;: {
+            &quot;enum&quot;: [
+              &quot;auto&quot;,
+              &quot;starting&quot;,
+              &quot;program&quot;,
+              &quot;brb&quot;,
+              &quot;lineup&quot;,
+              &quot;outro&quot;,
+              &quot;bg&quot;,
+              &quot;intro&quot;
+            ]
+          },
+          &quot;transparent&quot;: {
+            &quot;type&quot;: &quot;boolean&quot;
+          },
+          &quot;durationMs&quot;: {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;minimum&quot;: 0
+          },
+          &quot;then&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          }
+        },
+        &quot;dependentRequired&quot;: {
+          &quot;then&quot;: [
+            &quot;durationMs&quot;
+          ]
+        }
+      }
+    },
+    &quot;consumes&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;state&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;items&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          }
+        },
+        &quot;events&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;items&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          }
+        },
+        &quot;chat&quot;: {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;recent&quot;: {
+              &quot;type&quot;: &quot;integer&quot;,
+              &quot;minimum&quot;: 0,
+              &quot;maximum&quot;: 200
+            },
+            &quot;max&quot;: {
+              &quot;type&quot;: &quot;integer&quot;,
+              &quot;minimum&quot;: 1,
+              &quot;maximum&quot;: 200
+            }
+          }
+        }
+      }
+    },
+    &quot;settings&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;description&quot;: &quot;JSON Schema (2020-12 subset) with x-skp-* extensions, 04 \u00a74.3.&quot;
+    },
+    &quot;actions&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;id&quot;,
+          &quot;label&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;id&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;pattern&quot;: &quot;^[a-zA-Z][a-zA-Z0-9]*$&quot;
+          },
+          &quot;label&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;durationMs&quot;: {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;minimum&quot;: 0
+          },
+          &quot;args&quot;: {
+            &quot;type&quot;: &quot;object&quot;
+          }
+        }
+      }
+    },
+    &quot;alerts&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;mode&quot;: {
+          &quot;enum&quot;: [
+            &quot;serial&quot;,
+            &quot;stack&quot;
+          ]
+        },
+        &quot;maxConcurrent&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 1,
+          &quot;maximum&quot;: 10
+        },
+        &quot;minDisplayMs&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 0
+        },
+        &quot;gapMs&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 0
+        },
+        &quot;maxQueue&quot;: {
+          &quot;type&quot;: &quot;integer&quot;,
+          &quot;minimum&quot;: 1
+        },
+        &quot;coalesce&quot;: {
+          &quot;type&quot;: &quot;boolean&quot;
+        }
+      }
+    },
+    &quot;transitions&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [
+          &quot;id&quot;
+        ],
+        &quot;properties&quot;: {
+          &quot;id&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;media&quot;: {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          &quot;cutAtMs&quot;: {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;minimum&quot;: 0
+          }
+        }
+      }
+    },
+    &quot;fonts&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;format&quot;: &quot;uri&quot;
+      }
+    },
+    &quot;definitions&quot;: {
+      &quot;type&quot;: &quot;object&quot;
+    }
+  }
+}</code></pre></div><h3 id="schema-track">music.nowPlaying value <code class="fname">schemas/track.schema.json</code></h3><div class="code"><span class="lang">json</span><pre><code>{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;$id&quot;: &quot;https://skp.dev/schemas/1/track.schema.json&quot;,
+  &quot;title&quot;: &quot;music.nowPlaying value&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;title&quot;,
+    &quot;artists&quot;,
+    &quot;playing&quot;,
+    &quot;source&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;title&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;artists&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;
+      },
+      &quot;minItems&quot;: 1
+    },
+    &quot;album&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;art&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uri&quot;
+    },
+    &quot;url&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uri&quot;
+    },
+    &quot;durationMs&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0
+    },
+    &quot;progressMs&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0
+    },
+    &quot;progressAt&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0,
+      &quot;description&quot;: &quot;Server epoch ms at which progressMs was true.&quot;
+    },
+    &quot;playing&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;
+    },
+    &quot;source&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    }
+  }
+}</code></pre></div></section>
+    <footer>Stream Kit Platform Standard · skp/1 · source: docs/standard/ in the DPRTMNT-stream-Kit repository</footer>
+  </main>
+</div>
+
+</body></html>
