@@ -35,6 +35,8 @@ class FakeElement {
 
   setAttribute(name, value) { this.attrs.set(name, String(value)); }
   getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
+  hasAttribute(name) { return this.attrs.has(name); }
+  get offsetWidth() { return 0; }
   removeAttribute(name) { this.attrs.delete(name); }
   querySelector() { return null; }
   querySelectorAll() { return []; }

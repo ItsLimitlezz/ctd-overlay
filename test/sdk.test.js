@@ -10,10 +10,14 @@ import { defer, startWithOverlay } from './helpers.js';
 
 const CODE = readFileSync(new URL('../src/sdk/sk.js', import.meta.url), 'utf8');
 
-// Loads sk.js as an overlay page at `pageUrl` would. `hangStreams` makes stream requests never
-// open (as when the browser holds them back), until set back to false.
-function loadSdk(t, pageUrl, { timing = {}, slug = 'diag-1' } = {}) {
-  const meta = { slug, timing: { reconnectMs: 50, ...timing } };
+// Loads sk.js as the overlay page at `pageUrl` would, with the page's real <meta name="skp"> (plus
+// test timings). `hangStreams` makes stream requests never open (as when the browser holds them
+// back), until set back to false.
+async function loadSdk(t, pageUrl, { timing = {} } = {}) {
+  const html = await (await fetch(pageUrl)).text();
+  const content = /<meta name="skp" content="([^"]*)">/.exec(html)[1]
+    .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const meta = { ...JSON.parse(content), timing: { reconnectMs: 50, ...timing } };
   const timers = new Set();
   const controllers = new Set();
   const control = { hangStreams: false, disposed: false };
@@ -33,6 +37,7 @@ function loadSdk(t, pageUrl, { timing = {}, slug = 'diag-1' } = {}) {
     AbortController,
     TextDecoder,
     structuredClone,
+    performance,
     setTimeout: track(setTimeout),
     clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
     setInterval: (fn, ms) => { if (control.disposed) return 0; const id = setInterval(fn, ms); timers.add(id); return id; },
@@ -71,7 +76,7 @@ async function until(check, ms = 4000, what = 'condition') {
 test('ready fires after the snapshot; onState fires once with the current value', async (t) => {
   const { platform, base } = await startWithOverlay(t);
   platform.bus.setState('custom.diag.counter', 3);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   const calls = [];
   SK.onState('custom.diag.counter', (v, prev) => calls.push([v, prev]));
   SK.onState('custom.missing', (v) => calls.push(['missing', v]));
@@ -81,12 +86,13 @@ test('ready fires after the snapshot; onState fires once with the current value'
   await until(() => calls.length === 2);
   assert.deepEqual(calls, [[3, undefined], ['missing', undefined]]);
   assert.equal(SK.state('custom.diag.counter'), 3);
-  assert.deepEqual(SK.state('overlay.settings'), { accent: '#16e0ff' });
+  assert.deepEqual(SK.settings, { accent: '#16e0ff' });
+  assert.equal(SK.state('overlay.settings'), undefined); // undeclared runtime data stays private (04 §4.8)
 });
 
 test('it streams: events and state changes arrive live', async (t) => {
   const { platform, base } = await startWithOverlay(t);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   const events = [];
   const values = [];
   SK.on('custom.*', (env) => events.push(env.data.n));
@@ -101,7 +107,7 @@ test('it streams: events and state changes arrive live', async (t) => {
 
 test('after a dropped connection it resumes from its cursor: nothing missed, nothing twice', async (t) => {
   const { platform, base } = await startWithOverlay(t);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   const seen = [];
   SK.on('custom.*', (env) => seen.push(env.data.n));
   await until(() => SK.transport.mode === 'stream');
@@ -120,7 +126,7 @@ test('after a dropped connection it resumes from its cursor: nothing missed, not
 test('when its cursor has expired (410) it re-fetches the snapshot and reports what changed', async (t) => {
   const { platform, base, overlay } = await startWithOverlay(t);
   platform.bus.setState('custom.diag.counter', 1);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   const values = [];
   SK.onState('custom.diag.counter', (v) => values.push(v));
   await until(() => SK.transport.mode === 'stream');
@@ -136,7 +142,7 @@ test('when its cursor has expired (410) it re-fetches the snapshot and reports w
 
 test('streams that never open fall back to polling within the window, then return to streaming', async (t) => {
   const { platform, base } = await startWithOverlay(t);
-  const { SK, control } = loadSdk(t, base, { timing: { openTimeoutMs: 150, pollMs: 30, retryStreamMs: 300 } });
+  const { SK, control } = await loadSdk(t, base, { timing: { openTimeoutMs: 150, pollMs: 30, retryStreamMs: 300 } });
   control.hangStreams = true; // the browser is holding the stream back (01 §1.5)
   const seen = [];
   SK.on('custom.*', (env) => seen.push(env.data.n));
@@ -162,7 +168,7 @@ test('when the server says the browser has enough streams (429), it polls at onc
     const res = await fetch(`${base}/stream?cursor=${cursor}`, { signal: c.signal });
     assert.equal(res.status, 200);
   }
-  const { SK } = loadSdk(t, base, { timing: { pollMs: 30, openTimeoutMs: 5000 } });
+  const { SK } = await loadSdk(t, base, { timing: { pollMs: 30, openTimeoutMs: 5000 } });
   const seen = [];
   SK.on('custom.*', (env) => seen.push(env.data.n));
   await until(() => SK.transport.mode === 'poll', 2000, 'poll mode without waiting for failures');
@@ -173,7 +179,7 @@ test('when the server says the browser has enough streams (429), it polls at onc
 
 test('a template callback that throws does not break the others', async (t) => {
   const { platform, base } = await startWithOverlay(t);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   const seen = [];
   const original = console.error;
   console.error = () => {};
@@ -187,7 +193,7 @@ test('a template callback that throws does not break the others', async (t) => {
 
 test('SK and its clock are frozen, and the clock tracks server time', async (t) => {
   const { base } = await startWithOverlay(t);
-  const { SK } = loadSdk(t, base);
+  const { SK } = await loadSdk(t, base);
   await until(() => SK.transport.mode === 'stream');
   assert.ok(Object.isFrozen(SK));
   assert.ok(Object.isFrozen(SK.clock));

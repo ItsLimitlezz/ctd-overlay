@@ -53,7 +53,11 @@ test('the page is the entry document with the runtime injected first in <head>',
   assert.ok(html.indexOf('<script src="/sdk/v1/sk.js"></script>') < html.indexOf('template.css'));
   const meta = JSON.parse(/<meta name="skp" content="([^"]*)">/.exec(html)[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
   assert.equal(meta.slug, 'diag-1');
-  assert.deepEqual(meta.canvas, { id: 'h', width: 1920, height: 1080, default: true });
+  assert.deepEqual(meta.canvas, { id: 'h', width: 1920, height: 1080 });
+  assert.deepEqual(meta.template, { id: 'dev.skp.diagnostic', version: '1.0.0' });
+  assert.deepEqual(meta.consumes, { state: ['custom.*'], events: ['custom.*'], chat: null });
+  assert.match(html, /<script src="\/sdk\/v1\/sk\.js\?v=[0-9a-f]{12}"><\/script>/);
+  assert.ok(html.indexOf('<body>') < html.indexOf('data-skp-boot'), 'the boot badge is in the body');
   const v = await (await fetch(`${base}?canvas=v`)).text();
   assert.match(v, /&quot;id&quot;:&quot;v&quot;,&quot;width&quot;:1080/);
 });
@@ -114,7 +118,7 @@ test('poll returns what happened after the cursor; an expired cursor is 410', as
 });
 
 test('the stream sends backlog, then live envelopes, as id/event/data frames', async (t) => {
-  const { platform, base } = await startWithOverlay(t);
+  const { platform, base, build } = await startWithOverlay(t);
   const { cursor } = await (await fetch(`${base}/snapshot`)).json();
   platform.bus.publish('custom.diag.tick', { n: 1 }); // before the stream: backlog
   const ctrl = new AbortController();
@@ -123,7 +127,8 @@ test('the stream sends backlog, then live envelopes, as id/event/data frames', a
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('content-type'), 'text/event-stream; charset=utf-8');
   const next = frames(res);
-  assert.deepEqual(await next(), { comment: 'open' });
+  const open = await next();
+  assert.match(open.comment, new RegExp(`^open \\d{13} ${build}$`));
   const first = await next();
   assert.equal(first.event, 'custom.diag.tick');
   assert.equal(first.id, first.env.id);
@@ -154,7 +159,7 @@ test('an idle stream gets a heartbeat comment', async (t) => {
   defer(t, () => ctrl.abort());
   const next = frames(await fetch(`${base}/stream?cursor=${cursor}`, { signal: ctrl.signal }));
   await next();
-  assert.deepEqual(await next(1000), { comment: 'hb' });
+  assert.match((await next(1000)).comment, /^hb \d{13}$/);
 });
 
 test('deleting the overlay ends its open streams', async (t) => {
@@ -235,7 +240,8 @@ test('injectRuntime handles documents with and without <head> or <html>', () => 
   assert.ok(noHead.startsWith('<html><head><base'));
   const fragment = injectRuntime('<link rel="stylesheet" href="template.css">', 'a', 'b1', meta); // 04 §4.12
   assert.ok(fragment.startsWith('<!doctype html><html><head><base'));
-  assert.ok(fragment.endsWith('</head><link rel="stylesheet" href="template.css">'));
+  assert.ok(fragment.includes('</head><link rel="stylesheet" href="template.css">'));
+  assert.ok(fragment.endsWith('</div>'), 'no <body>: the boot badge goes at the end');
 });
 
 test('extra font hosts are allowed only when the manifest lists them', () => {

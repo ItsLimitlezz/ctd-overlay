@@ -94,7 +94,8 @@ export function createHttpServer({ log, crash, routes = [] }) {
     }
     try {
       sendProblem(res, 500, 'Something went wrong',
-        'The server hit an unexpected error and logged it. Try again; if it keeps happening, look in crash.log in the data directory.');
+        'The server hit an unexpected error and logged it. Try again; if it keeps happening, look in crash.log in the data directory.',
+        { headers: corsFor(req.url) });
     } catch {
       res.destroy();
     }
@@ -115,9 +116,17 @@ export function createHttpServer({ log, crash, routes = [] }) {
   return server;
 }
 
+// Overlay pages and the SDK run in OBS and in the admin UI's sandboxed (opaque-origin) previews.
+// Even their errors carry Access-Control-Allow-Origin, so a preview can tell an error from an
+// outage. The admin API does not (07 §7.10).
+function corsFor(rawUrl) {
+  return /^\/(o|sdk)\//.test(rawUrl || '') ? { 'access-control-allow-origin': '*' } : {};
+}
+
 async function handle(req, res, router) {
   req.on('error', () => {}); // client aborts mid-request are routine, not crashes
   res.on('error', () => {});
+  const cors = corsFor(req.url);
 
   let url;
   let segments;
@@ -125,17 +134,17 @@ async function handle(req, res, router) {
     url = new URL(req.url, 'http://localhost');
     segments = url.pathname.split('/').slice(1).map((s) => decodeURIComponent(s));
   } catch {
-    return sendProblem(res, 400, 'Bad request', 'The request URL is malformed.');
+    return sendProblem(res, 400, 'Bad request', 'The request URL is malformed.', { headers: cors });
   }
 
   const method = req.method === 'HEAD' ? 'GET' : req.method;
   const match = router.match(method, segments);
   if (match.status === 404) {
-    return sendProblem(res, 404, 'Not found', `Nothing is served at ${url.pathname}.`);
+    return sendProblem(res, 404, 'Not found', `Nothing is served at ${url.pathname}.`, { headers: cors });
   }
   if (match.status === 405) {
     return sendProblem(res, 405, 'Method not allowed', `${url.pathname} accepts ${match.allow.join(', ')}.`, {
-      headers: { allow: match.allow.join(', ') },
+      headers: { ...cors, allow: match.allow.join(', ') },
     });
   }
   await match.route.handler({ req, res, params: match.params, url });

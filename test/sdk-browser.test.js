@@ -222,14 +222,23 @@ describe('alerts (05 §5.5)', () => {
     await page.waitFor('!document.querySelector("[data-skp-alert=raid]")', 1000);
   });
 
-  test('without a display window (until the server queue, step 19) alerts play one after another', opts, async (t) => {
+  test('without a display window (before the server queue, step 19) an alert shows at once; the browser never queues', opts, async (t) => {
     const { page, platform, overlay, logOf } = await open(t);
     platform.bus.publish('alert.follow', follow('one'), { target: overlay.id });
     platform.bus.publish('alert.follow', follow('two'), { target: overlay.id });
-    await page.waitFor('window.__log.filter((e) => e.what === "alert").length === 2', 5000);
+    await page.waitFor('window.__log.filter((e) => e.what === "alert").length === 2', 2000);
     const [a, b] = await logOf('alert');
     assert.deepEqual([a.name, b.name], ['one', 'two']);
-    assert.ok(b.at - a.at >= 1500, `second alert ${b.at - a.at} ms after the first (1500 + 100 gap)`);
+    assert.ok(Math.abs(b.at - a.at) < 300, 'both start from their envelope time, overlapping');
+    // The window is the manifest's durationMs (1500) from the envelope time.
+    await page.waitFor('document.querySelectorAll("[data-skp-alert]").length === 0', 3000);
+  });
+
+  test('alerts for templates without a renderer still reach SK.on subscribers only', opts, async (t) => {
+    const { page, platform, overlay } = await open(t);
+    await page.eval('SK.on("alert.*", (e) => window.__log.push({ what: "on-alert", type: e.type })); true');
+    platform.bus.publish('alert.cheer', { kind: 'cheer', user: { name: 'x' }, amount: { value: 100, unit: 'bits' } }, { target: overlay.id });
+    await page.waitFor('window.__log.some((e) => e.what === "on-alert" && e.type === "alert.cheer")');
   });
 });
 
@@ -311,14 +320,30 @@ describe('data helpers', () => {
     await page.waitFor('SK.music.track() === undefined && SK.music.progress() === undefined');
   });
 
-  test('settings: live edits reach onSettings; ?settings= lays unsaved edits over them', opts, async (t) => {
-    const preview = Buffer.from(JSON.stringify({ accent: 'gold', héadliner: 'VIKKSTAR' })).toString('base64');
-    const { page, channel } = await open(t, { query: `?settings=${encodeURIComponent(preview)}`, settings: { accent: 'cyan', size: 2 } });
-    assert.deepEqual(await page.eval('SK.settings'), { accent: 'gold', size: 2, 'héadliner': 'VIKKSTAR' });
+  test('settings: live edits reach onSettings, frozen', opts, async (t) => {
+    const { page, channel } = await open(t, { settings: { accent: 'cyan', size: 2 } });
+    assert.deepEqual(await page.eval('SK.settings'), { accent: 'cyan', size: 2 });
     assert.equal(await page.eval('Object.isFrozen(SK.settings)'), true);
     channel.setLocalState('overlay.settings', { accent: 'cyan', size: 3 });
     await page.waitFor('window.__log.some((e) => e.what === "settings")');
-    assert.deepEqual(await page.eval('window.__log.filter((e) => e.what === "settings").map((e) => e.settings)'), [{ accent: 'gold', size: 3, 'héadliner': 'VIKKSTAR' }]);
+    assert.deepEqual(await page.eval('window.__log.filter((e) => e.what === "settings").map((e) => e.settings)'), [{ accent: 'cyan', size: 3 }]);
+    assert.equal(await page.eval('SK.state("overlay.settings") === undefined'), true); // runtime data: only through SK.settings (04 §4.8)
+  });
+
+  test('?settings= (unsaved edits in the admin UI) replaces the saved settings, in either base64 alphabet', opts, async (t) => {
+    const edits = { accent: 'gold', headliner: 'VIKKSTAR ✕ D/PRTMNT', note: '>>>???' };
+    const b64url = Buffer.from(JSON.stringify(edits)).toString('base64url');
+    const { page, channel, base } = await open(t, { query: `?settings=${b64url}`, settings: { accent: 'cyan', size: 2 } });
+    assert.deepEqual(await page.eval('SK.settings'), edits);
+    channel.setLocalState('overlay.settings', { accent: 'red' });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(await page.eval('SK.settings'), edits); // live edits don't override unsaved ones
+    // Standard base64 put in the URL as is: its '+' arrives as a space and must still decode.
+    const b64 = Buffer.from(JSON.stringify(edits)).toString('base64');
+    assert.match(b64, /\+/);
+    await page.goto(`${base}?settings=${b64}`);
+    await page.waitFor('window.__log && window.__log.some((e) => e.what === "ready")');
+    assert.deepEqual(await page.eval('SK.settings'), edits);
   });
 
   test('SK.asset gives the versioned URL of a template file', opts, async (t) => {

@@ -67,6 +67,7 @@ export class Channel {
 
   // Channel-only state: never global, never sent to other overlays or API subscribers.
   setLocalState(key, value) {
+    if (value === null) value = undefined; // absent, never null (02 §2.2)
     const prev = this.#local.get(key);
     if (JSON.stringify(prev) === JSON.stringify(value)) return;
     if (value === undefined) this.#local.delete(key);
@@ -92,6 +93,9 @@ export class Channel {
   // (the client must re-fetch the snapshot; 410 at the HTTP layer).
   since(cursor) {
     if (typeof cursor !== 'string' || !ULID_PATTERN.test(cursor) || cursor < this.#droppedUpTo) return { gone: true };
+    // A cursor newer than anything this bus has issued comes from before a restart whose clock
+    // stepped back. Accepting it would filter out every new envelope and freeze the overlay.
+    if (cursor > this.#bus.cursor()) return { gone: true };
     const envelopes = this.#buffer.filter((env) => env.id > cursor);
     return { envelopes, cursor: envelopes.length ? envelopes[envelopes.length - 1].id : cursor };
   }

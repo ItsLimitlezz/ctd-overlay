@@ -9,6 +9,8 @@
 //
 // Overlay keys arrive with step 12. Until then the server only listens on loopback, and the
 // overlay endpoints need no key (07 §7.6 allows "no key required" in local mode).
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +54,9 @@ const MIME = {
 };
 
 export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxStreamsPerClient = MAX_STREAMS_PER_CLIENT }) {
+  // The SDK's content hash goes on its <script> URL, a second guard against OBS's sticky cache
+  // beside no-store (H14).
+  const sdkVersion = createHash('sha256').update(readFileSync(SDK_FILE)).digest('hex').slice(0, 12);
   const streamsByClient = new Map();
   const capped = new Set(); // clients we've told to poll, so the log says it once
 
@@ -72,18 +77,19 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     const o = find(res, params.slug);
     if (!o) return;
     const { manifest, build } = o.template;
-    const canvas = pickCanvas(manifest, url.searchParams.get('canvas'));
+    const { id, width, height } = pickCanvas(manifest, url.searchParams.get('canvas'));
     const meta = {
       standard: 'skp/1',
       slug: params.slug,
       build,
-      canvas,
+      template: { id: manifest.id, version: manifest.version },
+      canvas: { id, width, height },
       canvases: manifest.canvases,
       scenes: manifest.scenes || [],
       actions: manifest.actions || [],
       alerts: manifest.alerts || {},
       transitions: manifest.transitions || [],
-      chat: manifest.consumes?.chat || null,
+      consumes: { state: manifest.consumes?.state || [], events: manifest.consumes?.events || [], chat: manifest.consumes?.chat || null },
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -91,12 +97,14 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'x-content-type-options': 'nosniff',
       'content-security-policy': overlayCsp(manifest),
     });
-    res.end(injectRuntime(o.template.entry, params.slug, build, meta));
+    res.end(injectRuntime(o.template.entry, params.slug, build, meta, sdkVersion));
   }
 
+  // The build rides on every snapshot and poll, so a page whose template was upgraded reloads
+  // itself and the URL in OBS never changes (01 §1.4).
   function snapshot({ res, params }) {
     const o = find(res, params.slug);
-    if (o) sendJson(res, 200, o.channel.snapshot(), OVERLAY_HEADERS);
+    if (o) sendJson(res, 200, { ...o.channel.snapshot(), build: o.template.build }, OVERLAY_HEADERS);
   }
 
   function poll({ res, params, url }) {
@@ -104,7 +112,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     if (!o) return;
     const result = o.channel.since(url.searchParams.get('cursor'));
     if (result.gone) return gone(res);
-    sendJson(res, 200, { envelopes: result.envelopes, cursor: result.cursor, ts: Date.now() }, OVERLAY_HEADERS);
+    sendJson(res, 200, { envelopes: result.envelopes, cursor: result.cursor, ts: Date.now(), build: o.template.build }, OVERLAY_HEADERS);
   }
 
   function stream({ req, res, params, url }) {
@@ -123,7 +131,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       }
       return sendProblem(res, 429, 'Use polling',
         `This browser already holds ${open} live streams to this server. Over plain HTTP a browser keeps at most six connections per host, so further overlays poll instead (01 §1.5).`,
-        { type: USE_POLLING, headers: { ...OVERLAY_HEADERS, 'retry-after': '60' } });
+        { type: USE_POLLING, headers: { ...OVERLAY_HEADERS, 'retry-after': '60', 'access-control-expose-headers': 'Retry-After' } });
     }
     streamsByClient.set(client, open + 1);
 
@@ -133,12 +141,14 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'x-content-type-options': 'nosniff',
       'x-accel-buffering': 'no', // no buffering in nginx-style proxies
     });
-    res.write(': open\n\n'); // sends the headers now, so the client knows the stream opened
+    // Sends the headers now, so the client knows the stream opened. Comments carry server time
+    // (the client keeps its clock estimate fresh, 01 §1.6) and the open one the build.
+    res.write(`: open ${Date.now()} ${o.template.build}\n\n`);
 
     const writer = createSseWriter(res);
     for (const env of backlog.envelopes) writer.send(env);
     const unsubscribe = o.channel.subscribe((env) => writer.send(env), () => res.end());
-    const heartbeat = setInterval(() => writer.comment('hb'), heartbeatMs);
+    const heartbeat = setInterval(() => writer.comment(`hb ${Date.now()}`), heartbeatMs);
 
     let cleaned = false;
     const cleanup = () => {
@@ -268,19 +278,35 @@ export function overlayCsp(manifest = {}) {
   ].join('; ');
 }
 
+// A small corner badge with no script: invisible, revealed by a CSS delay unless the SDK removes
+// it as soon as it runs. If the runtime never starts in OBS (a 404, a CSP block, syntax OBS's
+// browser doesn't know), this is the only thing that can say so (v0's error ladder, under a CSP
+// that forbids inline script).
+export const BOOT_BADGE =
+  '<style>@keyframes skp-boot{to{opacity:1}}</style>' +
+  '<div data-skp-boot style="position:fixed;left:8px;bottom:8px;z-index:2147483647;max-width:60%;padding:4px 8px;' +
+  'font:12px/1.4 ui-monospace,Consolas,monospace;color:#ff5a5a;background:rgba(0,0,0,.8);opacity:0;pointer-events:none;' +
+  'animation:skp-boot 0s linear 8s forwards">SKP: the overlay runtime did not start. Open this URL with ?debug=1, ' +
+  'or check the platform log.</div>';
+
 // Inserts, as the first children of <head>: the <base> that points relative URLs at the pinned
 // template's files, the runtime's settings as a <meta> (CSP forbids inline scripts), and the SDK
-// script, so SK exists before any template script runs (04 §4.4–4.5).
-export function injectRuntime(entry, slug, build, meta) {
+// script, so SK exists before any template script runs (04 §4.4–4.5). The boot badge goes first in
+// <body>.
+export function injectRuntime(entry, slug, build, meta, sdkVersion = '') {
   const tags =
     `<base href="/o/${slug}/t/${build}/">` +
     `<meta name="skp" content="${escapeAttr(JSON.stringify(meta))}">` +
-    '<script src="/sdk/v1/sk.js"></script>';
+    `<script src="/sdk/v1/sk.js${sdkVersion ? `?v=${sdkVersion}` : ''}"></script>`;
+  let out;
   const head = /<head(\s[^>]*)?>/i.exec(entry);
-  if (head) return entry.slice(0, head.index + head[0].length) + tags + entry.slice(head.index + head[0].length);
   const html = /<html(\s[^>]*)?>/i.exec(entry);
-  if (html) return entry.slice(0, html.index + html[0].length) + `<head>${tags}</head>` + entry.slice(html.index + html[0].length);
-  return `<!doctype html><html><head>${tags}</head>${entry}`;
+  if (head) out = entry.slice(0, head.index + head[0].length) + tags + entry.slice(head.index + head[0].length);
+  else if (html) out = entry.slice(0, html.index + html[0].length) + `<head>${tags}</head>` + entry.slice(html.index + html[0].length);
+  else out = `<!doctype html><html><head>${tags}</head>${entry}`;
+  const body = /<body(\s[^>]*)?>/i.exec(out);
+  if (body) return out.slice(0, body.index + body[0].length) + BOOT_BADGE + out.slice(body.index + body[0].length);
+  return out + BOOT_BADGE;
 }
 
 function escapeAttr(s) {
