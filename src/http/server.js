@@ -67,8 +67,19 @@ export function sendProblem(res, status, title, detail, { type = 'about:blank', 
 // GET /healthz: 200 "ok", no version or detail, no authentication (10 §10.3).
 const healthz = ({ res }) => sendText(res, 200, 'ok');
 
+// Browsers (OBS's included) ask every page's host for /favicon.ico; answer quietly instead of
+// filling logs with 404s.
+const favicon = ({ res }) => {
+  res.writeHead(204, { ...BASE_HEADERS, 'cache-control': 'public, max-age=86400' });
+  res.end();
+};
+
 export function createHttpServer({ log, crash, routes = [] }) {
-  const router = createRouter([{ method: 'GET', path: '/healthz', handler: healthz }, ...routes]);
+  const router = createRouter([
+    { method: 'GET', path: '/healthz', handler: healthz },
+    { method: 'GET', path: '/favicon.ico', handler: favicon },
+    ...routes,
+  ]);
 
   const server = http.createServer((req, res) => {
     handle(req, res, router).catch((err) => fail(err, req, res));
@@ -128,6 +139,37 @@ async function handle(req, res, router) {
     });
   }
   await match.route.handler({ req, res, params: match.params, url });
+}
+
+export class BodyError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Reads a request body as text, refusing more than `limit` bytes (413) without buffering the rest.
+export function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (declared > limit) {
+      reject(new BodyError(413, `The body is ${declared} bytes; the limit is ${limit}.`));
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        req.destroy();
+        reject(new BodyError(413, `The body is over the ${limit}-byte limit.`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
 }
 
 export function listen(server, port, host) {

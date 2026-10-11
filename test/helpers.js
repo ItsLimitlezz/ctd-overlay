@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createLogger } from '../src/log.js';
@@ -36,18 +37,21 @@ export function memoryLogger(level = 'debug') {
 }
 
 export const DIAG = { id: 'dev.skp.diagnostic', version: '1.0.0' };
+export const TESTBED = { id: 'dev.skp.testbed', version: '1.0.0' };
+export const FIXTURE_TEMPLATES = fileURLToPath(new URL('./fixtures/templates/', import.meta.url));
 
-// A running platform on a free port with one diagnostic overlay, stopped when the test ends.
-export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs } = {}) {
+// A running platform on a free port with one overlay (the diagnostic template unless another is
+// named), stopped when the test ends. Test fixture templates are always installed.
+export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, template = DIAG, settings = { accent: '#16e0ff' } } = {}) {
   const root = tempDir(t);
   const config = loadConfig({
     argv: ['--port', '0'],
     env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') },
   });
   const { log, entries } = memoryLogger();
-  const platform = await startPlatform(config, { log, heartbeatMs });
+  const platform = await startPlatform(config, { log, heartbeatMs, templateDirs: [FIXTURE_TEMPLATES] });
   defer(t, () => platform.stop());
-  const overlay = platform.overlays.create({ slug, template: DIAG, settings: { accent: '#16e0ff' } });
-  const build = platform.templates.get(DIAG.id, DIAG.version).build;
+  const overlay = platform.overlays.create({ slug, template, settings });
+  const build = platform.templates.get(template.id, template.version).build;
   return { platform, overlay, build, entries, base: `${platform.url}/o/${slug}` };
 }

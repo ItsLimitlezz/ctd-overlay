@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { fakeDom } from './fakedom.js';
 import { defer, startWithOverlay } from './helpers.js';
 
 const CODE = readFileSync(new URL('../src/sdk/sk.js', import.meta.url), 'utf8');
@@ -22,10 +23,11 @@ function loadSdk(t, pageUrl, { timing = {}, slug = 'diag-1' } = {}) {
     timers.add(id);
     return id;
   };
+  const dom = fakeDom(JSON.stringify(meta));
   const sandbox = {
-    window: {},
+    window: dom.window,
     console,
-    document: { querySelector: (sel) => (sel === 'meta[name="skp"]' ? { getAttribute: () => JSON.stringify(meta) } : null) },
+    document: dom.document,
     location: new URL(pageUrl),
     URLSearchParams,
     AbortController,

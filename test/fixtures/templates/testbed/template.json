@@ -1,0 +1,34 @@
+{
+  "standard": "skp/1",
+  "id": "dev.skp.testbed",
+  "name": "Testbed",
+  "version": "1.0.0",
+  "description": "Exercises the runtime SDK in browser tests.",
+  "category": "show",
+  "entry": "index.html",
+  "previews": ["previews/testbed.svg"],
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "starting", "label": "Starting Soon", "core": "starting" },
+    { "id": "program", "label": "Program", "core": "program", "transparent": true },
+    { "id": "brb", "label": "Be Right Back", "core": "brb" },
+    { "id": "lineup", "label": "Lineup", "core": "lineup" },
+    { "id": "outro", "label": "Outro", "core": "outro" },
+    { "id": "headliner", "label": "Headliner", "durationMs": 1000, "then": "program" }
+  ],
+  "consumes": {
+    "state": ["show.*", "viewers.*", "music.nowPlaying", "custom.*"],
+    "events": ["alert.*", "custom.*", "media.*"],
+    "chat": { "recent": 10, "max": 5 }
+  },
+  "actions": [
+    { "id": "titleCard", "label": "Title card", "durationMs": 3000 }
+  ],
+  "alerts": { "mode": "serial", "durationMs": 1500, "gapMs": 100 },
+  "transitions": [
+    { "id": "stinger", "media": "assets/missing.webm", "cutAtMs": 200 }
+  ]
+}

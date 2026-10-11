@@ -12,11 +12,12 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sendJson, sendProblem } from '../http/server.js';
+import { readBody, sendJson, sendProblem } from '../http/server.js';
 import { pickCanvas } from '../templates/registry.js';
 import { createSseWriter } from './sse.js';
 
 const SDK_FILE = fileURLToPath(new URL('../sdk/sk.js', import.meta.url));
+const MOCK_FILE = fileURLToPath(new URL('../sdk/mock.js', import.meta.url));
 const HEARTBEAT_MS = 15000; // at least every 15 s (01 §1.5)
 
 // Over HTTP/1.1 a browser keeps at most six connections per host, shared by every page in its
@@ -26,6 +27,12 @@ const HEARTBEAT_MS = 15000; // at least every 15 s (01 §1.5)
 // snapshots and polls (01 §1.5). A browser is its address plus its User-Agent.
 const MAX_STREAMS_PER_CLIENT = 4;
 const USE_POLLING = 'https://skp.dev/errors/use-polling';
+
+// SK.log (04 §4.4): template messages forwarded to the platform log. Small, and rate-limited per
+// overlay, because a template stuck in a loop must not flood the log or the disk.
+const LOG_BODY_LIMIT = 8 * 1024;
+const LOG_PER_MINUTE = 30;
+const LOG_LEVELS = new Set(['info', 'warn', 'error']);
 
 const OVERLAY_HEADERS = {
   'access-control-allow-origin': '*', // lets the sandboxed admin preview fetch (04 §4.8)
@@ -74,6 +81,9 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       canvases: manifest.canvases,
       scenes: manifest.scenes || [],
       actions: manifest.actions || [],
+      alerts: manifest.alerts || {},
+      transitions: manifest.transitions || [],
+      chat: manifest.consumes?.chat || null,
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -170,14 +180,47 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     res.end(data);
   }
 
-  async function sdk({ res }) {
-    const code = await readFile(SDK_FILE);
+  const script = (file) => async ({ res }) => {
+    const code = await readFile(file);
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
       'content-type': 'text/javascript; charset=utf-8',
       'x-content-type-options': 'nosniff',
     });
     res.end(code);
+  };
+
+  const templateLog = log.child('template');
+  const buckets = new Map(); // slug → { tokens, at, dropped }
+  async function logEntry({ req, res, params }) {
+    const o = find(res, params.slug);
+    if (!o) return;
+    let entries;
+    try {
+      const body = JSON.parse(await readBody(req, LOG_BODY_LIMIT));
+      entries = Array.isArray(body?.entries) ? body.entries : [body];
+    } catch (err) {
+      return sendProblem(res, err.status || 400, 'Bad log entry',
+        err.status ? err.message : 'Send JSON: { "entries": [{ "level": "warn", "msg": "…" }] }', { headers: OVERLAY_HEADERS });
+    }
+    const now = Date.now();
+    const bucket = buckets.get(params.slug) || { tokens: LOG_PER_MINUTE, at: now, dropped: 0 };
+    bucket.tokens = Math.min(LOG_PER_MINUTE, bucket.tokens + ((now - bucket.at) / 60000) * LOG_PER_MINUTE);
+    bucket.at = now;
+    const template = `${o.template.id}@${o.template.version}`;
+    for (const e of entries.slice(0, 20)) {
+      if (bucket.tokens < 1) { bucket.dropped++; continue; }
+      bucket.tokens--;
+      const level = LOG_LEVELS.has(e?.level) ? e.level : 'warn';
+      templateLog[level](String(e?.msg ?? '').slice(0, 500), { overlay: params.slug, template, context: e?.context });
+    }
+    if (bucket.dropped && bucket.tokens >= 1) {
+      templateLog.warn('template log entries were dropped by the rate limit', { overlay: params.slug, template, dropped: bucket.dropped });
+      bucket.dropped = 0;
+    }
+    buckets.set(params.slug, bucket);
+    res.writeHead(204, OVERLAY_HEADERS);
+    res.end();
   }
 
   return [
@@ -186,7 +229,9 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     { method: 'GET', path: '/o/:slug/poll', handler: poll },
     { method: 'GET', path: '/o/:slug/stream', handler: stream },
     { method: 'GET', path: '/o/:slug/t/:build/*', handler: file },
-    { method: 'GET', path: '/sdk/v1/sk.js', handler: sdk },
+    { method: 'POST', path: '/o/:slug/log', handler: logEntry },
+    { method: 'GET', path: '/sdk/v1/sk.js', handler: script(SDK_FILE) },
+    { method: 'GET', path: '/sdk/v1/mock.js', handler: script(MOCK_FILE) },
   ];
 }
 

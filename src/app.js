@@ -11,12 +11,13 @@ import { overlayRoutes } from './overlays/routes.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
-import { createTemplateRegistry } from './templates/registry.js';
+import { BUILTIN_DIR, createTemplateRegistry } from './templates/registry.js';
 
 export class StartupError extends Error {}
 
-// options.routes adds routes (tests); options.heartbeatMs shortens the SSE heartbeat (tests).
-export async function startPlatform(config, { log, routes = [], heartbeatMs } = {}) {
+// Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat, and
+// options.templateDirs adds directories of templates beside the built-in ones.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [] } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
 
@@ -34,7 +35,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs } = 
   }
 
   const bus = createBus({ log: log.child('bus') });
-  const templates = createTemplateRegistry({ log: log.child('templates') });
+  const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], log: log.child('templates') });
   const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
   const server = createHttpServer({
     log: log.child('http'),
