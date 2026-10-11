@@ -3,6 +3,7 @@
 // handlers, so tests can run several instances.
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { createBus } from './bus/index.js';
 import { createCrashLog } from './crashlog.js';
 import { close, createHttpServer, listen } from './http/server.js';
 import { migrate } from './store/migrate.js';
@@ -28,6 +29,7 @@ export async function startPlatform(config, { log, routes = [] }) {
     throw err;
   }
 
+  const bus = createBus({ log: log.child('bus') });
   const server = createHttpServer({ log: log.child('http'), crash, routes });
   let address;
   try {
@@ -49,6 +51,7 @@ export async function startPlatform(config, { log, routes = [] }) {
   return {
     config,
     store,
+    bus,
     crash,
     server,
     port: address.port,
@@ -57,6 +60,7 @@ export async function startPlatform(config, { log, routes = [] }) {
       if (stopped) return;
       stopped = true;
       await close(server);
+      bus.close();
       store.close();
     },
   };
