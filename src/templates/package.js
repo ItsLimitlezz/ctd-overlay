@@ -24,7 +24,8 @@ export const STANDARD = 'skp/1';
 const MANIFEST = 'template.json';
 const MANIFEST_BYTES = 1024 * 1024;
 const ENTRY_BYTES = 2 * 1024 * 1024;
-const JUNK = /(^|\/)(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini)$|(^|\/)__MACOSX(\/|$)/i;
+// Desktop clutter, and a version-control directory (a template packed from its repository).
+const JUNK = /(^|\/)(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini)$|(^|\/)(__MACOSX|\.git|\.svn|\.hg)(\/|$)/i;
 // SemVer 2.0.0 (semver.org), without build metadata: no leading zeros.
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
 const CATEGORY_CORES = { show: ['starting', 'program', 'brb', 'outro'] };

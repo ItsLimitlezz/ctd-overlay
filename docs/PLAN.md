@@ -103,9 +103,19 @@ option that keeps a live show running with nobody touching it.
    publishes `show.*` itself; the Simulate endpoint is open to this machine only, like every
    route until auth (steps 11–13), and refuses form posts and other origins.
 
+8b. **Template sources** (added 2026-10-12 at the operator's request). Templates install from a
+   `.zip` as well as a `.skp`, from an https URL, or from a GitHub repository's release; and a
+   followed repository's new releases install by themselves, with overlays moved to them when
+   the upgrade can't break anything (04 §4.13). Through the CLI for now (`skp template install
+   owner/name`, `template follow|unfollow|sources|update`); the running platform checks every
+   hour. Carried forward: automatic upgrades reload the overlay's page, so once shows exist
+   (step 9) they wait while a show is live; the HTTP routes and an admin-UI page for sources
+   come with steps 13–14.
+
 ### Milestone 2: the show runs itself
 9. **Shows.** Shared scene for member overlays, triggers, timed scenes returning server-side,
-   `show.*` state, REC anchor (01 §1.3, 09 §9.1).
+   `show.*` state, REC anchor (01 §1.3, 09 §9.1). Automatic template upgrades (step 8b) wait
+   while a show an overlay belongs to is live.
 10. **Timeline.** Cues, the scheduler rules (durable before visible, grace window), lineup
     recipe, timezone + day boundary + DST, planned shows (09). Clock tests per H19.
 

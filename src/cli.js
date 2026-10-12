@@ -9,19 +9,20 @@
 //
 // Exit codes: 0 done, 1 refused or invalid, 64 usage, 75 the data directory is in use, 77 wrong
 // user (root on a data directory another user owns), 78 config.
-import { appendFileSync, statSync, writeFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
+import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { openData, StartupError } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createLogger } from './log.js';
 import { MediaError, mediaUrl } from './media/library.js';
+import { recordOperation } from './oplog.js';
 import { OverlayError } from './overlays/registry.js';
 import { StoreVersionError } from './store/migrate.js';
 import { MigrateError } from './templates/migrate.js';
 import { packageFromDir, validatePackage } from './templates/package.js';
 import { BUILTIN_DIR, createTemplateRegistry, TemplateError, validateTemplate } from './templates/registry.js';
+import { fetchPackage, parseSource, SourceError } from './templates/sources.js';
 import { writeZip, ZipError } from './templates/zip.js';
 
 export const USAGE = `Usage: skp <command> [options]
@@ -29,8 +30,16 @@ export const USAGE = `Usage: skp <command> [options]
   template validate <file.skp|dir>        check a template package (04 §4.11)
   template pack <dir> [-o <file.skp>]     make a package from a template directory
   template list                           bundled and installed templates
-  template install <file.skp>             install a package (the platform must be stopped)
+  template install <package>              install a package (the platform must be stopped): a
+                                          .skp or .zip file, an https URL, or a GitHub
+                                          repository's latest release (owner/name[@tag])
   template uninstall <id>[@<version>]     remove an installed version, or every version
+  template follow <owner/name|url>        install its releases as they come out, and move
+        [--auto-upgrade safe|off]         overlays to them when nothing breaks (default safe)
+  template unfollow <owner/name|url>      stop following (installed versions stay)
+  template sources                        followed sources and what they last installed
+  template update [<owner/name|url>]      check followed sources now (the running platform
+                                          checks every SKP_TEMPLATE_CHECK_MINUTES, default 60)
   overlay upgrade <slug> --to <version>   move an overlay to a newer template version
         [--dry-run] [--yes]               show what would change / confirm it
         [--run-migrate]                   let an installed package's migrate.js run
@@ -46,7 +55,8 @@ Options: --json (machine-readable output), and the server's own --data-dir, --co
 const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level'];
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
-export async function run(argv, { stdout = process.stdout, stderr = process.stderr, env = process.env } = {}) {
+// fetch: a test hook for what template sources download with.
+export async function run(argv, { stdout = process.stdout, stderr = process.stderr, env = process.env, fetch: fetchHook } = {}) {
   const out = (s) => stdout.write(`${s}\n`);
   let args;
   try {
@@ -56,7 +66,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       strict: true,
       options: {
         json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' },
+        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' },
         ...Object.fromEntries(CONFIG_FLAGS.map((f) => [f, { type: 'string' }])),
       },
     });
@@ -80,8 +90,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   // The data directory, locked, for a command that may write to it.
   const openFor = (purpose, cfg = config()) => {
     checkOwner(cfg.dataDir);
-    const data = openData(cfg, { log: logger(), purpose });
-    return Object.assign(data, { record: (details) => record(cfg.dataDir, purpose, details) });
+    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook });
+    return Object.assign(data, { record: (details) => recordOperation(cfg.dataDir, purpose, details) });
   };
 
   try {
@@ -146,11 +156,30 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       }
 
       case 'template install': {
-        if (rest.length !== 1) return usage('template install takes one .skp file');
-        const data = openFor('template install');
+        if (rest.length !== 1) return usage('template install takes one package: a file, an https URL or owner/name');
+        const cfg = config();
+        const data = openFor('template install', cfg);
+        let fetched;
         try {
-          const { template, warnings, noop } = data.templates.install(rest[0], { actor: 'cli' });
-          if (!noop) data.record({ file: path.resolve(rest[0]), template: `${template.id}@${template.version}`, build: template.build });
+          // A file that exists is a file; anything else may name a source (an https URL,
+          // owner/name). A missing .skp/.zip, or anything with a backslash or a leading dot or ~,
+          // is a file that isn't there, never a repository.
+          let source;
+          if (!existsSync(rest[0])) {
+            const missing = () => Object.assign(new Error(`no such file: ${rest[0]}`), { code: 'ENOENT', path: rest[0] });
+            if (!rest[0].includes('://') && (/\.(skp|zip)$/i.test(rest[0]) || /^[.~]|\\/.test(rest[0]))) throw missing();
+            try {
+              source = parseSource(rest[0]);
+            } catch (err) {
+              if (err.code !== 'bad-source') throw err;
+              throw missing();
+            }
+          }
+          if (source) fetched = await fetchPackage(source, { dir: data.templates.downloadDir, token: cfg.githubToken, fetch: fetchHook });
+          const { template, warnings, noop } = fetched
+            ? data.templates.install(fetched.file, { actor: 'cli', name: fetched.label, origin: fetched.origin })
+            : data.templates.install(rest[0], { actor: 'cli' });
+          if (!noop) data.record({ ...(fetched ? { from: fetched.label } : { file: path.resolve(rest[0]) }), template: `${template.id}@${template.version}`, build: template.build });
           if (opts.json) json({ id: template.id, version: template.version, build: template.build, noop, warnings });
           else {
             printFindings(out, { errors: [], warnings });
@@ -158,6 +187,80 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
             out(NOTE);
           }
           return 0;
+        } finally {
+          if (fetched) rmSync(fetched.file, { force: true });
+          data.close();
+        }
+      }
+
+      case 'template follow': {
+        if (rest.length !== 1) return usage('template follow takes one source: owner/name or an https URL');
+        const data = openFor('template follow');
+        try {
+          const doc = data.sources.add(rest[0], { autoUpgrade: opts['auto-upgrade'] ?? 'safe', actor: 'cli' });
+          data.record({ source: doc.data.label, autoUpgrade: doc.data.autoUpgrade });
+          // The first check now, so a mistyped repository shows up while you're here.
+          const results = await data.sources.check(doc.id);
+          if (opts.json) json({ source: doc.data.label, id: doc.id, autoUpgrade: doc.data.autoUpgrade, check: results[0] });
+          else {
+            out(`following ${doc.data.label} (${doc.data.autoUpgrade === 'safe' ? 'overlays move to new versions when nothing breaks' : 'new versions are installed; overlays stay until you upgrade them'})`);
+            printChecks(out, results);
+            if (results[0]?.error) out('It stays followed; the running platform tries again at every check.');
+            out(NOTE);
+          }
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
+      case 'template unfollow': {
+        if (rest.length !== 1) return usage('template unfollow takes one source');
+        const data = openFor('template unfollow');
+        try {
+          const doc = data.sources.remove(rest[0]);
+          data.record({ source: doc.data.label });
+          if (opts.json) json({ removed: doc.data.label });
+          else out(`stopped following ${doc.data.label}${doc.data.templateId ? `; the versions of ${doc.data.templateId} it installed stay` : ''}`);
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
+      case 'template sources': {
+        if (rest.length) return usage('template sources takes no arguments');
+        const data = openFor('template sources');
+        try {
+          const rows = data.sources.list().map((d) => ({
+            id: d.id, source: d.data.label, autoUpgrade: d.data.autoUpgrade, template: d.data.templateId, version: d.data.version,
+            release: d.data.release, checkedAt: d.data.checkedAt, error: d.data.error,
+          }));
+          if (opts.json) json(rows);
+          else {
+            for (const r of rows) {
+              out(`${r.source}  ${r.template ? `${r.template}@${r.version}${r.release ? ` (release ${r.release})` : ''}` : 'nothing installed yet'}  auto-upgrade ${r.autoUpgrade}${r.checkedAt ? `  checked ${r.checkedAt}` : ''}`);
+              if (r.error) out(`  last check failed: ${r.error.message}`);
+            }
+            if (!rows.length) out('No template sources: skp template follow <owner/name>.');
+          }
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
+      case 'template update': {
+        if (rest.length > 1) return usage('template update takes at most one source');
+        const data = openFor('template update');
+        try {
+          const results = await data.sources.check(rest[0]);
+          if (opts.json) json(results);
+          else {
+            printChecks(out, results);
+            if (!results.length) out('No template sources: skp template follow <owner/name>.');
+          }
+          return results.some((r) => r.error) ? 1 : 0;
         } finally {
           data.close();
         }
@@ -294,7 +397,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       }
       return 1;
     }
-    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
+    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof SourceError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
       const message = err.code === 'ENOENT' ? `no such file: ${err.path}` : err.code === 'ENOTDIR' ? `not a directory: ${err.path}` : err.message;
       if (opts.json) json({ error: err.code || err.name, message });
       else stderr.write(`skp: ${message}\n`);
@@ -320,15 +423,17 @@ function checkOwner(dataDir) {
   }
 }
 
-// One JSON line per change made from the command line.
-function record(dataDir, op, details) {
-  let user;
-  try { user = userInfo().username; } catch { user = undefined; }
-  const line = JSON.stringify({ ts: new Date().toISOString(), op, user, pid: process.pid, ...details });
-  try {
-    appendFileSync(path.join(dataDir, 'operations.log'), `${line}\n`, { mode: 0o600 });
-  } catch {
-    // The change itself is done; a log that can't be written must not undo or hide it.
+// What a check of template sources did, one source at a time.
+function printChecks(out, results) {
+  for (const r of results) {
+    if (r.error) out(`${r.source}: the check failed: ${r.error.message}`);
+    else if (r.unchanged) out(`${r.source}: no new release${r.tag ? ` (still ${r.tag})` : ''}`);
+    else if (r.installed) {
+      const what = `${r.installed.id}@${r.installed.version}`;
+      out(`${r.source}${r.tag ? ` release ${r.tag}` : ''}: ${r.installed.noop ? `${what} was already installed` : `installed ${what} (build ${r.installed.build})`}`);
+    }
+    for (const u of r.upgraded || []) out(`  "${u.overlay}" moved from ${u.from} to ${u.to} (skp overlay revert ${u.overlay} goes back)`);
+    for (const w of r.waiting || []) out(`  "${w.overlay}" stays on ${w.from}: ${w.why}. To move it: skp overlay upgrade ${w.overlay} --to ${w.to}`);
   }
 }
 

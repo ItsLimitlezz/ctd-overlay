@@ -107,6 +107,8 @@ Precedence: **command-line flags > environment variables > `config.json` > defau
 | `SKP_FFMPEG` | `ffmpeg` on PATH | Media transcoding |
 | `SKP_LOG_LEVEL` | `info` | `debug`·`info`·`warn`·`error` |
 | `TZ` | system | Default timezone for new shows |
+| `SKP_TEMPLATE_CHECK_MINUTES` | `60` | How often template sources are checked (04 §4.13); `0` never, else 5–10080 |
+| `SKP_GITHUB_TOKEN` | — | Read access to private template repositories (environment only; 04 §4.13) |
 
 The platform **MUST** validate configuration at startup and exit with a specific message on
 any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_PROXY").

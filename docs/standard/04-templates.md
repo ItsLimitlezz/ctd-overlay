@@ -31,7 +31,8 @@ vikkstar-event/
   protection).
 - `template.json` sits at the archive's root, or inside one top-level folder (as drawn above),
   which is not part of the package's paths. Desktop clutter (`__MACOSX/`, `.DS_Store`, `._*`,
-  `Thumbs.db`, `desktop.ini`) is ignored.
+  `Thumbs.db`, `desktop.ini`) and version-control directories (`.git/`, `.svn/`, `.hg/`) are
+  ignored.
 - Everything the template loads at runtime **MUST** be inside the package, except the images
   the data itself points to (avatars, emotes, album art) and fonts from allowed hosts (§4.8).
 
@@ -397,3 +398,31 @@ SK.ready(() => {
 });
 ```
 That is the entire integration with Twitch, Kick and YouTube viewer counts.
+
+## 4.13 Template sources
+
+A template can be updated remotely: the operator follows a **source**, and the platform installs
+each new release by itself.
+
+- A source is a GitHub repository (`owner/name`, optionally pinned to one release tag) or an
+  `https` URL that always serves the current package. Anything but `https` is refused, on every
+  redirect hop too.
+- From a GitHub release the platform takes the attached `.skp`, else an attached `.zip`, else
+  the release's source zip (which works when `template.json` is at the repository's root). A
+  private repository needs a token with read access (`SKP_GITHUB_TOKEN`, 10 §10.5); it **MUST**
+  be sent to the GitHub API only, never to the hosts downloads are redirected to.
+- The platform checks each source on an interval (default hourly), using `ETag`s so an
+  unchanged release costs one small request. Downloads have the package limits of §4.1 and a
+  time limit; a release that fails validation is not installed, and the error is shown on the
+  source.
+- A source installs one template id: the first release fixes it, and a later release with
+  another id is refused, so a repository can't take over another template's overlays. Ids of
+  templates that ship with the platform are refused as for any package.
+- A new version is installed beside the others (§4.10). Overlays on an older version of it
+  **MAY** be moved to it automatically, but only when the upgrade needs no confirmation under
+  §4.10: the same major version, nothing the operator set or a show may name dropped, and no
+  `migrate.js` to run for an installed package. The others wait for the operator, who is told.
+  A release older than the newest installed version never moves an overlay back. Automatic
+  upgrades are recorded like the operator's, and `revert` undoes them.
+- Following a source is trusting it: its releases are code that runs in OBS and in the admin UI's
+  previews (§4.8).
