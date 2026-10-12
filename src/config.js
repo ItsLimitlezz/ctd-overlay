@@ -28,6 +28,7 @@ const SETTINGS = {
   timezone: ['TZ', 'timezone', true],
   githubToken: ['SKP_GITHUB_TOKEN', null, false], // a secret: for template sources in private repos
   templateCheckMinutes: ['SKP_TEMPLATE_CHECK_MINUTES', 'template-check-minutes', true],
+  allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
 };
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -100,11 +101,12 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
   const timezone = parseTimezone(get('timezone'), warnings);
   const githubToken = str(get('githubToken'));
   const templateCheckMinutes = parseMinutes(get('templateCheckMinutes'), 60);
+  const allowPrivateDownloads = parseBool(get('allowPrivateDownloads'), false);
 
   return Object.freeze({
     port, host, exposure, dataDir, configDir,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
-    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, warnings: Object.freeze(warnings),
+    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, warnings: Object.freeze(warnings),
   });
 }
 
@@ -112,6 +114,14 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
 export function describeConfig(config) {
   const { masterKey, githubToken, warnings, ...rest } = config;
   return { ...rest, masterKey: masterKey ? 'set' : 'not set', githubToken: githubToken ? 'set' : 'not set' };
+}
+
+function parseBool(picked, fallback) {
+  const v = str(picked);
+  if (v === undefined) return fallback;
+  if (/^(true|1|yes)$/i.test(v)) return true;
+  if (/^(false|0|no)$/i.test(v)) return false;
+  throw new ConfigError(`${picked.source} must be true or false (got "${v}").`);
 }
 
 // How often template sources are checked: whole minutes, 0 (never on its own) to a week.
