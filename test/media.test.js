@@ -309,7 +309,15 @@ test('at most two conversions run at once; the rest wait their turn', async (t) 
   const logFile = path.join(dir, 'ffmpeg.log');
   fake(t, 'copy', { delay: 300, logFile });
   const { media } = library(t);
-  const most = (runs) => Math.max(...runs.map((r) => runs.filter((o) => o.start < r.end && r.start < o.end).length));
+  // The most that ran at any one moment: a sweep over starts and ends (counting the runs that
+  // overlap one run would count a run that overlaps its predecessor and its successor as three).
+  const most = (runs) => {
+    const events = runs.flatMap((r) => [[r.start, 1], [r.end, -1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let now = 0;
+    let peak = 0;
+    for (const [, step] of events) peak = Math.max(peak, (now += step));
+    return peak;
+  };
   const wave = async (n, mode) => {
     process.env.FAKE_FFMPEG = mode;
     const before = conversions(logFile).length;
