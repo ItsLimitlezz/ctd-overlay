@@ -179,7 +179,7 @@ function removeProfile(profile) {
 
 async function waitForDevTools(profile, child, stderr, spawnError) {
   const file = path.join(profile, 'DevToolsActivePort');
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + 60000; // a loaded Windows runner can take most of a minute
   while (Date.now() < deadline) {
     if (spawnError()) throw new Error(`could not start ${browserPath}: ${spawnError().message}`);
     if (child.exitCode !== null) throw new Error(`the browser exited (${child.exitCode}): ${stderr()}`);

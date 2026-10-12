@@ -126,27 +126,36 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 **2026-10-12.** From building the timeline (plan step 10):
 
-1. A cue may be set at a time of the show (`"01:00"`). It belongs to the show's night, follows
-   the date and is armed again for a new night. A fired cue that did nothing says why in
-   `error`. *(09 §9.3, cue.schema.json)*
-2. Generated cues are known by slot time and act, so inserting a slot fires nothing again. A
-   cue the operator edited stays theirs. Cues made already past the grace window are missed.
-   *(09 §9.4)*
+1. A cue may be set at a time of the show (`"01:00"`). It belongs to the show's night and
+   follows the date; a new night arms it only for a time still to come, and going back to a
+   night gives back what happened. A fired cue that did nothing says why in `error`; a cue time
+   in a clock change is flagged. `show.slot` may name the act. *(09 §9.3, cue.schema.json)*
+2. Nothing that happened fires again by itself: a regeneration never makes a cue whose time has
+   passed, and keeps what happened as history. Generated cues are known by slot time and act
+   (now-playing by minutes into the set). A cue the operator edited stays theirs; one they
+   deleted stays deleted. What fell due during downtime waits for pages to reconnect. *(09 §9.4)*
 3. Only what members offer is generated. A timed scene played by a cue plays only from program,
    never off a BRB (it does when fired by hand). The headliner's intro replaces their title
    card. The recipe is kept with the show, and `null` stops it. *(09 §9.5)*
-4. A plan carries `lineup`, `goLive`, `dayBoundary` and `overlaySettings`. It waits while its
-   show is live and activates at startup if the boundary passed while the platform was down.
+4. A sequence's steps survive a restart, don't stop at a failing step, and stop when the cue is
+   skipped or deleted. *(09 §9.3)*
+5. A plan carries `lineup`, `goLive`, `dayBoundary` and `overlaySettings` (applied to the show's
+   members only). Its day follows the show's zone and boundary as they are when it comes. It waits
+   while its show is live; after downtime, only the latest plan whose day has begun is the show.
    *(09 §9.6)*
 
 **2026-10-12.** From building shows (plan step 9):
 
-1. Show state is each member overlay's own; REC is anchored by the server at the first take of
-   the live scene (or at go-live under `auto`) and cleared by `starting`; a show is live while
-   REC runs, and what must not happen on air waits for it. *(09 §9.1)*
+1. Show state is each member overlay's own. REC is anchored by the server at the first take of
+   the live scene (or at go-live under `auto`, caught up after downtime, within 12 hours) and
+   cleared by `starting`. A show is live while REC runs, for 12 hours at most, and what must not
+   happen on air waits for it. *(09 §9.1)*
 2. A timed scene's return is stored with the show: a restart mid-scene still returns, and any
    other take cancels it. *(09 §9.4)*
 3. Automatic template upgrades wait while the overlay's show is live. *(04 §4.13)*
+4. Scenes are taken by id or core, and each member gets the name its template knows. Who's on
+   stays on the same act through a lineup edit. A lineup must fit an envelope (24 KiB as
+   published; a logo URL at most 500 characters). *(09 §9.1)*
 
 **2026-10-12.** Template sources (plan step 8b, at the operator's request):
 

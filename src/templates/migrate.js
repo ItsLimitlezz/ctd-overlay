@@ -20,6 +20,7 @@ export class MigrateError extends Error {
 }
 
 const LIMITS = { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8, codeRangeSizeMb: 8, stackSizeMb: 2 };
+const STARTUP_MS = 30000; // for the worker thread to start, before migrate.js's own time counts
 // The settings migrate.js returns, as JSON: more than an overlay may save is refused before it is
 // parsed (the platform then refuses anything over SAVED_BYTES anyway).
 export const MAX_RESULT_CHARS = 64 * 1024;
@@ -114,8 +115,13 @@ export function runMigrate(code, fromVersion, settings, { timeoutMs = 1000 } = {
       worker.terminate().catch(() => {});
       fn(value);
     };
-    // The vm timeout covers synchronous code; this covers everything else.
-    const deadline = setTimeout(() => finish(reject, new MigrateError(`migrate.js took longer than ${timeoutMs * 3} ms`)), timeoutMs * 3);
+    // The vm timeout covers synchronous code; this covers everything else. It starts once the
+    // worker runs: starting a thread on a busy machine is not migrate.js taking long.
+    let deadline = setTimeout(() => finish(reject, new MigrateError(`migrate.js could not be started within ${STARTUP_MS / 1000} s`)), STARTUP_MS);
+    worker.once('online', () => {
+      clearTimeout(deadline);
+      if (!settled) deadline = setTimeout(() => finish(reject, new MigrateError(`migrate.js took longer than ${timeoutMs * 3} ms`)), timeoutMs * 3);
+    });
     worker.on('message', (msg) => {
       if (!msg.ok) return finish(reject, new MigrateError(`migrate.js failed: ${msg.message}`));
       let out;

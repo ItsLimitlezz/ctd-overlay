@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import path from 'node:path';
-import { startPlatform } from '../src/app.js';
+import { ownHosts, startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { TRIGGER_LEAD_MS } from '../src/shows/registry.js';
+import { createShows, LINEUP_BYTES, LIVE_MS, TRIGGER_LEAD_MS } from '../src/shows/registry.js';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const MIN = 60000;
@@ -403,4 +403,263 @@ test('skp show …: the command line drives the running platform', async (t) => 
   assert.equal(down.code, 69);
   assert.equal(JSON.parse(down.stdout).error, 'not-running');
   assert.match(down.stderr, /isn't running at http:\/\/127\.0\.0\.1:\d+ .*Start it first/);
+});
+
+// ---- from the step 9 review ----------------------------------------------------------------------
+const CORES = { id: 'dev.skp.cores', version: '1.0.0' };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A second registry over the platform's data on a hand-cranked clock. Timers fire `late` ms after
+// they are due (a host that slept through them), and time moves to each as it fires.
+function cranked(t, platform, start, { late = 0 } = {}) {
+  const c = { t: start, pending: [] };
+  const timers = {
+    setTimeout(fn, ms) { const h = { at: c.t + ms, fn }; c.pending.push(h); return h; },
+    clearTimeout(h) { const i = c.pending.indexOf(h); if (i >= 0) c.pending.splice(i, 1); },
+  };
+  c.advance = (ms) => {
+    const until = c.t + ms;
+    for (;;) {
+      const due = c.pending.filter((h) => h.at + late <= until).sort((a, b) => a.at - b.at)[0];
+      if (!due) break;
+      c.pending.splice(c.pending.indexOf(due), 1);
+      c.t = Math.max(c.t, due.at + late);
+      due.fn();
+    }
+    c.t = until;
+  };
+  const { log, entries } = memoryLogger();
+  c.entries = entries;
+  c.make = () => {
+    const s = createShows({ store: platform.store, bus: platform.bus, overlays: platform.overlays, templates: platform.templates, log, now: () => c.t, timers });
+    defer(t, () => s.stop());
+    return s;
+  };
+  return c;
+}
+
+test('a lineup too large to send is refused before it is saved; one stored anyway never stops the platform starting', async (t) => {
+  const dataRoot = tempDir(t);
+  const { platform } = await setup(t, { dataRoot });
+  overlaysFor(platform);
+  const big = Array.from({ length: 100 }, (_, i) => ({ time: '22:00', name: `Act ${i}`, logo: `https://cdn.example.com/${'x'.repeat(400)}/${i}.png` }));
+  assert.throws(() => platform.shows.create({ ...SHOW, lineup: big }), (err) => err.code === 'too-large' && new RegExp(`at most ${LINEUP_BYTES / 1024} KiB`).test(err.message));
+  assert.deepEqual(platform.shows.list(), [], 'nothing was saved');
+  assert.throws(() => platform.shows.create({ ...SHOW, lineup: [{ time: '22:00', name: 'X', logo: `https://e.example/${'x'.repeat(500)}` }] }), (err) => err.code === 'invalid' && /500 characters/.test(err.message));
+  const show = platform.shows.create(SHOW);
+  assert.throws(() => platform.shows.update(show.id, { lineup: big }), { code: 'too-large' });
+  assert.equal(platform.shows.get(show.id).lineup.length, 3, 'unchanged');
+  // A record too large to publish (from an older version, or edited by hand) is skipped at startup.
+  const huge = big.map((s) => ({ ...s, logo: `${s.logo}?${'y'.repeat(600)}` }));
+  platform.store.put('shows', show.id, { ...platform.store.get('shows', show.id).data, lineup: huge });
+  await platform.stop();
+  const second = await setup(t, { dataRoot });
+  assert.ok(second.entries.some((e) => e.msg === 'a show could not be restored at startup; fix or delete it' && e.context.show === show.id));
+  assert.equal(second.platform.shows.remove(show.id).id, show.id, 'and it can still be deleted');
+});
+
+test('REC at go-live: caught up after a restart across it, on a go-live moved into the past, next week while REC still runs, never from a stale one', async (t) => {
+  const { platform } = await setup(t);
+  platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0));
+  let shows = c.make();
+  const g = utcShow(c.t + 10 * MIN);
+  const show = shows.create({ name: 'Auto', overlays: ['tk'], date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time });
+  const goLiveAt = shows.get(show.id).goLiveAt;
+  shows.take(show.id, 'auto');
+  c.advance(5 * MIN);
+  shows.stop(); // down at 02:05, back at 02:12
+  c.advance(7 * MIN);
+  shows = c.make();
+  assert.equal(shows.get(show.id).recStartedAt, goLiveAt, 'caught up at startup, from go-live');
+  assert.equal(shows.onAir(platform.overlays.resolve('tk').doc.id), true);
+  // Go-live moved into the past while "auto" is on air: from that go-live, at once.
+  shows.rec(show.id, 'reset');
+  const past = utcShow(c.t - 5 * MIN);
+  const moved = shows.update(show.id, { date: past.date, goLive: past.time });
+  assert.equal(moved.recStartedAt, moved.goLiveAt);
+  // Next week's date while tonight's REC still runs: next week's go-live is still armed.
+  const week = utcShow(moved.goLiveAt + 7 * 24 * 60 * MIN);
+  shows.update(show.id, { date: week.date, goLive: week.time });
+  c.advance(7 * 24 * 60 * MIN);
+  assert.equal(shows.get(show.id).recStartedAt, shows.get(show.id).goLiveAt, 'live from next week\'s go-live');
+  // A go-live long gone (last week's date left in place): taking "auto" anchors nothing.
+  shows.rec(show.id, 'reset');
+  const stale = utcShow(c.t - 2 * 24 * 60 * MIN);
+  shows.update(show.id, { date: stale.date, goLive: stale.time });
+  shows.take(show.id, 'auto');
+  assert.equal(shows.get(show.id).recStartedAt, undefined);
+  assert.equal(shows.get(show.id).live, false);
+});
+
+test('REC at go-live is anchored at go-live even when the timer fires late, and follows an edited go-live', async (t) => {
+  const { platform } = await setup(t);
+  platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0), { late: 30000 });
+  const shows = c.make();
+  const g = utcShow(c.t + 10 * MIN);
+  const show = shows.create({ name: 'Auto', overlays: ['tk'], date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time });
+  shows.take(show.id, 'auto');
+  const later = utcShow(c.t + 20 * MIN);
+  shows.update(show.id, { goLive: later.time });
+  c.advance(15 * MIN);
+  assert.equal(shows.get(show.id).live, false, 'the first go-live no longer counts');
+  c.advance(10 * MIN);
+  assert.equal(shows.get(show.id).recStartedAt, shows.get(show.id).goLiveAt, 'from go-live, not from when the late timer ran');
+});
+
+test('scenes by core (04 §4.2): a take, REC and a timed scene\'s return work across templates; each member gets the name its template knows', async (t) => {
+  const { platform, local, got, watch } = await setup(t);
+  platform.overlays.create({ slug: 'co', template: CORES, settings: {} });
+  platform.overlays.create({ slug: 'bed', template: TESTBED, settings: {} });
+  const show = platform.shows.create({ ...SHOW, overlays: ['co', 'bed'] });
+  watch('co');
+  watch('bed');
+  platform.shows.take(show.id, 'live'); // co's own id; core program, which the testbed has as "program"
+  assert.deepEqual([local('co')['show.scene'], local('bed')['show.scene']], ['live', 'program']);
+  assert.equal(platform.shows.get(show.id).live, true, 'REC from a scene whose core is program');
+  platform.shows.take(show.id, 'brb'); // the testbed's id; co knows it as its core
+  assert.deepEqual([local('co')['show.scene'], local('bed')['show.scene']], ['brb', 'brb']);
+  assert.deepEqual(of(got.bed, 'show.scene.changed').map((e) => [e.data.scene, e.data.prev]), [['program', undefined], ['brb', 'program']]);
+  // A timed scene whose "then" is a core returns on the server.
+  platform.shows.take(show.id, 'sting');
+  await sleep(1400);
+  assert.equal(platform.shows.get(show.id).scene, 'program');
+  assert.deepEqual([local('co')['show.scene'], local('bed')['show.scene']], ['program', 'program']);
+  assert.equal(platform.shows.take(show.id, 'starting').live, false, 'starting, by core: REC back to before the show');
+  // A show whose only template knows "program" and "auto" as cores, not ids.
+  platform.overlays.create({ slug: 'co2', template: CORES, settings: {} });
+  const alone = platform.shows.create({ ...SHOW, name: 'Cores only', overlays: ['co2'] });
+  platform.shows.take(alone.id, 'sting');
+  await sleep(1400);
+  assert.equal(platform.shows.get(alone.id).scene, 'program', 'returned to a core');
+  assert.equal(local('co2')['show.scene'], 'program');
+  assert.equal(platform.shows.get(alone.id).live, true);
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0));
+  const shows = c.make();
+  const g = utcShow(c.t + 10 * MIN);
+  shows.rec(alone.id, 'reset');
+  shows.update(alone.id, { date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time });
+  shows.take(alone.id, 'clock'); // core "auto"
+  c.advance(11 * MIN);
+  assert.equal(shows.get(alone.id).recStartedAt, shows.get(alone.id).goLiveAt, 'live at go-live under a scene whose core is auto');
+});
+
+const of = (envs, type) => envs.filter((e) => e.type === type);
+
+test('who\'s on follows the act through a lineup edit, and is cleared when the act is gone', async (t) => {
+  const { platform, local } = await setup(t);
+  overlaysFor(platform);
+  const show = platform.shows.create(SHOW);
+  platform.shows.setSlot(show.id, 'VIKKSTAR');
+  platform.shows.update(show.id, { lineup: [{ time: '22:00', name: 'Warm-up' }, ...LINEUP] });
+  assert.equal(local('main-h')['show.currentSlot'], 2);
+  assert.equal(platform.shows.get(show.id).lineup[platform.shows.get(show.id).currentSlot].name, 'VIKKSTAR');
+  platform.shows.update(show.id, { lineup: LINEUP.map((s) => (s.name === 'VIKKSTAR' ? { ...s, time: '01:30' } : s)) });
+  assert.equal(local('main-h')['show.currentSlot'], 1, 'a new time: still the same act');
+  platform.shows.update(show.id, { lineup: LINEUP.filter((s) => s.name !== 'VIKKSTAR') });
+  assert.equal('show.currentSlot' in local('main-h'), false);
+});
+
+test('an overlay\'s own timed scene returns on the server, and after it leaves a show', async (t) => {
+  const { platform, local } = await setup(t);
+  overlaysFor(platform);
+  platform.shows.takeOverlay('solo', 'headliner'); // 1 s, then program
+  await sleep(1300);
+  assert.equal(local('solo')['show.scene'], 'program');
+  platform.shows.takeOverlay('solo', 'headliner');
+  const show = platform.shows.create({ ...SHOW, overlays: ['solo'] });
+  await sleep(1300); // its return fell due while it was in the show
+  platform.shows.update(show.id, { overlays: [] });
+  assert.equal(local('solo')['show.scene'], 'program', 'back on its own: the return happens');
+});
+
+test('members by slug or id, each once; leaving clears every show key; state is published again at startup', async (t) => {
+  const dataRoot = tempDir(t);
+  const { platform, local, got, watch } = await setup(t, { dataRoot });
+  overlaysFor(platform);
+  const h = platform.overlays.resolve('main-h').doc.id;
+  const show = platform.shows.create({ ...SHOW, overlays: [h, 'main-h', 'main-v'] });
+  assert.deepEqual(show.members, ['main-h', 'main-v']);
+  assert.deepEqual(show.overlays, [h, platform.overlays.resolve('main-v').doc.id]);
+  watch('main-h');
+  platform.shows.take(show.id, 'program');
+  assert.equal(of(got['main-h'], 'show.scene.changed').length, 1, 'once, not twice');
+  platform.shows.setSlot(show.id, 1);
+  await platform.stop();
+  const again = await setup(t, { dataRoot });
+  const s = again.local('main-h');
+  assert.deepEqual([s['show.scene'], s['show.headliner'], s['show.currentSlot'], s['show.lineup'].length, typeof s['show.recStartedAt']], ['program', 'VIKKSTAR', 1, 3, 'number']);
+  again.platform.shows.update(show.id, { overlays: ['main-v'] });
+  const left = again.local('main-h');
+  for (const key of ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.goLiveAt', 'show.recStartedAt']) assert.equal(key in left, false, key);
+  assert.ok(local);
+});
+
+test('a lineup time a clock change repeats is the first one, and flagged; live lasts 12 hours at most', async (t) => {
+  const { platform } = await setup(t);
+  overlaysFor(platform);
+  const show = platform.shows.create({ ...SHOW, date: '2026-10-31', lineup: [{ time: '01:30', name: 'Twice' }] });
+  assert.equal(show.lineup[0].clockOverlap, true);
+  assert.equal(new Date(show.lineup[0].startAt).toISOString(), '2026-11-01T05:30:00.000Z');
+  const c = cranked(t, platform, Date.UTC(2026, 10, 1, 2, 0));
+  const shows = c.make();
+  shows.take(show.id, 'program');
+  c.advance(LIVE_MS - 1);
+  assert.equal(shows.get(show.id).live, true);
+  c.advance(1);
+  assert.equal(shows.get(show.id).live, false, '09 §9.1: a show counts as live for 12 hours at most');
+  assert.equal(shows.onAir(platform.overlays.resolve('main-h').doc.id), false);
+});
+
+test('re-taking a timed scene before it ends returns at the second take\'s end', async (t) => {
+  const { platform } = await setup(t);
+  overlaysFor(platform);
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0));
+  const shows = c.make();
+  const show = shows.create(SHOW);
+  shows.take(show.id, 'headliner'); // 1 s
+  c.advance(500);
+  shows.take(show.id, 'headliner');
+  c.advance(600);
+  assert.equal(shows.get(show.id).scene, 'headliner', 'not at the first take\'s end');
+  c.advance(500);
+  assert.equal(shows.get(show.id).scene, 'program');
+});
+
+test('refusals, not crashes: odd overlay references, deeply nested args', async (t) => {
+  const { platform, api } = await setup(t);
+  overlaysFor(platform);
+  const show = platform.shows.create(SHOW);
+  assert.throws(() => platform.shows.create({ ...SHOW, name: 'Two', overlays: ['not an id'] }), { code: 'no-overlay' });
+  assert.throws(() => platform.shows.takeOverlay('has space', 'brb'), { code: 'not-found' });
+  assert.equal((await api('PUT', '/overlays/has%20space/scene', { scene: 'brb' })).status, 404);
+  const deep = `{"args":{"a":${'['.repeat(5000)}${']'.repeat(5000)}}}`;
+  for (const url of [`/shows/${show.id}/triggers/titleCard`, '/overlays/solo/actions/titleCard']) {
+    const res = await fetch(`${platform.url}/api/v1${url}`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: deep });
+    assert.equal(res.status, 422, url);
+    assert.match((await res.json()).detail, /nested at most 16 deep/);
+  }
+});
+
+test('the platform\'s own names: its configured host, and on port 80 without the port', () => {
+  const at = (port) => ({ address: () => ({ port }) });
+  assert.deepEqual(ownHosts(at(4848)), ['127.0.0.1:4848', 'localhost:4848', '[::1]:4848']);
+  assert.deepEqual(ownHosts(at(4848), '127.0.0.2'), ['127.0.0.1:4848', 'localhost:4848', '[::1]:4848', '127.0.0.2:4848']);
+  assert.deepEqual(ownHosts(at(4848), '::1'), ['127.0.0.1:4848', 'localhost:4848', '[::1]:4848']);
+  assert.deepEqual(ownHosts(at(80), '127.0.0.1'), ['127.0.0.1:80', 'localhost:80', '[::1]:80', '127.0.0.1', 'localhost', '[::1]']);
+  assert.deepEqual(ownHosts({ address: () => null }), []);
+});
+
+test('a sandboxed page (an overlay, a template\'s script) can\'t drive a show; the platform\'s own pages can, signed in', async (t) => {
+  const { platform, api } = await setup(t);
+  overlaysFor(platform);
+  const show = platform.shows.create(SHOW);
+  const fromPage = (headers) => api('PUT', `/shows/${show.id}/scene`, { scene: 'brb' }, headers);
+  assert.equal((await fromPage({ origin: 'null' })).status, 403, 'an overlay page has an origin of its own');
+  assert.equal((await api('GET', '/shows', undefined, { origin: 'null' })).status, 403, 'reading too');
+  assert.equal((await fromPage({ origin: platform.url })).status, 200);
+  const res = await fetch(`${platform.url}/o/main-h`);
+  assert.match(res.headers.get('content-security-policy'), /^sandbox allow-scripts; /, 'overlay pages are served sandboxed');
+  await res.arrayBuffer();
 });

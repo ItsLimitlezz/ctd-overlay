@@ -172,18 +172,20 @@ That gives each act, at its start, the "who's on" change and a title card (the h
 their own intro instead, where the template has one), the Event Intro five minutes in, and now
 playing every ten minutes until the next act. `--recipe recipe.json` changes that, for example
 `{ "introOffsetMin": null, "nowPlayingEveryMin": 15 }`, and `--recipe none` stops it. Edit the
-lineup mid-show and the cues are rebuilt; anything that already fired stays fired. A timed scene
+lineup mid-show (fix a time, a name, add an act) and the cues are rebuilt; nothing that already
+happened goes out again, and a cue you edited or deleted stays as you left it. A timed scene
 like the Event Intro plays only while the show is on its program scene, so it never pulls you
-off a BRB.
+off a BRB. After switching an overlay to another template, run `show build` again.
 
 `show cues <show>` lists the timeline. Add your own cue with `show cue add <show> --at 23:59
---scene brb` (or `--action titleCard --args '{"name":"Guest"}'`, `--slot 2`, `--play <media
+--scene brb` (or `--action titleCard --args '{"name":"Guest"}'`, `--slot VIKKSTAR`, `--play <media
 id>`, `--stop`, or `--cue file.json` for a sequence). You can fire a cue now, skip it, re-arm it
 or delete it with `show cue fire|skip|rearm|delete <show> <cue>`. A cue more than five minutes
 late is marked missed instead of firing, so a restart after downtime never replays a night.
 
 Cues set at a show time (`23:59`) belong to the show's night. When the date changes they move
-with it and are armed again. To get next week ready without touching tonight, plan it:
+with it and are armed again (if their time is still to come). To get next week ready without
+touching tonight, plan it:
 `show plan add <show> --date 2026-10-24 --lineup next.json [--settings settings.json]`. At that
 day's boundary the plan becomes the show, unless the show is still live, in which case it waits.
 

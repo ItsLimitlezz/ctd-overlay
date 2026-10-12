@@ -272,6 +272,10 @@ test('an overlay in a live show waits for it to end; the first check after moves
   assert.deepEqual(r.upgraded.map((u) => u.overlay), ['spare'], 'not in a show: moves');
   assert.deepEqual(r.waiting.map((w) => [w.overlay, w.why]), [['main', 'its show is live; it moves at the first check after']]);
   assert.equal(d.overlays.resolve('main').doc.data.template.version, '1.0.0', 'never reloaded on air');
+  // The next periodic check, still on air (nothing new released): it still waits.
+  [r] = await d.sources.check();
+  assert.deepEqual([r.upgraded, r.waiting.map((w) => w.overlay)], [[], ['main']]);
+  assert.equal(d.overlays.resolve('main').doc.data.template.version, '1.0.0', 'not at the next check either');
   d.shows.rec(show.id, 'reset'); // the show is over
   const downloads = gh.requests.length;
   [r] = await d.sources.check();

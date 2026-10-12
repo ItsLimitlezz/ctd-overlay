@@ -1,0 +1,21 @@
+{
+  "standard": "skp/1",
+  "id": "dev.skp.cores",
+  "name": "Cores",
+  "version": "1.0.0",
+  "description": "Scenes whose ids aren't their cores, for shows across templates (04 §4.2).",
+  "category": "show",
+  "entry": "index.html",
+  "previews": ["previews/cores.svg"],
+  "canvases": [{ "id": "h", "width": 1920, "height": 1080, "default": true }],
+  "scenes": [
+    { "id": "soon", "label": "Soon", "core": "starting" },
+    { "id": "live", "label": "Live", "core": "program", "transparent": true },
+    { "id": "clock", "label": "Clock", "core": "auto" },
+    { "id": "pause", "label": "Pause", "core": "brb" },
+    { "id": "bye", "label": "Bye", "core": "outro" },
+    { "id": "sting", "label": "Sting", "durationMs": 1000, "then": "program" }
+  ],
+  "consumes": { "state": ["show.*"] },
+  "actions": [{ "id": "titleCard", "label": "Title card", "durationMs": 3000 }]
+}
