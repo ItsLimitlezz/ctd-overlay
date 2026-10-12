@@ -142,11 +142,12 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
     platform.bus.publish('show.scene.changed', { scene: 'outro', transition: 'cut' }, { target: overlay.id });
     channel.setLocalState('show.scene', 'outro');
     await page.waitFor('SK.scene === "outro"');
-    // State first, then the event a moment later (but within the settle wait). The state's
-    // coalescing window (100 ms per key) has to pass first, or the bus holds it back.
+    // State first, then the event: two frames the page handles one after the other, the event
+    // inside the state's settle wait. (Published in one tick: a server-side timer between them
+    // could itself run past the 50 ms wait on a busy machine.) The state's coalescing window
+    // (100 ms per key) has to pass first, or the bus holds it back.
     await new Promise((r) => setTimeout(r, 150));
     channel.setLocalState('show.scene', 'brb');
-    await new Promise((r) => setTimeout(r, 15));
     platform.bus.publish('show.scene.changed', { scene: 'brb', transition: 'cut' }, { target: overlay.id });
     await page.waitFor('SK.scene === "brb"');
     assert.deepEqual(order, ['event:outro', 'state:outro', 'state:brb', 'event:brb']);
@@ -410,10 +411,11 @@ describe('alerts (05 §5.5)', () => {
     await page.waitFor('!!document.querySelector("[data-skp-alerts] [data-skp-alert=follow]")', 2000);
     assert.equal(await page.eval('document.querySelector("[data-skp-alert]").textContent'), 'Trapment follow');
     const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 3000);
-    // --skp-exit-ms is 200: exit at startAt + 800, removed 50 ms after it ends.
-    assert.ok(times.added >= startAt - 50 && times.added < startAt + 150, `added at ${times.added - startAt}`);
-    assert.ok(times.exit >= startAt + 750 && times.exit < startAt + 950, `exit at ${times.exit - startAt}`);
-    assert.ok(times.removed >= startAt + 1000 && times.removed < startAt + 1400, `removed at ${times.removed - startAt}`);
+    // --skp-exit-ms is 200: exit at startAt + 800, removed 50 ms after it ends. Never early; the
+    // upper bounds allow for a busy CI runner's timers (one late tick of 150+ ms has been seen).
+    assert.ok(times.added >= startAt - 50 && times.added < startAt + 400, `added at ${times.added - startAt}`);
+    assert.ok(times.exit >= startAt + 750 && times.exit < startAt + 1150, `exit at ${times.exit - startAt}`);
+    assert.ok(times.removed >= startAt + 1000 && times.removed < startAt + 1700, `removed at ${times.removed - startAt}`);
   });
 
   test('an alert with a countdown bar stays for its whole window', opts, async (t) => {
@@ -424,7 +426,7 @@ describe('alerts (05 §5.5)', () => {
     const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 4000);
     // The probed exit is the 300 ms animation, not the bar's 5 s: exit at 1200, removed at 1550.
     assert.ok(times.exit >= startAt + 1150, `exit at ${times.exit - startAt}`);
-    assert.ok(times.removed >= startAt + 1450 && times.removed < startAt + 1900, `removed at ${times.removed - startAt}`);
+    assert.ok(times.removed >= startAt + 1450 && times.removed < startAt + 2200, `removed at ${times.removed - startAt}`);
   });
 
   test('a late alert lands on the same frame as on-time ones, even when its exit is probed from CSS', opts, async (t) => {
@@ -465,7 +467,8 @@ describe('alerts (05 §5.5)', () => {
     platform.bus.publish('alert.follow', follow('two'), { target: overlay.id });
     await page.waitFor('window.__log.filter((e) => e.what === "alert").length === 2', 2000);
     const [a, b] = await logOf('alert');
-    assert.deepEqual([a.name, b.name], ['one', 'two']);
+    // Both start at once (their envelopes are a millisecond apart, or none): in either order.
+    assert.deepEqual([a.name, b.name].sort(), ['one', 'two']);
     assert.ok(Math.abs(b.at - a.at) < 300, 'both start from their envelope time, overlapping');
     // The window is the manifest's durationMs (1500) from the envelope time.
     await page.waitFor('document.querySelectorAll("[data-skp-alert]").length === 0', 3000);
@@ -559,8 +562,9 @@ describe('mock data (?mock=1, 08 §8.5)', () => {
     assert.equal(await page.eval('SK.state("show.lineup").length'), 5);
     assert.equal(await page.eval('SK.state("show.lineup").filter((s) => s.headliner).length'), 1);
     assert.equal(await page.eval('typeof SK.music.progress()'), 'number');
-    assert.equal(await page.eval('SK.chat.recent().length'), 5);
-    await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg").length === 5');
+    // Five to start with; at 20× speed more may have arrived by the time this looks.
+    assert.ok(await page.eval('SK.chat.recent().length') >= 5);
+    await page.waitFor('document.querySelectorAll("[data-skp-chat] .msg").length >= 5');
     const roles = await page.eval('new Set(SK.chat.recent().flatMap((m) => m.user.roles)).size');
     assert.ok(roles >= 3);
     await page.waitFor('!!document.querySelector("[data-skp-alert]")', 4000);
