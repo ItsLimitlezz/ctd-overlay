@@ -129,6 +129,16 @@ option that keeps a live show running with nobody touching it.
    (until steps 11–14 bring sign-in and the admin UI). The demo runs on a show.
 10. **Timeline.** Cues, the scheduler rules (durable before visible, grace window), lineup
     recipe, timezone + day boundary + DST, planned shows (09). Clock tests per H19.
+    Done in `src/shows/timeline.js`, with routes under `/api/v1/shows/:ref/cues|plans` and
+    `skp show build|cues|cue|plans|plan`. The time rule came with step 9. A cue at a show time
+    belongs to the show's night: it follows the date and is armed again for a new one. Generated
+    cues are keyed by slot time and act, not by position, so inserting a slot fires nothing
+    again, and a cue the operator edits stays theirs. A timed scene a cue plays (the Event Intro)
+    plays only from program, since it would pull the operator off a BRB; fired by hand it plays
+    anyway. A plan waits while its show is live. Overrides are recorded in `operations.log`
+    until step 11's audit log. Shows and the timeline take an injectable clock (`{ now, timers }`),
+    and the H19 tests run a server with its clock set ahead through both clock-change nights.
+    `connector.action` and `webhook` cues are refused, naming their steps (16, 20).
 
 ### Milestone 3: safe to expose, and an admin UI
 11. **Auth.** Setup code, owner, serialized scrypt, sessions, CSRF, login throttling, roles, API

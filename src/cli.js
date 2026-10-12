@@ -65,6 +65,17 @@ These drive the running platform (start it first):
   show slot <show> <position|name|none>   who's on now
   show rec <show> start|reset             the REC timer (it starts by itself at the first take
                                           of the live scene, or at go-live under "auto")
+  show build <show> [--recipe <file.json>|none]      cues from the lineup: who's on, title cards,
+                                          the Event Intro, now playing (none stops generating)
+  show cues <show>                        the timeline: each cue, when, and what happened to it
+  show cue add <show> --at <HH:MM|ISO instant> [--label <text>] and one of
+        --scene <id> [--transition ...] | --action <name> [--args <json>] | --slot <n>
+        | --play <media id> | --stop | --cue <cue.json>
+  show cue fire|skip|rearm|delete <show> <cue>       fire now, skip, arm again, or remove
+  show plans <show>                       the show's planned dates
+  show plan add <show> --date <YYYY-MM-DD> [--go-live HH:MM] [--day-boundary HH:MM]
+        [--lineup <file.json>] [--settings <file.json>]   becomes the show at that day's start
+  show plan delete <show> <plan>
   overlay take <slug> <scene> [--transition ...]     an overlay outside a show
   overlay fire <slug> <action> [--args <json>]
 
@@ -73,7 +84,7 @@ Options: --json (machine-readable output), and the server's own --data-dir, --co
 work too).`;
 
 const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level', 'port'];
-const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boundary', 'lineup', 'transition', 'args'];
+const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boundary', 'lineup', 'transition', 'args', 'at', 'scene', 'action', 'slot', 'play', 'cue', 'label', 'recipe', 'settings'];
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
 // fetch and lookup: test hooks for what template sources download with and resolve names with.
@@ -86,7 +97,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       allowPositionals: true,
       strict: true,
       options: {
-        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' },
         to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
         ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
@@ -474,6 +485,87 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         return 0;
       }
 
+      case 'show build': {
+        if (rest.length !== 1) return usage('show build takes <show>');
+        const body = {};
+        if (opts.recipe !== undefined) body.recipe = opts.recipe === 'none' ? null : readJsonFile(opts.recipe, 'the recipe file');
+        const cues = await platform('POST', `/shows/${encodeURIComponent(rest[0])}/cues/build`, body);
+        if (opts.json) json(cues);
+        else {
+          const made = cues.filter((c) => c.generated);
+          out(body.recipe === null ? `${rest[0]}: no more generated cues (${made.length} that already happened stay)` : `${rest[0]}: ${made.length} generated cue${made.length === 1 ? '' : 's'} (skp show cues ${quoteArg(rest[0])})`);
+        }
+        return 0;
+      }
+
+      case 'show cues': {
+        if (rest.length !== 1) return usage('show cues takes <show>');
+        const show = await platform('GET', `/shows/${encodeURIComponent(rest[0])}`);
+        const cues = await platform('GET', `/shows/${show.id}/cues`);
+        if (opts.json) json(cues);
+        else {
+          for (const c of cues) out(cueLine(c, show.timezone));
+          if (!cues.length) out(`No cues yet: skp show build ${quoteArg(show.name)} makes them from the lineup, or skp show cue add.`);
+        }
+        return 0;
+      }
+
+      case 'show cue': {
+        const [op, ref, cueId, ...extra] = rest;
+        if (op === 'add') {
+          if (!ref || cueId !== undefined) return usage('show cue add takes <show> and --at with what the cue does');
+          const cue = cueInput(opts);
+          const c = await platform('POST', `/shows/${encodeURIComponent(ref)}/cues`, cue);
+          const show = await platform('GET', `/shows/${encodeURIComponent(ref)}`);
+          if (opts.json) json(c);
+          else out(`added ${cueLine(c, show.timezone)}`);
+          return 0;
+        }
+        if (!['fire', 'skip', 'rearm', 'delete'].includes(op) || !ref || !cueId || extra.length) return usage('show cue takes add, or fire|skip|rearm|delete <show> <cue>');
+        const base = `/shows/${encodeURIComponent(ref)}/cues/${encodeURIComponent(cueId)}`;
+        const c = op === 'delete' ? await platform('DELETE', base) : await platform('POST', `${base}/${op}`);
+        if (opts.json) json(c);
+        else if (op === 'delete') out(`deleted ${c.id}`);
+        else out(`${c.id}: ${c.status}${c.error ? ` (${c.error})` : ''}`);
+        return 0;
+      }
+
+      case 'show plans': {
+        if (rest.length !== 1) return usage('show plans takes <show>');
+        const plans = await platform('GET', `/shows/${encodeURIComponent(rest[0])}/plans`);
+        if (opts.json) json(plans);
+        else {
+          for (const p of plans) {
+            const what = [p.lineup && `${p.lineup.length} slot${p.lineup.length === 1 ? '' : 's'}`, p.goLive && `go-live ${p.goLive}`, p.overlaySettings && `settings for ${Object.keys(p.overlaySettings).join(', ')}`].filter(Boolean).join(', ');
+            out(`${p.date}  ${p.activatedAt ? (p.error ? `not activated: ${p.error}` : 'activated') : `activates ${p.activateAt}`}  ${what || 'same show, new date'}  (${p.id})`);
+          }
+          if (!plans.length) out('No planned dates: skp show plan add <show> --date <YYYY-MM-DD> …');
+        }
+        return 0;
+      }
+
+      case 'show plan': {
+        const [op, ref, planId, ...extra] = rest;
+        if (op === 'add') {
+          if (!ref || planId !== undefined) return usage('show plan add takes <show> --date <YYYY-MM-DD> and what changes');
+          const plan = {};
+          if (opts.date !== undefined) plan.date = opts.date;
+          if (opts['go-live'] !== undefined) plan.goLive = opts['go-live'] === 'none' ? null : opts['go-live'];
+          if (opts['day-boundary'] !== undefined) plan.dayBoundary = opts['day-boundary'];
+          if (opts.lineup !== undefined) plan.lineup = readJsonFile(opts.lineup, 'the lineup file');
+          if (opts.settings !== undefined) plan.overlaySettings = readJsonFile(opts.settings, 'the settings file');
+          const p = await platform('POST', `/shows/${encodeURIComponent(ref)}/plans`, plan);
+          if (opts.json) json(p);
+          else out(`planned ${ref} for ${p.date}: it becomes the show at ${p.activateAt} (${p.id})`);
+          return 0;
+        }
+        if (op !== 'delete' || !ref || !planId || extra.length) return usage('show plan takes add <show> …, or delete <show> <plan>');
+        const p = await platform('DELETE', `/shows/${encodeURIComponent(ref)}/plans/${encodeURIComponent(planId)}`);
+        if (opts.json) json(p);
+        else out(`deleted ${p.id}`);
+        return 0;
+      }
+
       default:
         return usage(noun ? `unknown command "${command}"` : '');
     }
@@ -543,13 +635,64 @@ async function callPlatform(cfg, method, apiPath, body, fetchFn) {
   return value;
 }
 
+function readJsonFile(file, what) {
+  let text;
+  try { text = readFileSync(file, 'utf8').replace(/^﻿/, ''); } catch (err) { throw new PlatformError(`can't read ${what} ${file} (${err.code || err.message})`, 'bad-file'); }
+  try { return JSON.parse(text); } catch (err) { throw new PlatformError(`${file} isn't JSON: ${err.message}`, 'bad-file'); }
+}
+
+// A cue from the command line's options: --at, a label, and exactly one thing it does.
+function cueInput(opts) {
+  const kinds = ['scene', 'action', 'slot', 'play', 'stop', 'cue'].filter((k) => opts[k] !== undefined);
+  if (kinds.length !== 1) throw new PlatformError('A cue does one thing: give one of --scene, --action, --slot, --play, --stop or --cue.', 'usage', 64);
+  const usage = (msg) => { throw new PlatformError(msg, 'usage', 64); };
+  let action;
+  switch (kinds[0]) {
+    case 'scene': action = { type: 'show.scene', scene: opts.scene, ...(opts.transition ? { transition: opts.transition } : {}) }; break;
+    case 'action': {
+      let args;
+      if (opts.args !== undefined) {
+        try { args = JSON.parse(opts.args); } catch { usage('--args must be JSON, e.g. --args \'{"name":"VIKKSTAR"}\''); }
+      }
+      action = { type: 'overlay.action', name: opts.action, ...(args ? { args } : {}) };
+      break;
+    }
+    case 'slot':
+      if (!/^\d+$/.test(opts.slot)) usage('--slot is a lineup position: 0 for the first act');
+      action = { type: 'show.slot', slot: Number(opts.slot) };
+      break;
+    case 'play': action = { type: 'media.play', mediaId: opts.play }; break;
+    case 'stop': action = { type: 'media.stop' }; break;
+    default: {
+      // A whole cue (or just its action) from a file: a sequence, say.
+      const c = readJsonFile(opts.cue, 'the cue file');
+      if (!c || typeof c !== 'object' || Array.isArray(c)) usage(`${opts.cue} must hold a JSON object (a cue or an action).`);
+      const cue = c.action ? { ...c } : { action: c };
+      if (opts.at !== undefined) cue.at = opts.at;
+      if (opts.label !== undefined) cue.label = opts.label;
+      return cue;
+    }
+  }
+  return { at: opts.at, action, ...(opts.label !== undefined ? { label: opts.label } : {}) };
+}
+
+// One cue as a line: when on the show's clock, its status, and what it does.
+function cueLine(c, timezone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(c.at)).map((p) => [p.type, p.value]));
+  const when = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}${parts.second === '00' ? '' : `:${parts.second}`}`;
+  const a = c.action;
+  const what = c.label || (a.type === 'show.scene' ? `take ${a.scene}` : a.type === 'overlay.action' ? a.name : a.type === 'show.slot' ? `slot ${a.slot}` : a.type);
+  return `${when}  ${c.status.padEnd(7)}  ${what}${c.edited ? ' (edited)' : ''}${c.error ? `  — ${c.error}` : ''}  (${c.id})`;
+}
+
+function quoteArg(s) {
+  return /^[\w.-]+$/.test(s) ? s : `"${s.replace(/"/g, '\\"')}"`;
+}
+
 // A show from the command line's options: --from a JSON file, then the flags over it.
 function showInput(opts) {
-  const readJson = (file, what) => {
-    let text;
-    try { text = readFileSync(file, 'utf8').replace(/^﻿/, ''); } catch (err) { throw new PlatformError(`can't read ${what} ${file} (${err.code || err.message})`, 'bad-file'); }
-    try { return JSON.parse(text); } catch (err) { throw new PlatformError(`${file} isn't JSON: ${err.message}`, 'bad-file'); }
-  };
+  const readJson = readJsonFile;
   const input = opts.from !== undefined ? readJson(opts.from, 'the show file') : {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new PlatformError(`${opts.from} must hold a JSON object (a show).`, 'bad-file');
   if (opts.name !== undefined) input.name = opts.name;

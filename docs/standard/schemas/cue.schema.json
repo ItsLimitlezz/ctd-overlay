@@ -6,11 +6,14 @@
   "required": ["id", "at", "action", "status"],
   "properties": {
     "id": { "type": "string", "pattern": "^cue_" },
-    "at": { "type": "string", "format": "date-time", "description": "Absolute instant, resolved server-side (09 §9.2)." },
+    "at": { "type": "string", "format": "date-time", "description": "Absolute instant, resolved server-side (09 §9.2). On input: an instant with its offset, or a time of the show (HH:MM)." },
+    "time": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$", "description": "Set when the cue was given as a time of the show: it belongs to the show's night and follows its date (09 §9.3)." },
     "label": { "type": "string", "maxLength": 120 },
     "generated": { "type": "boolean", "description": "Created by a lineup recipe (09 §9.5)." },
+    "edited": { "type": "boolean", "description": "A generated cue the operator changed: rebuilds leave it as it is." },
     "status": { "enum": ["armed", "fired", "skipped", "missed"] },
     "firedAt": { "type": "string", "format": "date-time" },
+    "error": { "type": "string", "description": "Why a fired cue did nothing (no member has the action, the clip isn't ready …)." },
     "action": { "$ref": "#/$defs/action" }
   },
   "$defs": {

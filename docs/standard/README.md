@@ -124,6 +124,21 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** From building the timeline (plan step 10):
+
+1. A cue may be set at a time of the show (`"01:00"`). It belongs to the show's night, follows
+   the date and is armed again for a new night. A fired cue that did nothing says why in
+   `error`. *(09 §9.3, cue.schema.json)*
+2. Generated cues are known by slot time and act, so inserting a slot fires nothing again. A
+   cue the operator edited stays theirs. Cues made already past the grace window are missed.
+   *(09 §9.4)*
+3. Only what members offer is generated. A timed scene played by a cue plays only from program,
+   never off a BRB (it does when fired by hand). The headliner's intro replaces their title
+   card. The recipe is kept with the show, and `null` stops it. *(09 §9.5)*
+4. A plan carries `lineup`, `goLive`, `dayBoundary` and `overlaySettings`. It waits while its
+   show is live and activates at startup if the boundary passed while the platform was down.
+   *(09 §9.6)*
+
 **2026-10-12.** From building shows (plan step 9):
 
 1. Show state is each member overlay's own; REC is anchored by the server at the first take of
