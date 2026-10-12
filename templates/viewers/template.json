@@ -1,0 +1,31 @@
+{
+  "standard": "skp/1",
+  "id": "dev.skp.viewers",
+  "name": "Viewer count",
+  "version": "1.0.0",
+  "description": "The live viewer count, summed across the connected platforms; hidden while unknown, never shown as 0 (04 §4.12, H6).",
+  "author": { "name": "CTD Overlay" },
+  "license": "GPL-2.0-or-later",
+  "category": "widget",
+  "tags": ["viewers", "widget"],
+  "entry": "index.html",
+  "previews": ["previews/viewers.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "chip", "width": 480, "height": 120, "default": true }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Viewer count", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "state": ["viewers.total", "viewers.stale"]
+  },
+  "settings": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accent": { "type": "string", "format": "color", "title": "Dot colour", "default": "#FF2A2A" },
+      "label": { "type": "string", "title": "Label after the number", "maxLength": 20, "default": "" }
+    }
+  }
+}

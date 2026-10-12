@@ -25,8 +25,12 @@ broadcast advances with every browser closed and survives a restart mid-show.
 
 - `headliner` and `closer` are different things: the headliner is the billed act; the closer
   plays last. A template that needs "the headliner" reads the flag, never "the last slot".
+- A slot **MAY** carry `logo`: the performer's logo, as uploaded media (`/media/…`) or an
+  `https` URL. Templates show it where they would show the name, and fall back to the name.
 - `lineup` is published as `show.lineup` state to member overlays, each slot with `startAt`: the
-  instant its `time` resolves to (§9.2), in epoch ms. `time` stays as a display label.
+  instant its `time` resolves to (§9.2), in epoch ms. `time` stays as a display label. The show
+  also publishes `show.date` (its `date`) and `show.goLiveAt` (the instant `goLive` resolves to),
+  so a countdown never re-interprets wall-clock strings.
 
 ## 9.2 The time rule
 

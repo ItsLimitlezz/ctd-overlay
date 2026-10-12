@@ -15,6 +15,7 @@ const MAX_ENVELOPE_BYTES = 64 * 1024; // 02 §2.9
 const ENVELOPE_OVERHEAD = 256; // id, type, ts and src around the data
 const CHAT_DEFAULT = 50;
 const CHAT_MAX = 200;
+const SIMULATOR = Object.freeze({ connector: 'simulator' });
 
 export class Channel {
   #bus;
@@ -23,6 +24,7 @@ export class Channel {
   #subs = new Set();
   #closers = new Set();
   #local = new Map(); // channel-only state (overlay.settings, show.*), key → value
+  #sim = new Map(); // simulated state (08 §8.5), key → { value (undefined: absent), timer }
   #lastEmit = new Map(); // key → { at, json }
   #pending = new Map(); // key → { timer, value, src }
   #closed = false;
@@ -63,9 +65,45 @@ export class Channel {
   // Called by the bus for every envelope this channel accepts.
   offer(env) {
     if (this.#closed) return;
-    if (env.type === 'state.changed') return this.#offerState(env.data, env.src, env);
+    if (env.type === 'state.changed') {
+      if (this.#sim.has(env.data.key)) return; // held back while simulated; sent when that ends
+      return this.#offerState(env.data, env.src, env);
+    }
     this.#emit(env);
   }
+
+  // Simulated state (08 §8.5): this overlay sees `value` for `key` (undefined: absent) instead of
+  // the real value, for holdMs, after which the real value comes back on its own. A simulation
+  // left running on a live overlay must never hide the real viewer count for the rest of the show.
+  simulate(key, value, holdMs) {
+    if (this.#closed) return;
+    const text = value === undefined ? undefined : JSON.stringify(value);
+    let json = text === undefined ? undefined : JSON.parse(text);
+    if (json === null) json = undefined;
+    const data = changeData(key, json);
+    if (Buffer.byteLength(JSON.stringify(data)) + ENVELOPE_OVERHEAD > MAX_ENVELOPE_BYTES) {
+      throw Object.assign(new Error(`${key} is too large to send to an overlay (02 §2.9)`), { code: 'too-large' });
+    }
+    const held = this.#sim.get(key);
+    if (held) this.#bus.timers.clearTimeout(held.timer);
+    const timer = this.#bus.timers.setTimeout(() => this.endSimulation(key), holdMs);
+    timer.unref?.();
+    this.#sim.set(key, { value: json, timer });
+    this.#offerState(data, SIMULATOR, undefined, true);
+  }
+
+  // Ends the simulation of one key (or all of them): the overlay gets the real value again.
+  endSimulation(key) {
+    for (const k of key === undefined ? [...this.#sim.keys()] : [key]) {
+      const held = this.#sim.get(k);
+      if (!held) continue;
+      this.#bus.timers.clearTimeout(held.timer);
+      this.#sim.delete(k);
+      if (!this.#closed) this.#offerState(changeData(k, this.visibleState(k)), { connector: 'core' }, undefined, true);
+    }
+  }
+
+  get simulating() { return [...this.#sim.keys()]; }
 
   // Channel-only state: never global, never sent to other overlays or API subscribers. Kept as a
   // JSON copy like bus state, and null after the round trip (NaN, Infinity, an invalid Date) is
@@ -89,6 +127,7 @@ export class Channel {
   // One state key as this overlay sees it (its own state first, then global state it consumes
   // from connections bound to it), or undefined: what an x-skp-bind setting may read.
   visibleState(key) {
+    if (this.#sim.has(key)) return structuredClone(this.#sim.get(key).value);
     if (this.#local.has(key)) return structuredClone(this.#local.get(key));
     if (!(RUNTIME_KEYS.has(key) || this.wantsState(key))) return undefined;
     const entry = this.#bus.stateEntry(key);
@@ -101,6 +140,10 @@ export class Channel {
       if ((RUNTIME_KEYS.has(key) || this.wantsState(key)) && this.bound(entry.src)) state[key] = structuredClone(entry.value);
     }
     for (const [key, value] of this.#local) state[key] = structuredClone(value);
+    for (const [key, { value }] of this.#sim) {
+      if (value === undefined) delete state[key];
+      else state[key] = structuredClone(value);
+    }
     const snap = { cursor: this.#bus.cursor(), ts: this.#bus.now(), state };
     if (this.chat) {
       const recent = this.#bus.chatRecent().filter((env) => this.bound(env.src));
@@ -152,6 +195,8 @@ export class Channel {
     this.#closed = true;
     for (const p of this.#pending.values()) this.#bus.timers.clearTimeout(p.timer);
     this.#pending.clear();
+    for (const s of this.#sim.values()) this.#bus.timers.clearTimeout(s.timer);
+    this.#sim.clear();
     this.#subs.clear();
     const closers = [...this.#closers];
     this.#closers.clear();

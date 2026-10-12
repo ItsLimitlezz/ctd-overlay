@@ -97,6 +97,11 @@ option that keeps a live show running with nobody touching it.
    Line and POV, actions `titleCard`, `nowPlaying`, `chipOpening`, `chipOnAt`, Event Intro, DJ
    logos from lineup media. Add the viewer-count widget from 04 §4.12 and the Simulate endpoint.
    **Result:** the TAKEOVER overlays render in OBS from the new server with mock or hand-set data.
+   Done as `com.dprtmnt.takeover` (both looks, both canvases) and `dev.skp.viewers`, with
+   `npm run demo`. The event look's star is a plain one unless the headliner's mark is uploaded
+   (v0 drew VIKKSTAR's monogram for every headliner). Until shows exist (step 9) the demo
+   publishes `show.*` itself; the Simulate endpoint is open to this machine only, like every
+   route until auth (steps 11–13), and refuses form posts and other origins.
 
 ### Milestone 2: the show runs itself
 9. **Shows.** Shared scene for member overlays, triggers, timed scenes returning server-side,

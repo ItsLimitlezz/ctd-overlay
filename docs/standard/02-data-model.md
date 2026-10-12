@@ -158,6 +158,8 @@ without `display`.
 | `show.lineup` | array of slots (see 09) | core |
 | `show.headliner` | string — the name on the lineup slot flagged `headliner` (09 §9.1), for settings bound to it (04 §4.3) | core |
 | `show.currentSlot` | integer index | core |
+| `show.date` | string — the show's date, `YYYY-MM-DD` (09 §9.1) | core |
+| `show.goLiveAt` | epoch ms — the instant the show's `goLive` resolves to (09 §9.2) | core |
 | `show.recStartedAt` | epoch ms | core |
 | `overlay.settings` | the overlay's resolved settings | core |
 

@@ -12,6 +12,7 @@ import { createMediaLibrary } from './media/library.js';
 import { mediaRoutes } from './media/routes.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
+import { simulateRoutes } from './overlays/simulate.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
@@ -87,7 +88,12 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const server = createHttpServer({
     log: log.child('http'),
     crash,
-    routes: [...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }), ...mediaRoutes({ media }), ...routes],
+    routes: [
+      ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
+      ...simulateRoutes({ overlays, bus, log: log.child('simulate') }),
+      ...mediaRoutes({ media }),
+      ...routes,
+    ],
   });
 
   let address;

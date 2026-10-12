@@ -99,10 +99,15 @@
   const backlog = [nextMsg(), nextMsg(), nextMsg(), nextMsg(), nextMsg()];
 
   let viewers = { twitch: 842, kick: 317 };
+  const today = new Date(t);
   mock.snapshot({
     state: {
       'show.lineup': lineup,
+      'show.headliner': 'VIKKSTAR',
       'show.currentSlot': 1,
+      'show.date': today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate()),
+      // Ten minutes away, so a countdown has something to count (an "auto" scene goes live then).
+      'show.goLiveAt': t + 10 * MIN,
       'show.recStartedAt': t - 42 * MIN,
       'music.nowPlaying': tracks[0],
       'viewers.twitch': viewers.twitch,
