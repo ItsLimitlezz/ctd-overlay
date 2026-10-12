@@ -126,7 +126,7 @@ test('the overlay is found by slug or id; anything else is refused with a reason
   }
 });
 
-test('only JSON from the platform\'s own pages is accepted: no form posts, no other sites', async (t) => {
+test('only JSON from a program on this machine is accepted: no form posts, no web pages (not even the platform\'s own)', async (t) => {
   const { platform, post, got } = await setup(t);
   const form = await post('bed', 'kind=follow', { 'content-type': 'application/x-www-form-urlencoded' });
   assert.equal(form.status, 415);
@@ -138,8 +138,11 @@ test('only JSON from the platform\'s own pages is accepted: no form posts, no ot
   assert.equal(elsewhere.status, 403);
   await elsewhere.arrayBuffer();
   const own = await post('bed', { kind: 'follow' }, { origin: platform.url });
-  assert.equal(own.status, 200);
+  assert.equal(own.status, 403, 'a template\'s script runs on the platform\'s own origin');
   await own.arrayBuffer();
+  const program = await post('bed', { kind: 'follow' });
+  assert.equal(program.status, 200);
+  await program.arrayBuffer();
   assert.equal(got.bed.length, 1);
   // No CORS grant: a browser on another site can't even send the JSON.
   const preflight = await fetch(`${platform.url}/api/v1/overlays/bed/simulate`, {
@@ -166,7 +169,8 @@ test('a page that reaches the platform under another name (DNS rebinding) is ref
   assert.equal(await raw(`attacker.example:${port}`, `http://attacker.example:${port}`), 403, 'Host and Origin agree, and both are someone else');
   assert.equal(await raw(`attacker.example:${port}`), 403, 'no Origin at all');
   assert.equal(await raw(`127.0.0.1:${port}`, `http://attacker.example:${port}`), 403);
-  assert.equal(await raw(`localhost:${port}`, `http://localhost:${port}`), 200, 'the platform\'s own names');
+  assert.equal(await raw(`localhost:${port}`, `http://localhost:${port}`), 403, 'a page, even at the platform\'s own name');
+  assert.equal(await raw(`localhost:${port}`), 200, 'the platform\'s own names');
   assert.equal(await raw(`127.0.0.1:${port}`), 200);
   assert.deepEqual(got.bed.map((e) => e.type), ['alert.raid', 'alert.raid']);
 });

@@ -13,8 +13,12 @@
 // return as part of the take, kept in the record so a restart mid-intro still returns; a trigger
 // carries startAt = now + TRIGGER_LEAD_MS so every member starts it on the same frame; REC is
 // anchored when the show first goes live (taking its program scene, or "auto" reaching go-live)
-// and cleared by taking its starting scene, as v0 did. A show is live while REC runs (at most
-// LIVE_MS), which is what automatic template upgrades wait for (04 §4.13).
+// and cleared by taking its starting scene, as v0 did. A show is live while REC runs, for 12 hours
+// at most (LIVE_MS, v0's rule: a show still "on air" after that was left so), which is what
+// automatic template upgrades wait for (04 §4.13).
+//
+// A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
+// button work across templates: each member gets the name its own template knows.
 import { newId } from '../ids.js';
 import { isDate, isTime, isTimezone, resolveTime } from './time.js';
 
@@ -23,10 +27,32 @@ export const LIVE_MS = 12 * 60 * 60 * 1000;
 const NAME_CHARS = 80;
 const SLOTS = 100;
 const ARGS_BYTES = 4096;
+const ARGS_DEPTH = 16;
+const LOGO_CHARS = 500;
+// What a show publishes goes to each member as a state.changed envelope of at most 64 KiB, value
+// and previous value together (02 §2.9): a lineup larger than this is refused before it is saved.
+export const LINEUP_BYTES = 24 * 1024;
 const SCENE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const TRANSITION = /^[a-z][a-z0-9-]{0,39}$/;
+const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const LOGO = /^(\/media\/[A-Za-z0-9_-]+\/[^/\\?#%\s]+|https:\/\/\S+)$/;
 const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.goLiveAt', 'show.recStartedAt'];
+
+// A template's scene by id, else by core (04 §4.2).
+export function resolveScene(manifest, name) {
+  if (typeof name !== 'string' || !name) return undefined;
+  const scenes = manifest?.scenes || [];
+  return scenes.find((s) => s.id === name) || scenes.find((s) => s.core === name);
+}
+const coreOf = (def) => def && (def.core || def.id);
+
+// Whether args are within ARGS_BYTES and ARGS_DEPTH: stringifying very deep input would overflow
+// the stack, so depth is checked first.
+function argsFit(args) {
+  const deep = (v, d) => d > ARGS_DEPTH || (v && typeof v === 'object' && Object.values(v).some((x) => deep(x, d + 1)));
+  if (deep(args, 0)) return false;
+  try { return Buffer.byteLength(JSON.stringify(args)) <= ARGS_BYTES; } catch { return false; }
+}
 
 export class ShowError extends Error {
   constructor(message, code, status = 422) {
@@ -121,7 +147,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }
   }
 
-  // An overlay that leaves a show: its show state goes, and its own scene comes back.
+  // An overlay that leaves a show: its show state goes, and its own scene comes back, with its
+  // return if that scene is a timed one (at once, if it fell due while the overlay was away).
   function release(overlayId) {
     const doc = store.get('overlays', overlayId);
     const r = doc && overlays.resolve(doc.data.slug);
@@ -130,6 +157,18 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const own = store.get('overlay_scenes', overlayId);
     if (own) r.channel.setLocalState('show.scene', own.data.scene);
     overlays.refreshBound(overlayId);
+    if (own) armOverlay(overlayId, own.data);
+  }
+
+  // Refuses a show whose state couldn't reach its members (too large), before anything is saved.
+  function checkPublishable(data) {
+    const state = stateOf(data);
+    for (const [key, value] of Object.entries(state)) {
+      const bytes = value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value));
+      if (bytes > LINEUP_BYTES) {
+        throw new ShowError(`The show's ${key.slice(5)} is too large to send to its overlays (${Math.ceil(bytes / 1024)} KiB; at most ${LINEUP_BYTES / 1024} KiB): use fewer slots, or shorter names and logo URLs.`, 'too-large');
+      }
+    }
   }
 
   // ---- validation --------------------------------------------------------------------------
@@ -146,7 +185,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       if (!Array.isArray(input.overlays) || input.overlays.length > 20) bad('"overlays" must be a list of at most 20 overlays (slugs or ids).');
       const ids = [];
       for (const ref of input.overlays) {
-        const r = typeof ref === 'string' ? overlays.resolve(ref) || overlays.resolve(store.get('overlays', ref)?.data.slug) : undefined;
+        const r = typeof ref === 'string' ? overlays.resolve(ref) || (OVERLAY_ID.test(ref) ? overlays.resolve(store.get('overlays', ref)?.data.slug) : undefined) : undefined;
         if (!r) throw new ShowError(`There is no overlay "${ref}".`, 'no-overlay', 422);
         if (ids.includes(r.doc.id)) continue;
         const other = showOf(r.doc.id);
@@ -193,7 +232,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       if (s.headliner === true) slot.headliner = true;
       if (s.closer === true) slot.closer = true;
       if (s.logo !== undefined && s.logo !== null && s.logo !== '') {
-        if (typeof s.logo !== 'string' || !LOGO.test(s.logo)) bad(`slot ${i + 1}: "logo" must be uploaded media (/media/…) or an https URL.`);
+        if (typeof s.logo !== 'string' || s.logo.length > LOGO_CHARS || !LOGO.test(s.logo)) bad(`slot ${i + 1}: "logo" must be uploaded media (/media/…) or an https URL, at most ${LOGO_CHARS} characters.`);
         slot.logo = s.logo;
       }
       return slot;
@@ -203,6 +242,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   // ---- changes -----------------------------------------------------------------------------
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
+    checkPublishable(data);
     const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
     publish(doc);
     arm(doc);
@@ -215,12 +255,23 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const data = clean(patch || {}, { partial: true, id: doc.id });
     const next = { ...doc.data, ...data };
     if (next.goLive === null) delete next.goLive;
+    // Who's on follows the act through a lineup edit (an act added above it moves its position),
+    // and is cleared if the act is gone.
+    if (data.lineup && Number.isInteger(doc.data.currentSlot)) {
+      const was = doc.data.lineup[doc.data.currentSlot];
+      let at = was ? next.lineup.findIndex((s) => s.time === was.time && s.name === was.name) : -1;
+      if (at < 0 && was) at = next.lineup.findIndex((s) => s.name === was.name);
+      if (at < 0) delete next.currentSlot;
+      else next.currentSlot = at;
+    }
     if (Number.isInteger(next.currentSlot) && next.currentSlot >= next.lineup.length) delete next.currentSlot;
+    checkPublishable(next);
     const saved = store.put('shows', doc.id, next, { ifRev: ifRev ?? doc.rev });
     for (const left of doc.data.overlays.filter((o) => !next.overlays.includes(o))) release(left);
     publish(saved);
-    arm(saved);
-    return view(saved);
+    // A go-live moved into the past while "auto" is on air counts from then.
+    arm(saved, { catchUp: ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
+    return view(store.get('shows', doc.id) || saved);
   }
 
   function remove(ref) {
@@ -231,21 +282,31 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return { id: doc.id, name: doc.data.name };
   }
 
-  // A scene's definition in the members' templates: the first that defines it.
+  // A scene's definition in the members' templates (by id, else by core): the first that has it.
   function sceneDef(list, scene) {
     for (const m of list) {
-      const def = m.manifest?.scenes?.find((s) => s.id === scene);
+      const def = resolveScene(m.manifest, scene);
       if (def) return def;
     }
     return undefined;
   }
 
+  // The name each member knows a scene by: its own id for it, else the scene's core (which the
+  // SDK resolves to the member's own scene, 04 §4.2), else the name as taken.
+  function nameFor(m, scene, def) {
+    if (resolveScene(m.manifest, scene)) return scene;
+    const core = def?.core;
+    return core && resolveScene(m.manifest, core) ? core : scene;
+  }
+
   // Takes a scene on every member (or one standalone overlay): the take event with its
   // transition, then the scene state (02 §2.6), and, for a timed scene, its return.
-  function takeOn(targets, scene, transition, prev) {
+  function takeOn(targets, scene, transition, prev, def) {
     for (const m of targets) {
-      bus.publish('show.scene.changed', { scene, ...(prev ? { prev } : {}), transition }, { target: m.id });
-      m.channel.setLocalState('show.scene', scene);
+      const name = nameFor(m, scene, def);
+      const before = prev === undefined ? undefined : nameFor(m, prev, sceneDef(targets, prev));
+      bus.publish('show.scene.changed', { scene: name, ...(before ? { prev: before } : {}), transition }, { target: m.id });
+      m.channel.setLocalState('show.scene', name);
     }
   }
 
@@ -263,20 +324,21 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const list = members(doc.data);
     const def = checkScene(list, scene, transition);
     const t = now();
-    const core = def.core || def.id;
+    const core = coreOf(def);
     const next = { ...doc.data, scene, sceneTakenAt: t };
     delete next.sceneReturn;
     if (def.durationMs && def.then) next.sceneReturn = { at: t + def.durationMs, then: def.then, from: scene };
-    // REC (v0's rule): on air from the first program take; back to before the show on starting.
+    // REC (v0's rule): on air from the first program take; back to before the show on starting;
+    // under "auto", from go-live once it has come (and not more than LIVE_MS ago).
     let recChanged = false;
     if (core === 'program' && !isLive(next, t)) { next.recStartedAt = t; recChanged = true; }
     if (core === 'starting' && next.recStartedAt !== undefined) { delete next.recStartedAt; recChanged = true; }
     if (core === 'auto') {
-      const at = next.goLive ? resolveTime(next.date, next.goLive, next).at : undefined;
-      if (at !== undefined && at <= t && !isLive(next, t)) { next.recStartedAt = at; recChanged = true; }
+      const at = goLiveOf(next);
+      if (dueGoLive(next, at, t)) { next.recStartedAt = at; recChanged = true; }
     }
     const saved = store.put('shows', doc.id, next);
-    takeOn(list, scene, transition, doc.data.scene);
+    takeOn(list, scene, transition, doc.data.scene, def);
     if (recChanged) for (const m of list) m.channel.setLocalState('show.recStartedAt', saved.data.recStartedAt);
     arm(saved);
     log.info(returning ? 'timed scene returned' : 'scene taken', { show: doc.id, scene, transition, actor });
@@ -291,8 +353,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
 
   function fire(list, name, args, context) {
     if (typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(name)) throw new ShowError('The action must be an action id.', 'invalid');
-    if (!args || typeof args !== 'object' || Array.isArray(args) || Buffer.byteLength(JSON.stringify(args)) > ARGS_BYTES) {
-      throw new ShowError(`"args" must be an object of at most ${ARGS_BYTES} bytes.`, 'invalid');
+    if (!args || typeof args !== 'object' || Array.isArray(args) || !argsFit(args)) {
+      throw new ShowError(`"args" must be an object of at most ${ARGS_BYTES} bytes, nested at most ${ARGS_DEPTH} deep.`, 'invalid');
     }
     const takers = list.map((m) => ({ m, action: m.manifest?.actions?.find((a) => a.id === name) })).filter((x) => x.action);
     if (!takers.length) throw new ShowError(`No template here has an action "${name}".`, 'unknown-action');
@@ -328,12 +390,12 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const saved = store.put('shows', doc.id, next);
     for (const m of members(saved.data)) m.channel.setLocalState('show.recStartedAt', saved.data.recStartedAt);
     arm(saved);
-    return view(saved);
+    return view(store.get('shows', doc.id) || saved);
   }
 
   // ---- overlays outside a show --------------------------------------------------------------
   function standalone(ref) {
-    const r = overlays.resolve(ref) || overlays.resolve(store.get('overlays', ref)?.data.slug);
+    const r = (typeof ref === 'string' && overlays.resolve(ref)) || (typeof ref === 'string' && OVERLAY_ID.test(ref) ? overlays.resolve(store.get('overlays', ref)?.data.slug) : undefined);
     if (!r) throw new ShowError(`There is no overlay "${ref}".`, 'not-found', 404);
     return { id: r.doc.id, slug: r.doc.data.slug, channel: r.channel, manifest: r.template?.manifest };
   }
@@ -348,7 +410,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const record = { scene, takenAt: t };
     if (def.durationMs && def.then) record.sceneReturn = { at: t + def.durationMs, then: def.then, from: scene };
     store.put('overlay_scenes', m.id, record);
-    takeOn([m], scene, transition, prev);
+    takeOn([m], scene, transition, prev, def);
     armOverlay(m.id, record);
     log.info(returning ? 'timed scene returned' : 'scene taken', { overlay: m.slug, scene, transition, actor });
     return { overlay: m.slug, scene };
@@ -367,8 +429,10 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     goLives.delete(key);
   }
 
-  // A timed scene's return, and REC at go-live while "auto" is on air.
-  function arm(doc) {
+  // A timed scene's return, and REC at go-live while "auto" is on air. catchUp: also anchor REC at
+  // a go-live that has passed, at startup (the platform was down then) and when go-live itself
+  // changes (moved into the past); never on a REC reset, which is the operator's.
+  function arm(doc, { catchUp = false } = {}) {
     disarm(doc.id);
     if (stopped) return;
     const d = doc.data;
@@ -384,17 +448,31 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       if (at <= now()) run();
       else returns.set(doc.id, schedule(run, at - now(), () => rearmShow(doc.id)));
     }
-    const goLiveAt = d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined;
-    if (d.scene === 'auto' && goLiveAt !== undefined && goLiveAt > now() && !isLive(d)) {
-      goLives.set(doc.id, schedule(() => {
-        goLives.delete(doc.id);
-        const cur = store.get('shows', doc.id);
-        if (!cur || cur.data.scene !== 'auto' || isLive(cur.data)) return;
-        const saved = store.put('shows', doc.id, { ...cur.data, recStartedAt: goLiveAt });
-        for (const m of members(saved.data)) m.channel.setLocalState('show.recStartedAt', goLiveAt);
-        log.info('show live at go-live', { show: doc.id });
-      }, goLiveAt - now(), () => rearmShow(doc.id)));
+    // REC at go-live while a scene whose core is "auto" is on air: by a timer when go-live is
+    // still to come, at once when it has passed (the platform was down then, or go-live was moved
+    // into the past) and the show isn't already live for it.
+    const goLiveAt = goLiveOf(d);
+    if (goLiveAt === undefined || coreOf(sceneDef(members(d), d.scene)) !== 'auto') return;
+    if (goLiveAt <= now()) {
+      if (catchUp && dueGoLive(d, goLiveAt, now())) goLive(doc.id, goLiveAt);
+      return;
     }
+    goLives.set(doc.id, schedule(() => {
+      goLives.delete(doc.id);
+      const cur = store.get('shows', doc.id);
+      if (!cur || goLiveOf(cur.data) !== goLiveAt || coreOf(sceneDef(members(cur.data), cur.data.scene)) !== 'auto' || !dueGoLive(cur.data, goLiveAt, now())) return;
+      goLive(doc.id, goLiveAt);
+    }, goLiveAt - now(), () => rearmShow(doc.id)));
+  }
+  const goLiveOf = (d) => (d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined);
+  // Go-live counts while it is less than LIVE_MS ago, and REC doesn't already run for it (from
+  // earlier this night, or started by hand since): REC from last week doesn't.
+  const dueGoLive = (d, at, t) => at !== undefined && at <= t && t - at < LIVE_MS && !isLive(d, at);
+  function goLive(id, at) {
+    const cur = store.get('shows', id);
+    const saved = store.put('shows', id, { ...cur.data, recStartedAt: at });
+    for (const m of members(saved.data)) m.channel.setLocalState('show.recStartedAt', at);
+    log.info('show live at go-live', { show: id, goLiveAt: new Date(at).toISOString() });
   }
   function rearmShow(id) {
     const cur = store.get('shows', id);
@@ -426,18 +504,27 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   }
 
   // At startup: every show's state to its members, standalone scenes back on their overlays, and
-  // the timers armed (a return already due happens now).
+  // the timers armed (a return already due happens now). One show that can't be published never
+  // keeps the platform (or a command line opening the data directory) from starting.
   for (const doc of all()) {
-    publish(doc);
-    arm(doc);
+    try {
+      publish(doc);
+      arm(doc, { catchUp: true });
+    } catch (err) {
+      log.error('a show could not be restored at startup; fix or delete it', { show: doc.id, name: doc.data.name, err: err.message });
+    }
   }
   for (const own of store.list('overlay_scenes', { limit: 1000 })) {
     if (showOf(own.id)) continue;
     const doc = store.get('overlays', own.id);
     const r = doc && overlays.resolve(doc.data.slug);
     if (!r) continue;
-    r.channel.setLocalState('show.scene', own.data.scene);
-    armOverlay(own.id, own.data);
+    try {
+      r.channel.setLocalState('show.scene', own.data.scene);
+      armOverlay(own.id, own.data);
+    } catch (err) {
+      log.error('an overlay\'s scene could not be restored at startup', { overlay: own.id, err: err.message });
+    }
   }
 
   return {
