@@ -64,14 +64,14 @@ export function packTemplate(dir, { manifest = {}, files = {}, remove = [], wrap
 // A running platform on a free port with one overlay (the diagnostic template unless another is
 // named), stopped when the test ends. Test fixture templates are always available; `install`
 // lists .skp packages (packTemplate) to install before the overlay is created.
-export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, template = DIAG, settings = { accent: '#16e0ff' }, install = [] } = {}) {
+export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, template = DIAG, settings = { accent: '#16e0ff' }, install = [], platform: platformOptions = {} } = {}) {
   const root = tempDir(t);
   const config = loadConfig({
     argv: ['--port', '0'],
     env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') },
   });
   const { log, entries } = memoryLogger();
-  const platform = await startPlatform(config, { log, heartbeatMs, templateDirs: [FIXTURE_TEMPLATES] });
+  const platform = await startPlatform(config, { log, heartbeatMs, templateDirs: [FIXTURE_TEMPLATES], ...platformOptions });
   defer(t, () => platform.stop());
   for (const pkg of install) platform.templates.install(pkg, { actor: 'test' });
   const overlay = platform.overlays.create({ slug, template, settings });

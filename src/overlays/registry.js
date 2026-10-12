@@ -64,7 +64,7 @@ export function createOverlays({ store, bus, templates, log }) {
   // bound values the settings could outgrow an envelope (02 §2.9); then they're left out.
   function settingsFor(template, doc, ch) {
     const saved = doc.data.settings || {};
-    const settings = resolveSettings(template.manifest, saved, (key) => ch.visibleState(key));
+    const settings = resolveSettings(template.manifest, saved, (key) => ch.visibleState(key, { real: true }));
     if (jsonBytes(settings) <= RESOLVED_BYTES) return settings;
     log.warn('an overlay\'s settings with their bound state values are too large to send; using them without the bound values', { overlay: doc.id });
     const plain = resolveSettings(template.manifest, saved);

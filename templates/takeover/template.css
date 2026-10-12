@@ -3,8 +3,8 @@
    What changed on the way (docs/PLAN.md "What the port must fix", 05 §5.8):
    - no backdrop-filter (a browser source can't blur the camera; OBS does that with a filter);
    - no mix-blend-mode (over a transparent page it composites to black and eats the camera);
-   - no looping box-shadow or filter animations: glows pulse by opacity;
-   - fewer endless loops per scene, texture loops in steps();
+   - at most two endless loops per scene in idle, each on transform or opacity only (texture
+     loops in steps(); test/takeover.test.js counts them);
    - every asset relative to this file, every word of copy a setting.
 
    The runtime sets html[data-skp-canvas="h"|"v"], html[data-skp-scene], html[data-skp-lite] and
@@ -35,9 +35,7 @@
 
 /* ---------- keyframes ---------- */
 @keyframes livePulse { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }
-@keyframes bloomDrift { 0%, 100% { transform: translate(0, 0) } 50% { transform: translate(90px, 60px) } }
 @keyframes grainShift { 0% { transform: translate(0, 0) } 25% { transform: translate(-3%, 2%) } 50% { transform: translate(2%, -2%) } 75% { transform: translate(-2%, 3%) } 100% { transform: translate(0, 0) } }
-@keyframes chroma { 0%, 100% { text-shadow: -5px 0 var(--cyan), 5px 0 var(--magenta) } 50% { text-shadow: 5px 0 var(--cyan), -5px 0 var(--magenta) } }
 @keyframes logoFlicker { 0%, 93%, 100% { opacity: 1; transform: translateX(0) } 94% { opacity: .7; transform: translateX(-3px) } 96% { opacity: 1; transform: translateX(2px) } 98% { opacity: .85; transform: translateX(0) } }
 @keyframes marquee { 0% { transform: translateX(0) } 100% { transform: translateX(-50%) } }
 @keyframes sweep { 0% { transform: translateY(-140%) } 100% { transform: translateY(1100%) } }
@@ -61,20 +59,24 @@
 .scene--solid { background: var(--bg-deep); }
 .scene--broll { background: transparent; }
 
-/* the operator's clip (media.play) and The Line's clip, under the scene chrome */
-.clip-layer { position: absolute; inset: 0; background: #000; }
+/* the operator's clip (media.play) and The Line's clip, under the scene chrome. Black behind the
+   picture only once there is one (.ready): a clip that can't load leaves the camera showing. */
+.clip-layer { position: absolute; inset: 0; }
 .clip-layer video, .scene .clip video { width: 100%; height: 100%; object-fit: contain; display: block; }
-.scene .clip { position: absolute; inset: 0; z-index: 1; background: #000; }
+.scene .clip { position: absolute; inset: 0; z-index: 1; }
+.clip-layer.ready, .scene .clip.ready { background: #000; }
 
 /* darken the camera so text reads (a fill, never a blur) */
 .darkblur { position: absolute; inset: 0; z-index: 2; background: rgba(4, 4, 7, .93); }
 
-/* ---------- texture: bloom, vignette, scanlines, grain ---------- */
-.blooms { position: absolute; inset: 0; animation: bloomDrift 16s ease-in-out infinite; pointer-events: none; }
+/* ---------- texture: bloom, vignette, scanlines, grain ----------
+   Idle loops (05 §5.8): at most two per scene, transform and opacity only. The grain and a LIVE
+   dot are the usual two; the sweeps pass twice when a scene opens, and the blooms hold still. */
+.blooms { position: absolute; inset: 0; pointer-events: none; }
 .bloom { position: absolute; border-radius: 50%; filter: blur(55px); }
 .vignette { position: absolute; inset: 0; box-shadow: inset 0 0 280px 80px rgba(0, 0, 0, .9); z-index: 10; pointer-events: none; }
 .sweepbar { position: absolute; left: 0; right: 0; top: 0; height: 160px; z-index: 15; pointer-events: none;
-  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, .07), transparent); animation: sweep 4.5s linear infinite; }
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, .07), transparent); animation: sweep 4.5s linear 2 both; }
 /* Scanlines blend normally (no multiply: 05 §5.8); static lines read the same at broadcast size. */
 .scan { position: absolute; inset: 0; z-index: 12; pointer-events: none; opacity: .5;
   background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, .3) 3px, rgba(0, 0, 0, 0) 4px);
@@ -85,7 +87,7 @@
 html[data-scanlines="off"] .scan, html[data-scanlines="off"] .grain, html[data-scanlines="off"] .vk-scan, html[data-scanlines="off"] .vk-sweepline { display: none; }
 /* lite mode (mobile previews, 05 §5.8): no blooms, texture or wall */
 html[data-skp-lite] .blooms, html[data-skp-lite] .scan, html[data-skp-lite] .grain, html[data-skp-lite] .wall,
-html[data-skp-lite] .vk-scan, html[data-skp-lite] .vk-sweepline, html[data-skp-lite] .clip { display: none !important; }
+html[data-skp-lite] .vk-scan, html[data-skp-lite] .vk-sweepline, html[data-skp-lite] .clip, html[data-skp-lite] .clip-layer { display: none !important; }
 
 /* ---------- the D/PRTMNT wordmark plate ---------- */
 .dprtmnt-mark { background: var(--ink); color: #0a0a0a; font-family: var(--font-display); font-weight: 900; letter-spacing: -1.5px; line-height: 1;
@@ -115,7 +117,8 @@ html[data-skp-canvas="v"] .np { left: 56px; right: 56px; bottom: 360px; max-widt
 .np[data-skp-state="enter"] { animation: npIn 1s cubic-bezier(.2, .7, .2, 1) both; }
 .np[data-skp-state="exit"] { animation: npOut .5s ease both; }
 .np .eyebrow { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
-.np .eyebrow .dot { width: 13px; height: 13px; background: var(--red); animation: livePulse 1.1s infinite; }
+/* an action's dots pulse for its window (22 s), not forever: the live scene's loops stay two */
+.np .eyebrow .dot { width: 13px; height: 13px; background: var(--red); animation: livePulse 1.1s 20; }
 .np .eyebrow .label { font-family: var(--font-mono); font-weight: 700; font-size: 23px; letter-spacing: 9px; color: var(--ink); }
 .np .name { font-weight: 900; font-size: 118px; line-height: .84; color: #fff; letter-spacing: -3px; text-transform: uppercase; }
 html[data-skp-canvas="v"] .np .name { font-size: 104px; letter-spacing: -2px; }
@@ -125,7 +128,7 @@ html[data-skp-canvas="v"] .np .name { font-size: 104px; letter-spacing: -2px; }
 .np .next .k { font-family: var(--font-mono); font-weight: 700; font-size: 19px; letter-spacing: 7px; color: #7a7a7a; }
 .np .next .v { font-weight: 800; font-size: 28px; color: var(--ink); letter-spacing: 1px; text-transform: uppercase; }
 .np .closer { margin-top: 28px; display: flex; align-items: center; gap: 14px; border-top: 2px solid var(--cyan); padding-top: 15px; width: fit-content; }
-.np .closer .dot { width: 13px; height: 13px; background: var(--cyan); animation: livePulse 1.1s infinite; }
+.np .closer .dot { width: 13px; height: 13px; background: var(--cyan); animation: livePulse 1.1s 20; }
 .np .closer .label { font-family: var(--font-mono); font-weight: 700; font-size: 21px; letter-spacing: 6px; color: var(--cyan); }
 .b2b-tag { color: var(--cyan); font-family: var(--font-mono); font-weight: 700; font-size: .46em; letter-spacing: 2px; margin: 0 .4em; vertical-align: middle; text-transform: none; }
 
@@ -139,6 +142,7 @@ html[data-skp-canvas="v"] .np .name { font-size: 104px; letter-spacing: -2px; }
 html[data-skp-canvas="v"] .card .logo { width: 920px; max-width: 100%; }
 .card .djlogo { display: block; max-width: 1100px; max-height: 360px; margin: 8px 0 18px; }
 .card .djname { font-weight: 900; font-size: 150px; line-height: .84; color: #fff; letter-spacing: -4px; text-transform: uppercase; animation: logoFlicker 3.2s steps(1) infinite; }
+.card.title .djname { animation-iteration-count: 2; } /* over the live scene: its window, not forever */
 html[data-skp-canvas="v"] .card .djname { font-size: 120px; }
 .card .djb2b { font-weight: 800; font-size: 54px; color: var(--cyan); letter-spacing: 1px; text-transform: uppercase; margin-top: 18px; }
 html[data-skp-canvas="v"] .card .djb2b { font-size: 44px; }
@@ -158,7 +162,7 @@ html[data-skp-canvas="v"] .card .djb2b { font-size: 44px; }
 .starting .tag, .brb .tag, .outro .tag { font-family: var(--font-mono); font-weight: 700; font-size: 22px; letter-spacing: 10px; color: var(--ink); margin-top: 18px; padding-left: 10px; }
 html[data-skp-canvas="v"] .starting .h1 { font-size: 120px; }
 html[data-skp-canvas="v"] .starting .count { font-size: 150px; letter-spacing: 2px; }
-.brb .big { font-weight: 900; font-size: 150px; line-height: .82; color: #fff; letter-spacing: -4px; text-transform: uppercase; text-align: center; animation: chroma 2.4s steps(2) infinite; }
+.brb .big { font-weight: 900; font-size: 150px; line-height: .82; color: #fff; letter-spacing: -4px; text-transform: uppercase; text-align: center; text-shadow: -5px 0 var(--cyan), 5px 0 var(--magenta); }
 .brb .tag { margin-top: 30px; letter-spacing: 9px; font-size: 23px; }
 html[data-skp-canvas="v"] .brb .big { font-size: 180px; }
 .outro .pre { font-family: var(--font-mono); font-weight: 700; font-size: 24px; letter-spacing: 13px; color: var(--cyan); margin-bottom: 22px; padding-left: 13px; }
@@ -192,7 +196,7 @@ html[data-skp-canvas="v"] .lineup .row .who .b2b-grp { display: block; margin-to
 .line .botscrim { position: absolute; left: 0; right: 0; bottom: 0; height: 760px; z-index: 11; pointer-events: none; background: linear-gradient(to top, rgba(0, 0, 0, .82), transparent); }
 .line .ll { position: absolute; left: 56px; bottom: 72px; z-index: 20; max-width: 600px; }
 .line .ll .eyebrow { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
-.line .ll .eyebrow .dot { width: 13px; height: 13px; background: var(--cyan); animation: livePulse 1.1s infinite; }
+.line .ll .eyebrow .dot { width: 13px; height: 13px; background: var(--cyan); }
 .line .ll .eyebrow .label { font-family: var(--font-mono); font-weight: 700; font-size: 21px; letter-spacing: 6px; color: var(--cyan); }
 .line .ll .scene-label { font-weight: 900; font-size: 112px; line-height: .82; color: #fff; letter-spacing: -3px; text-transform: uppercase; }
 .line .ll .sub { margin-top: 18px; font-family: var(--font-mono); font-weight: 700; font-size: 21px; letter-spacing: 5px; color: var(--ink); }
@@ -232,13 +236,13 @@ html[data-skp-canvas="v"] .pov .bug, html[data-skp-canvas="v"] .pov .status { to
 .pov .povtag { position: absolute; left: 62px; top: 196px; z-index: 20; display: flex; align-items: center; gap: 12px;
   background: rgba(8, 8, 10, .55); border: 1px solid rgba(22, 224, 255, .45); padding: 9px 16px; }
 html[data-skp-canvas="v"] .pov .povtag { top: 214px; }
-.pov .povtag .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--red); animation: livePulse 1.1s infinite; }
+.pov .povtag .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--red); }
 .pov .povtag .label { font-weight: 900; font-size: 25px; letter-spacing: 4px; color: #fff; }
 .pov .povtag .sub { font-family: var(--font-mono); font-weight: 700; font-size: 17px; letter-spacing: 4px; color: var(--cyan); border-left: 1px solid rgba(255, 255, 255, .22); padding-left: 12px; }
 .pov .whobar { position: absolute; left: 62px; right: 62px; bottom: 78px; z-index: 22; }
 html[data-skp-canvas="v"] .pov .whobar { bottom: 350px; }
 .pov .whobar .eyebrow { display: flex; align-items: center; gap: 12px; margin-bottom: 13px; }
-.pov .whobar .eyebrow .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--cyan); animation: livePulse 1.1s infinite; }
+.pov .whobar .eyebrow .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--cyan); }
 .pov .whobar .eyebrow .label { font-family: var(--font-mono); font-weight: 700; font-size: 20px; letter-spacing: 8px; color: var(--ink); text-shadow: 0 3px 14px rgba(0, 0, 0, .95); }
 .pov .rec { text-shadow: 0 3px 14px rgba(0, 0, 0, .95); }
 .pov .whobar .name { font-weight: 900; font-size: 84px; line-height: .86; color: #fff; letter-spacing: -2px; text-transform: uppercase; text-shadow: 0 8px 30px rgba(0, 0, 0, .75); }
@@ -256,18 +260,14 @@ html[data-skp-canvas="v"] .ticker { bottom: 300px; }
 /* ====================================================================================
    THE HEADLINER EVENT LOOK (html[data-look="event"]): gold, poster-led
    ==================================================================================== */
-@keyframes vkRake { 0% { background-position: -160% 0 } 100% { background-position: 260% 0 } }
-@keyframes vkGlow { 0%, 100% { opacity: .25 } 50% { opacity: .75 } }
-@keyframes vkNeon { 0%, 8%, 11%, 42%, 44%, 78%, 100% { opacity: 1 } 9% { opacity: .5 } 43% { opacity: .7 } 79% { opacity: .55 } 80% { opacity: 1 } }
-@keyframes vkVu { 0%, 100% { transform: scaleY(.2) } 20% { transform: scaleY(1) } 40% { transform: scaleY(.42) } 60% { transform: scaleY(.85) } 80% { transform: scaleY(.3) } }
+@keyframes vkShine { from { transform: translateX(0) } to { transform: translateX(270%) } }
+@keyframes vkVu { from { transform: translateY(0) } to { transform: translateY(-372px) } }
 @keyframes vkScan { 0% { transform: translateY(-6%) } 100% { transform: translateY(1600%) } }
 @keyframes vkNameWipe { 0% { opacity: 0; transform: translateX(-40px); clip-path: inset(0 100% 0 0) } 10% { opacity: 1; transform: translateX(0); clip-path: inset(0 0 0 0) } 100% { opacity: 1; clip-path: inset(0 0 0 0) } }
 @keyframes vkRise { 0%, 10% { clip-path: inset(100% 0 0 0) } 45%, 100% { clip-path: inset(0 0 0 0) } }
 @keyframes vkSlowSpin { 0% { transform: rotate(-7deg) } 50% { transform: rotate(7deg) } 100% { transform: rotate(-7deg) } }
-@keyframes vkTrailSpin { 0% { transform: rotate(-7deg) translate(6px, 4px) } 50% { transform: rotate(7deg) translate(-6px, -4px) } 100% { transform: rotate(-7deg) translate(6px, 4px) } }
 @keyframes vkStamp { 0% { transform: scale(2.2); opacity: 0 } 12% { transform: scale(.94); opacity: 1 } 18% { transform: scale(1.04) } 24%, 100% { transform: scale(1); opacity: 1 } }
 @keyframes vkRing { 0%, 10% { transform: scale(.3); opacity: 0 } 14% { opacity: .9 } 52%, 100% { transform: scale(2.1); opacity: 0 } }
-@keyframes vkBrbGlitch { 0%, 52% { text-shadow: none; transform: translateX(0) } 54% { text-shadow: -9px 0 #ff0078, 9px 0 #00c8ff; transform: translateX(-4px) } 56% { text-shadow: 6px 0 #ff0078, -6px 0 #00c8ff; transform: translateX(3px) } 58%, 100% { text-shadow: none; transform: translateX(0) } }
 @keyframes vkStinger { 0%, 4% { background: #fff } 6%, 100% { background: transparent } }
 @keyframes vkIFlash { 0% { opacity: 0 } 1% { opacity: 1 } 5% { opacity: .15 } 7% { opacity: .9 } 10% { opacity: 0 } 88% { opacity: 0 } 90% { opacity: .85 } 94%, 100% { opacity: 0 } }
 @keyframes vkIStar { 0%, 2% { opacity: 0; transform: scale(2.6) rotate(-14deg) } 9% { opacity: 1; transform: scale(.92) rotate(3deg) } 13% { transform: scale(1.05) rotate(-1deg) } 18%, 84% { transform: scale(1) rotate(0deg); opacity: 1 } 92%, 100% { opacity: 0; transform: scale(.8) rotate(0deg) } }
@@ -284,7 +284,7 @@ html[data-skp-canvas="v"] .ticker { bottom: 300px; }
 @keyframes vkSchedHide { from { opacity: 1; transform: translateX(0) } to { opacity: 0; transform: translateX(40px) } }
 
 .vk-scan { position: absolute; inset: 0; z-index: 28; pointer-events: none; opacity: .5; background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, .30) 0 1px, transparent 1px 7px); }
-.vk-sweepline { position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 29; pointer-events: none; background: linear-gradient(to right, transparent, var(--gold), transparent); opacity: .55; animation: vkScan 9s linear infinite; }
+.vk-sweepline { position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 29; pointer-events: none; background: linear-gradient(to right, transparent, var(--gold), transparent); opacity: .55; animation: vkScan 9s linear 2 both; }
 
 .vk-tl { position: absolute; top: 84px; left: 84px; z-index: 32; }
 .vk-wordmark { display: inline-block; background: var(--ink); color: var(--vk-ink); font-weight: 900; font-size: 42px; letter-spacing: -1px; line-height: 1; padding: 9px 18px; text-transform: uppercase; }
@@ -297,22 +297,25 @@ html[data-skp-canvas="v"] .ticker { bottom: 300px; }
 .vk-chip .lbl { font-weight: 900; font-size: 26px; letter-spacing: 2px; color: var(--ink); }
 .vk-chip .viewers { font-family: var(--font-mono); font-weight: 700; font-size: 22px; color: var(--gold); border-left: 1px solid rgba(239, 195, 63, .45); padding-left: 13px; }
 .vk-date { position: relative; display: flex; align-items: center; background: var(--gold); color: var(--vk-ink); font-weight: 900; font-size: 26px; letter-spacing: 1px; padding: 0 18px; }
-/* the glow pulses by opacity on a pseudo-element: no animated box-shadow (05 §5.8) */
-.vk-date::after { content: ''; position: absolute; inset: -6px; box-shadow: 0 0 22px var(--gold); animation: vkGlow 2s ease-in-out infinite; pointer-events: none; }
+/* a still glow (no animated box-shadow, and no third loop on the live scene: 05 §5.8) */
+.vk-date::after { content: ''; position: absolute; inset: -6px; box-shadow: 0 0 22px var(--gold); opacity: .5; pointer-events: none; }
 
-.vk-star { position: relative; display: block; flex: none; width: 96px; height: 86px;
+/* The star (or the headliner's mark): gold, with a light raking across it. The rake is a
+   gradient band moved by transform inside the mask, the one loop the star adds (05 §5.8). */
+.vk-star { position: relative; display: block; flex: none; width: 96px; height: 86px; overflow: hidden;
   -webkit-mask: var(--vk-mark) center/contain no-repeat; mask: var(--vk-mark) center/contain no-repeat;
-  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 42%, var(--gold-hi) 50%, var(--gold) 58%, var(--gold-dim) 100%);
-  background-size: 300% 100%; animation: vkRake 3.6s linear infinite; }
-html[data-star="rise"] .vk-star { animation: vkRake 3.6s linear infinite, vkRise 1.4s cubic-bezier(.2, .7, .2, 1) both; background: linear-gradient(to top, var(--gold) 0%, var(--gold-hi) 90%); background-size: 100% 100%; }
-html[data-star="ghost"] .vk-star { background: var(--ink); animation: vkSlowSpin 9s ease-in-out infinite; }
-html[data-star="ghost"] .vk-star::after { content: ''; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 45%, var(--gold) 55%, var(--gold-dim) 100%); }
+.vk-star::after, .vk-istar::after { content: ''; position: absolute; top: 0; bottom: 0; left: -60%; width: 60%;
+  background: linear-gradient(105deg, transparent 0%, var(--gold-hi) 50%, transparent 100%); animation: vkShine 3.6s linear infinite; }
+html[data-star="rise"] .vk-star { animation: vkRise 1.4s cubic-bezier(.2, .7, .2, 1) both; background: linear-gradient(to top, var(--gold) 0%, var(--gold-hi) 90%); }
+/* ghost: a slow sway with a still gold trail behind it, instead of the rake */
+html[data-star="ghost"] .vk-star { background: var(--ink); overflow: visible; animation: vkSlowSpin 9s ease-in-out infinite; }
+html[data-star="ghost"] .vk-star::after { left: 0; top: 0; width: 100%; height: 100%; z-index: -1;
   -webkit-mask: var(--vk-mark) center/contain no-repeat; mask: var(--vk-mark) center/contain no-repeat;
-  background: var(--gold); opacity: .55; animation: vkTrailSpin 9s ease-in-out infinite; }
-html[data-star="stamp"] .vk-star { animation: vkRake 3.6s linear infinite, vkStamp 1.2s cubic-bezier(.2, .8, .2, 1) both; }
+  background: var(--gold); opacity: .55; transform: rotate(-7deg) translate(6px, 4px); animation: none; }
+html[data-star="stamp"] .vk-star { animation: vkStamp 1.2s cubic-bezier(.2, .8, .2, 1) both; }
 html[data-star="stamp"] .vk-star::before { content: ''; position: absolute; left: 50%; top: 50%; width: 150%; height: 150%;
   transform: translate(-50%, -50%); border: 4px solid var(--gold); border-radius: 50%; animation: vkRing 1.6s ease-out both; }
-.vk-lockup .vk-star { animation: vkRake 3.6s linear infinite, vkNeon 7s steps(1) infinite; }
 
 .vk-bl { position: absolute; left: 84px; bottom: 84px; z-index: 32; transition: opacity .4s ease, transform .4s ease; }
 .vk-bl.dim { opacity: 0; transform: translateY(14px); }
@@ -335,7 +338,7 @@ html[data-star="stamp"] .vk-star::before { content: ''; position: absolute; left
 .vk-np[data-skp-state="enter"] { animation: vkInUp .55s cubic-bezier(.2, .7, .2, 1) both; }
 .vk-np[data-skp-state="exit"] { animation: vkOutUp .5s ease both; }
 .vk-np .eyebrow { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-weight: 800; font-size: 19px; letter-spacing: 8px; color: var(--gold); text-transform: uppercase; }
-.vk-np .eyebrow::before { content: ''; width: 12px; height: 12px; border-radius: 50%; background: var(--vk-red); animation: livePulse 1.15s ease-in-out infinite; }
+.vk-np .eyebrow::before { content: ''; width: 12px; height: 12px; border-radius: 50%; background: var(--vk-red); animation: livePulse 1.15s ease-in-out 20; }
 .vk-np .who { font-weight: 900; font-size: 82px; line-height: .88; letter-spacing: -2px; color: var(--ink); text-transform: uppercase; text-shadow: 0 6px 26px rgba(0, 0, 0, .9); }
 .vk-np .logo { display: block; max-height: 130px; max-width: 800px; margin-bottom: 12px; }
 .vk-np .sub { margin-top: 10px; font-weight: 800; font-size: 26px; letter-spacing: 3px; color: var(--gold); text-transform: uppercase; }
@@ -374,11 +377,10 @@ html[data-star="stamp"] .vk-star::before { content: ''; position: absolute; left
 .vk-count { font-weight: 900; font-size: 172px; line-height: 1; letter-spacing: 2px; color: var(--ink); text-shadow: 0 10px 44px rgba(0, 0, 0, .9); font-variant-numeric: tabular-nums; }
 .vk-bar { margin-top: 30px; background: var(--gold); color: var(--vk-ink); padding: 13px 26px; font-weight: 900; font-size: 25px; letter-spacing: 4px; text-transform: uppercase; }
 .vk-sub { margin-top: 18px; font-weight: 800; font-size: 25px; letter-spacing: 7px; color: rgba(242, 240, 234, .68); text-transform: uppercase; }
-.vk-brb .vk-big { animation: vkBrbGlitch 6s steps(1) infinite; }
-.vk-vu { display: flex; align-items: flex-end; gap: 9px; height: 62px; margin-top: 30px; }
-.vk-vu i { display: block; width: 13px; height: 100%; background: var(--gold); transform-origin: bottom center; animation: vkVu .82s ease-in-out infinite; }
-.vk-vu i:nth-child(2) { animation-delay: .12s } .vk-vu i:nth-child(3) { animation-delay: .24s } .vk-vu i:nth-child(4) { animation-delay: .36s }
-.vk-vu i:nth-child(5) { animation-delay: .48s } .vk-vu i:nth-child(6) { animation-delay: .60s } .vk-vu i:nth-child(7) { animation-delay: .72s }
+/* VU bars: six frames of seven bars in one mask, stepped through by transform (one loop, not seven) */
+.vk-vu { width: 145px; height: 62px; margin-top: 30px; overflow: hidden; }
+.vk-vu-strip { width: 145px; height: 372px; background: var(--gold); animation: vkVu 1.2s steps(6) infinite;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='145' height='372'%3E%3Crect x='0' y='50' width='13' height='12'/%3E%3Crect x='22' y='22' width='13' height='40'/%3E%3Crect x='44' y='36' width='13' height='26'/%3E%3Crect x='66' y='7' width='13' height='55'/%3E%3Crect x='88' y='44' width='13' height='18'/%3E%3Crect x='110' y='28' width='13' height='34'/%3E%3Crect x='132' y='14' width='13' height='48'/%3E%3Crect x='0' y='94' width='13' height='30'/%3E%3Crect x='22' y='66' width='13' height='58'/%3E%3Crect x='44' y='110' width='13' height='14'/%3E%3Crect x='66' y='86' width='13' height='38'/%3E%3Crect x='88' y='74' width='13' height='50'/%3E%3Crect x='110' y='102' width='13' height='22'/%3E%3Crect x='132' y='96' width='13' height='28'/%3E%3Crect x='0' y='136' width='13' height='50'/%3E%3Crect x='22' y='162' width='13' height='24'/%3E%3Crect x='44' y='142' width='13' height='44'/%3E%3Crect x='66' y='166' width='13' height='20'/%3E%3Crect x='88' y='126' width='13' height='60'/%3E%3Crect x='110' y='146' width='13' height='40'/%3E%3Crect x='132' y='170' width='13' height='16'/%3E%3Crect x='0' y='228' width='13' height='20'/%3E%3Crect x='22' y='202' width='13' height='46'/%3E%3Crect x='44' y='188' width='13' height='60'/%3E%3Crect x='66' y='218' width='13' height='30'/%3E%3Crect x='88' y='222' width='13' height='26'/%3E%3Crect x='110' y='192' width='13' height='56'/%3E%3Crect x='132' y='212' width='13' height='36'/%3E%3Crect x='0' y='268' width='13' height='42'/%3E%3Crect x='22' y='294' width='13' height='16'/%3E%3Crect x='44' y='276' width='13' height='34'/%3E%3Crect x='66' y='252' width='13' height='58'/%3E%3Crect x='88' y='270' width='13' height='40'/%3E%3Crect x='110' y='296' width='13' height='14'/%3E%3Crect x='132' y='256' width='13' height='54'/%3E%3Crect x='0' y='346' width='13' height='26'/%3E%3Crect x='22' y='320' width='13' height='52'/%3E%3Crect x='44' y='350' width='13' height='22'/%3E%3Crect x='66' y='328' width='13' height='44'/%3E%3Crect x='88' y='340' width='13' height='32'/%3E%3Crect x='110' y='324' width='13' height='48'/%3E%3Crect x='132' y='352' width='13' height='20'/%3E%3C/svg%3E") 0 0 / 145px 372px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='145' height='372'%3E%3Crect x='0' y='50' width='13' height='12'/%3E%3Crect x='22' y='22' width='13' height='40'/%3E%3Crect x='44' y='36' width='13' height='26'/%3E%3Crect x='66' y='7' width='13' height='55'/%3E%3Crect x='88' y='44' width='13' height='18'/%3E%3Crect x='110' y='28' width='13' height='34'/%3E%3Crect x='132' y='14' width='13' height='48'/%3E%3Crect x='0' y='94' width='13' height='30'/%3E%3Crect x='22' y='66' width='13' height='58'/%3E%3Crect x='44' y='110' width='13' height='14'/%3E%3Crect x='66' y='86' width='13' height='38'/%3E%3Crect x='88' y='74' width='13' height='50'/%3E%3Crect x='110' y='102' width='13' height='22'/%3E%3Crect x='132' y='96' width='13' height='28'/%3E%3Crect x='0' y='136' width='13' height='50'/%3E%3Crect x='22' y='162' width='13' height='24'/%3E%3Crect x='44' y='142' width='13' height='44'/%3E%3Crect x='66' y='166' width='13' height='20'/%3E%3Crect x='88' y='126' width='13' height='60'/%3E%3Crect x='110' y='146' width='13' height='40'/%3E%3Crect x='132' y='170' width='13' height='16'/%3E%3Crect x='0' y='228' width='13' height='20'/%3E%3Crect x='22' y='202' width='13' height='46'/%3E%3Crect x='44' y='188' width='13' height='60'/%3E%3Crect x='66' y='218' width='13' height='30'/%3E%3Crect x='88' y='222' width='13' height='26'/%3E%3Crect x='110' y='192' width='13' height='56'/%3E%3Crect x='132' y='212' width='13' height='36'/%3E%3Crect x='0' y='268' width='13' height='42'/%3E%3Crect x='22' y='294' width='13' height='16'/%3E%3Crect x='44' y='276' width='13' height='34'/%3E%3Crect x='66' y='252' width='13' height='58'/%3E%3Crect x='88' y='270' width='13' height='40'/%3E%3Crect x='110' y='296' width='13' height='14'/%3E%3Crect x='132' y='256' width='13' height='54'/%3E%3Crect x='0' y='346' width='13' height='26'/%3E%3Crect x='22' y='320' width='13' height='52'/%3E%3Crect x='44' y='350' width='13' height='22'/%3E%3Crect x='66' y='328' width='13' height='44'/%3E%3Crect x='88' y='340' width='13' height='32'/%3E%3Crect x='110' y='324' width='13' height='48'/%3E%3Crect x='132' y='352' width='13' height='20'/%3E%3C/svg%3E") 0 0 / 145px 372px no-repeat; }
 
 /* the 8 s title sequence (Event Intro, Headliner Intro): ends transparent on the room */
 .vk-intro { position: absolute; inset: 0; overflow: hidden; }
@@ -386,10 +388,10 @@ html[data-star="stamp"] .vk-star::before { content: ''; position: absolute; left
 .vk-flash { position: absolute; inset: 0; z-index: 20; background: #fff; animation: vkIFlash 8s steps(1) both; }
 .vk-istack { position: absolute; inset: 0; z-index: 14; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding-top: 40px; }
 .vk-istarwrap { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 38px; }
-.vk-istar { position: relative; width: 250px; height: 224px;
+.vk-istar { position: relative; width: 250px; height: 224px; overflow: hidden;
   -webkit-mask: var(--vk-mark) center/contain no-repeat; mask: var(--vk-mark) center/contain no-repeat;
-  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 42%, var(--gold-hi) 50%, var(--gold) 58%, var(--gold-dim) 100%);
-  background-size: 300% 100%; animation: vkRake 3.6s linear infinite, vkIStar 8s cubic-bezier(.2, .8, .2, 1) both; }
+  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 45%, var(--gold) 55%, var(--gold-dim) 100%);
+  animation: vkIStar 8s cubic-bezier(.2, .8, .2, 1) both; }
 .vk-iring { position: absolute; left: 50%; top: 50%; width: 430px; height: 430px; margin: -215px 0 0 -215px; border: 5px solid var(--gold); border-radius: 50%; z-index: 13; animation: vkIRing 8s ease-out both; pointer-events: none; }
 .vk-ikick { font-weight: 800; font-size: 26px; letter-spacing: 14px; color: var(--gold); text-transform: uppercase; margin-bottom: 22px; animation: vkIMeta 8s ease-out both; }
 .vk-iname { font-weight: 900; font-size: 190px; line-height: .92; letter-spacing: -6px; color: var(--ink); text-transform: uppercase; text-shadow: 0 12px 48px rgba(0, 0, 0, .9); animation: vkIName 8s cubic-bezier(.2, .7, .2, 1) both; }
@@ -418,8 +420,7 @@ html[data-star="stamp"] .vk-star::before { content: ''; position: absolute; left
 .vk-bgscene .row.alt { color: rgba(242, 240, 234, .06); }
 .vk-bgstar { position: absolute; left: 50%; top: 50%; width: 620px; height: 554px; margin: -277px 0 0 -310px; z-index: 7;
   -webkit-mask: var(--vk-mark) center/contain no-repeat; mask: var(--vk-mark) center/contain no-repeat;
-  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 42%, var(--gold-hi) 50%, var(--gold) 58%, var(--gold-dim) 100%);
-  background-size: 300% 100%; animation: vkRake 3.6s linear infinite; opacity: .13; }
+  background: linear-gradient(105deg, var(--gold-dim) 0%, var(--gold) 42%, var(--gold-hi) 50%, var(--gold) 58%, var(--gold-dim) 100%); opacity: .13; }
 
 /* vertical (1080x1920), event look: the middle stays clear for the subject */
 html[data-skp-canvas="v"] .vk-tl { top: 96px; left: 62px; }

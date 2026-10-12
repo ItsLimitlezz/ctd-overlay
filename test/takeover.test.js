@@ -61,11 +61,12 @@ const opts = { skip: browserSkip };
 // these tests point at, which are not real files.
 const problems = (page) => page.problems.filter((p) => !/fonts\.(googleapis|gstatic)\.com|\/media\/[0-9a-f]{32}\//.test(p));
 
-async function open(t, { template = TAKEOVER, settings = {}, canvas, state = {} } = {}) {
+async function open(t, { template = TAKEOVER, settings = {}, canvas, state = {}, query = {} } = {}) {
   const ctx = await startWithOverlay(t, { slug: 'tk', template, settings });
   for (const [key, value] of Object.entries(state)) ctx.platform.bus.setState(key, value);
   const vertical = canvas === 'v';
-  const page = await browser.open(`${ctx.base}${vertical ? '?canvas=v' : ''}`, vertical ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 });
+  const params = new URLSearchParams({ ...(vertical ? { canvas: 'v' } : {}), ...query }).toString();
+  const page = await browser.open(`${ctx.base}${params ? `?${params}` : ''}`, vertical ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 });
   defer(t, () => page.close().catch(() => {}));
   await page.waitFor('window.SK && SK.scene && document.querySelector("[data-skp-scene-root] > *")', 10000);
   const channel = ctx.platform.overlays.resolve('tk').channel;
@@ -123,21 +124,42 @@ describe('TAKEOVER in a browser', () => {
     }
   }
 
-  test('with no show data nothing is a placeholder: absent values are hidden (H6)', opts, async (t) => {
-    const { page, take, text } = await open(t);
-    await take('program');
-    assert.deepEqual(await text('[data-vw]'), [], 'no viewer count');
-    assert.deepEqual(await text('[data-rec]'), [], 'no REC timecode');
-    await take('starting');
-    assert.deepEqual(await text('[data-count]'), [], 'no countdown');
-    await take('lineup');
-    assert.deepEqual(await text('.lineup .empty'), ['LINEUP TBA']);
-    await take('pov');
-    assert.deepEqual(await text('[data-who]'), []);
-    for (const scene of SCENES) {
+  for (const look of ['takeover', 'event']) {
+    test(`with no show data nothing is a placeholder in the ${look} look: absent values are hidden (H6)`, opts, async (t) => {
+      const { page, take, text } = await open(t, { settings: { look } });
+      await take('program');
+      assert.deepEqual(await text('[data-vw]'), [], 'no viewer count');
+      assert.deepEqual(await text('[data-rec]'), [], 'no REC timecode');
+      assert.deepEqual(await text('.vk-date, [data-lockup]'), [], 'no date, no TONIGHT lockup');
+      await take('starting');
+      assert.deepEqual(await text('[data-count]'), [], 'no countdown');
+      await take('lineup');
+      assert.deepEqual(await text('.lineup .empty, .vk-tt .row .n'), ['LINEUP TBA']);
+      await take('pov');
+      assert.deepEqual(await text('[data-who]'), []);
+      for (const scene of SCENES) {
+        await take(scene);
+        assert.doesNotMatch(await page.eval('document.querySelector("[data-skp-stage]").innerText'), NOTHING, scene);
+        assert.deepEqual(await text('.vk-date, .vk-wm-date'), [], `${scene}: no date`);
+      }
+      assert.deepEqual(problems(page), []);
+    });
+  }
+
+  test('REC counts only from show.recStartedAt, and the REC and viewer toggles hide them', opts, async (t) => {
+    // No anchor, and an act that started 90 minutes ago: v0 would have counted REC from it.
+    const state = night();
+    delete state['show.recStartedAt'];
+    state['show.lineup'] = state['show.lineup'].map((s, i) => (i === 1 ? { ...s, startAt: Date.now() - 90 * MIN } : s));
+    const { page, take, text, platform } = await open(t, { state });
+    for (const scene of ['program', 'line', 'pov']) {
       await take(scene);
-      assert.doesNotMatch(await page.eval('document.querySelector("[data-skp-stage]").innerText'), NOTHING, scene);
+      assert.deepEqual(await text('[data-rec]'), [], `${scene}: no recording anchor, no REC (not one made up from the lineup)`);
     }
+    platform.bus.setState('show.recStartedAt', Date.now() - 5 * MIN);
+    await page.waitFor('/^REC 0[45]:\\d\\d$/.test((document.querySelector("[data-rec]") || {}).textContent || "")');
+    platform.overlays.updateSettings('tk', { rec: false, viewers: false });
+    await page.waitFor('document.querySelector("[data-rec]").classList.contains("hide") && document.querySelector("[data-vw]").classList.contains("hide")');
     assert.deepEqual(problems(page), []);
   });
 
@@ -185,8 +207,9 @@ describe('TAKEOVER in a browser', () => {
   });
 
   test('"auto" counts down to go-live, then goes live by itself, and follows go-live when it moves', opts, async (t) => {
-    const state = { ...night(), 'show.goLiveAt': Date.now() + 2500 };
-    const { page, take, platform } = await open(t, { state });
+    const { page, take, platform } = await open(t, { state: { ...night(), 'show.goLiveAt': Date.now() + 10 * MIN } });
+    // Go-live set once the page is open, so a slow start can't use up the countdown.
+    platform.bus.setState('show.goLiveAt', Date.now() + 2500);
     await take('auto');
     assert.equal(await page.eval('!!document.querySelector("[data-skp-scene-root=auto] .starting")'), true);
     await page.waitFor('!!document.querySelector("[data-skp-scene-root=auto] .program")', 6000);
@@ -243,11 +266,15 @@ describe('TAKEOVER in a browser', () => {
     const send = (type, data) => platform.bus.publish(type, data, { target: overlay.id });
     send('media.play', { mediaId: 'med_x', url: 'javascript:alert(1)' });
     send('media.play', { mediaId: 'med_x', url: 'http://example.com/x.webm' });
+    send('media.play', { mediaId: 'med_x', url: 'https://example.com/x.webm' }); // the CSP would refuse it
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(await page.eval('document.querySelector("[data-clip]").classList.contains("hide") && !document.querySelector("[data-clip] video")'), true);
     send('media.play', { mediaId: 'med_x', url: `/media/${FILE_ID}/stinger.webm` });
     await page.waitFor('!document.querySelector("[data-clip]").classList.contains("hide")');
     assert.equal(await page.eval('document.querySelector("[data-clip] video").getAttribute("src")'), `/media/${FILE_ID}/stinger.webm`);
+    // That file doesn't exist: no picture, so no black plate over the camera.
+    await page.waitFor('document.querySelector("[data-clip] video").error !== null', 3000);
+    assert.equal(await page.eval('getComputedStyle(document.querySelector("[data-clip]")).backgroundColor'), 'rgba(0, 0, 0, 0)');
     send('media.stop', {});
     await page.waitFor('document.querySelector("[data-clip]").classList.contains("hide")');
     assert.deepEqual(problems(page), []);
@@ -283,6 +310,172 @@ describe('TAKEOVER in a browser', () => {
   });
 });
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+describe('TAKEOVER on air', () => {
+  for (const look of ['takeover', 'event']) {
+    test(`actions show on "auto" once it is live (${look} look), never over its countdown`, opts, async (t) => {
+      const { page, take, trigger, platform } = await open(t, { settings: { look }, state: { ...night(), 'show.goLiveAt': Date.now() - MIN } });
+      await take('auto');
+      await page.waitFor('!!document.querySelector("[data-skp-scene-root=auto] .program, [data-skp-scene-root=auto] .vk-program")');
+      trigger('titleCard', { durationMs: 1500 });
+      await page.waitFor('!!document.querySelector("[data-skp-scene-root=auto] [data-kind=title]")', 3000);
+      if (look === 'event') {
+        trigger('chipOpening', { durationMs: 1500 });
+        await page.waitFor('!!document.querySelector("[data-skp-scene-root=auto] [data-kind=chip]")', 3000);
+      }
+      await page.waitFor('!document.querySelector("[data-kind]")', 4000);
+      platform.bus.setState('show.goLiveAt', Date.now() + 10 * MIN);
+      await page.waitFor('!!document.querySelector("[data-skp-scene-root=auto] .starting, [data-skp-scene-root=auto] .vk-starting")');
+      trigger('nowPlaying', { durationMs: 1500 });
+      await sleep(700);
+      assert.equal(await page.eval('!!document.querySelector("[data-kind]")'), false, 'not over the countdown');
+      assert.deepEqual(problems(page), []);
+    });
+  }
+
+  test('an action on air stays for its whole window: through new data, a settings edit and a scene round-trip', opts, async (t) => {
+    const state = night();
+    const { page, take, trigger, platform } = await open(t, { state });
+    await take('program');
+    const t0 = Date.now();
+    trigger('nowPlaying', { durationMs: 7000 });
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 3000);
+    await page.eval('document.querySelector("[data-kind=np]").dataset.mark = "1"');
+    // Marking the next act current doesn't touch the live scene at all.
+    platform.bus.setState('show.currentSlot', 3);
+    await sleep(400);
+    assert.equal(await page.eval('document.querySelector("[data-kind=np]") && document.querySelector("[data-kind=np]").dataset.mark'), '1', 'the same card, not rebuilt');
+    // A lineup edit and a settings edit rebuild the scene; the card comes back where it was.
+    platform.bus.setState('show.lineup', [...state['show.lineup'], { time: '05:00', startAt: Date.now() + 300 * MIN, name: 'LATE ADD' }]);
+    await sleep(300);
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 1000);
+    platform.overlays.updateSettings('tk', { tagline: 'NEW TAGLINE' });
+    await sleep(300);
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 1000);
+    await take('lineup');
+    await take('program');
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 1000);
+    // And it still ends with its window.
+    await page.waitFor('!document.querySelector("[data-kind=np]")', 8000);
+    assert.ok(Date.now() - t0 > 5000, `gone after ${Date.now() - t0} ms of a 7 s window`);
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('who\'s on follows the clock when nobody picked; a lineup edit shows at once; the timed intro is never rebuilt', opts, async (t) => {
+    const state = night();
+    delete state['show.currentSlot'];
+    const { page, take, text, platform } = await open(t, { state });
+    const lineup = state['show.lineup'].map((s) => (s.name === 'BIA' ? { ...s, startAt: Date.now() + 1500 } : s));
+    platform.bus.setState('show.lineup', lineup);
+    await take('lineup');
+    const live = 'document.querySelector(".lineup .row.live .who > span") && document.querySelector(".lineup .row.live .who > span").textContent';
+    await page.waitFor(`${live} === "Trapment"`);
+    await page.waitFor(`${live} === "BIA"`, 4000);
+    await take('pov');
+    assert.deepEqual(await text('[data-who] .name'), ['BIA']);
+    await take('lineup');
+    platform.bus.setState('show.lineup', [...lineup, { time: '04:00', startAt: Date.now() + 200 * MIN, name: 'NEW ACT' }]);
+    await page.waitFor('[...document.querySelectorAll(".lineup .who > span:first-child")].some((e) => e.textContent === "NEW ACT")');
+    await take('intro');
+    await page.eval('document.querySelector("[data-skp-scene-root=intro] .scene").dataset.mark = "1"');
+    platform.overlays.updateSettings('tk', { tagline: 'CHANGED' });
+    platform.bus.setState('show.headliner', 'BIA');
+    await sleep(400);
+    assert.equal(await page.eval('document.querySelector("[data-skp-scene-root=intro] .scene").dataset.mark'), '1', 'the intro runs on');
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('The Line\'s clip plays on through data and settings changes; one from another site is refused', opts, async (t) => {
+    const clip = `/media/${FILE_ID}/line.mp4`;
+    const { page, take, platform } = await open(t, { settings: { lineClip: clip }, state: night() });
+    assert.throws(() => platform.overlays.updateSettings('tk', { lineClip: 'https://example.com/line.mp4' }), 'the overlay CSP could never play it');
+    await take('line');
+    await page.waitFor('!!document.querySelector(".line .clip video")');
+    await page.eval('window.__clip = document.querySelector(".line .clip video"); document.querySelector(".line").dataset.mark = "1"; true');
+    platform.bus.setState('show.currentSlot', 3);
+    platform.bus.setState('show.headliner', 'UNDERCOVER');
+    platform.bus.setState('show.lineup', [...night()['show.lineup'], { time: '06:00', startAt: Date.now() + 400 * MIN, name: 'X' }]);
+    await sleep(400);
+    assert.equal(await page.eval('document.querySelector(".line").dataset.mark'), '1', 'not rebuilt for data it doesn\'t show');
+    assert.equal(await page.eval('document.querySelector(".line .clip video") === window.__clip'), true);
+    platform.overlays.updateSettings('tk', { lineClip: clip, lineLabel: 'THE QUEUE' });
+    await page.waitFor('document.querySelector(".line .scene-label") && document.querySelector(".line .scene-label").textContent === "THE QUEUE"');
+    assert.equal(await page.eval('document.querySelector(".line .clip video") === window.__clip'), true, 'rebuilt, with the same clip moved in');
+    // The file doesn't exist: no picture, no black plate over the camera.
+    await page.waitFor('window.__clip.error !== null', 3000);
+    assert.equal(await page.eval('getComputedStyle(document.querySelector(".line .clip")).backgroundColor'), 'rgba(0, 0, 0, 0)');
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('lite mode (phone previews) plays no video', opts, async (t) => {
+    const { page, take, platform, overlay } = await open(t, { settings: { lineClip: `/media/${FILE_ID}/line.mp4` }, query: { lite: '1' } });
+    await take('line');
+    platform.bus.publish('media.play', { mediaId: 'med_x', url: `/media/${FILE_ID}/s.webm` }, { target: overlay.id });
+    await sleep(400);
+    assert.equal(await page.eval('document.querySelectorAll("video").length'), 0);
+  });
+
+  test('at most two endless animations per scene in idle, each on transform or opacity only (05 §5.8)', opts, async (t) => {
+    for (const settings of [{ look: 'takeover', ticker: true }, { look: 'event' }, { look: 'event', starStyle: 'ghost' }, { look: 'event', starStyle: 'stamp' }]) {
+      const { page, take, platform } = await open(t, { settings, state: night() });
+      for (const scene of SCENES) {
+        await take(scene);
+        await sleep(650); // past the scene's own enter
+        const loops = await page.eval(`(() => {
+          const root = document.querySelector('[data-skp-scene-root]');
+          return root.getAnimations({ subtree: true })
+            .filter((a) => a.effect && a.effect.getTiming().iterations === Infinity)
+            .map((a) => ({ name: a.animationName, props: [...new Set(a.effect.getKeyframes().flatMap((k) => Object.keys(k)))].filter((p) => !['offset', 'computedOffset', 'easing', 'composite'].includes(p)) }));
+        })()`);
+        const what = `${JSON.stringify(settings)} ${scene}: ${loops.map((l) => l.name).join(', ')}`;
+        assert.ok(loops.length <= 2, what);
+        for (const l of loops) assert.deepEqual(l.props.filter((p) => p !== 'transform' && p !== 'opacity'), [], `${what} (${l.name} animates ${l.props})`);
+      }
+      await platform.stop();
+    }
+  });
+
+  test('names in any script, a quote in a poster URL, and markup in the lineup are shown as they are', opts, async (t) => {
+    const now = Date.now();
+    const lineup = [
+      { time: '22:00', startAt: now - MIN, name: '宇多田' },
+      { time: '23:00', startAt: now + MIN, name: '坂本', headliner: true },
+      { time: '00:00', startAt: now + 2 * MIN, name: 'A<b>&</b>B', b2b: '<i>C</i>' },
+    ];
+    const poster = "https://example.invalid/vik's-poster.jpg";
+    const { page, take, text, platform } = await open(t, { settings: { look: 'event', posterH: poster }, state: { 'show.lineup': lineup, 'show.headliner': '坂本' } });
+    await take('starting');
+    assert.deepEqual(await text('.vk-big'), ['坂本'], 'the headliner, not the first name with no Latin letters');
+    assert.match(await page.eval('getComputedStyle(document.querySelector(".vk-poster")).backgroundImage'), /vik's-poster\.jpg/);
+    await take('lineup');
+    assert.equal(await page.eval('document.querySelectorAll(".vk-tt .row.head").length'), 1);
+    const noMarkup = 'document.querySelectorAll("[data-skp-stage] b, [data-skp-stage] i:not(.x)").length === 0';
+    assert.equal(await page.eval(noMarkup), true);
+    assert.ok((await text('.vk-tt .n')).some((s) => s.includes('A<b>&</b>B') && s.includes('<i>C</i>')));
+    platform.overlays.updateSettings('tk', { look: 'takeover' });
+    await page.waitFor('document.documentElement.getAttribute("data-look") === "takeover" && !!document.querySelector(".lineup")');
+    assert.equal(await page.eval(noMarkup), true);
+    assert.ok((await text('.lineup .who')).some((s) => s.includes('A<b>&</b>B')));
+    platform.bus.setState('show.currentSlot', 2);
+    await take('pov');
+    assert.deepEqual(await text('[data-who] .name'), ['A<b>&</b>B']);
+    assert.equal(await page.eval(noMarkup), true);
+    // Names with no letters at all must match exactly: two such names are two acts.
+    platform.overlays.updateSettings('tk', { look: 'event', posterH: poster });
+    platform.bus.setState('show.lineup', [{ time: '22:00', startAt: now, name: '✦✦✦' }, { time: '23:00', startAt: now + MIN, name: '★★★', headliner: true }]);
+    platform.bus.setState('show.headliner', '★★★');
+    await take('starting');
+    await page.waitFor('document.querySelector(".vk-big") && document.querySelector(".vk-big").textContent === "★★★"');
+    assert.deepEqual(problems(page).filter((p) => !/example\.invalid/.test(p)), []);
+  });
+
+  test('performers\' logos are fetched before an action first shows them', opts, async (t) => {
+    const { page } = await open(t, { state: night() });
+    await page.waitFor('performance.getEntriesByType("resource").some((e) => e.name.endsWith("/vikkstar.png"))', 3000);
+  });
+});
+
 describe('the viewer-count widget (04 §4.12)', () => {
   test('hidden while the count is unknown, never 0; quieter while stale; the label and colour are settings', opts, async (t) => {
     const { page, platform } = await open(t, { template: VIEWERS, settings: { label: 'watching', accent: '#16E0FF' } });
@@ -297,6 +490,9 @@ describe('the viewer-count widget (04 §4.12)', () => {
     assert.equal(await page.eval('getComputedStyle(document.documentElement).getPropertyValue("--dot").trim().toLowerCase()'), '#16e0ff');
     platform.bus.setState('viewers.stale', true);
     await page.waitFor('document.querySelector(".viewers").classList.contains("stale")');
+    // Its settings change live.
+    platform.overlays.updateSettings('tk', { label: 'online', accent: '#36D67B' });
+    await page.waitFor('document.querySelector(".viewers .label").textContent === "online" && getComputedStyle(document.documentElement).getPropertyValue("--dot").trim().toLowerCase() === "#36d67b"');
     platform.bus.setState('viewers.total', undefined);
     await page.waitFor('document.querySelector(".viewers").hidden');
     assert.deepEqual(problems(page), []);

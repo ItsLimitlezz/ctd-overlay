@@ -186,7 +186,7 @@ progress locally between updates; templates read `SK.music.progress()` and never
 | `show.scene.changed` | `{ "scene": "brb", "prev": "program", "transition": "cut" }` — a take. The platform publishes it, then the `show.scene` state, in the same tick; the runtime uses the event's transition. It carries no `startAt`: members switch on receipt, so two of them can differ by their delivery time (up to one poll interval for a polling source). |
 | `show.trigger` | `{ "name": "titleCard", "args": { }, "startAt": 1791582412000, "durationMs": 7000 }` |
 | `show.cue.fired` | `{ "cueId": "cue_…", "action": "…" }` |
-| `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }` |
+| `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }`; a stop **MAY** leave out `url`, meaning whatever plays |
 | `system.connection` | connection health change (06 §6.3) |
 | `system.notice` | `{ "level": "info" }` — operator-facing, never rendered on air |
 
