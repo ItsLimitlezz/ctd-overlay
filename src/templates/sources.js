@@ -21,7 +21,9 @@
 // repository can't take over another template's overlays. A token (SKP_GITHUB_TOKEN, for private
 // repositories) is sent to api.github.com only, never to a host a download is redirected to.
 import { randomBytes } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { createWriteStream, rmSync } from 'node:fs';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -81,14 +83,53 @@ export function describeSource(source) {
   return source.kind === 'github' ? `github:${source.repo}${source.tag !== undefined ? `@${source.tag}` : ''}` : source.url;
 }
 
-// One request, following redirects by hand: every hop must be https, and a token goes to
-// api.github.com only (a release download redirects to a storage host with its own signature).
-async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE_LIMITS }) {
+// Addresses a download must never reach unless the owner allows it (07 §7.11): this machine,
+// the local network, link-local (cloud metadata) and other non-public ranges.
+export function isPrivateAddress(ip) {
+  const v4 = (s) => {
+    const [a, b] = s.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  };
+  if (isIP(ip) === 4) return v4(ip);
+  const v6 = String(ip).toLowerCase();
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
+  if (mapped) return v4(mapped[1]);
+  return v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith('ff') || v6.startsWith('64:ff9b:');
+}
+
+// A host a download may go to: its addresses, looked up, are all public, unless the owner allowed
+// private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). The lookup and the request resolve separately, so a
+// DNS-rebinding host could still slip between them; the check stops everything else.
+async function checkHost(hostname, net) {
+  if (!net || net.allowPrivate) return;
+  const host = hostname.replace(/^\[|\]$/g, '');
+  let addresses;
+  if (isIP(host)) addresses = [host];
+  else {
+    try {
+      addresses = (await net.lookup(host)).map((a) => a.address);
+    } catch (err) {
+      throw new SourceError(`${host} could not be found (${err.code || err.message}).`, 'unreachable');
+    }
+  }
+  const inside = addresses.find(isPrivateAddress);
+  if (inside) {
+    throw new SourceError(`${host} is a private or local address (${inside}); downloads go to the public internet only, unless the owner sets SKP_ALLOW_PRIVATE_DOWNLOADS=true.`, 'private-address');
+  }
+}
+export const defaultLookup = (host) => lookup(host, { all: true });
+
+// One request, following redirects by hand: every hop must be https and public (checkHost), and
+// a token goes to api.github.com only (a release download redirects to a storage host with its
+// own signature).
+async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE_LIMITS, net }) {
   let current = url;
   for (let hop = 0; hop <= max.redirects; hop++) {
     let target;
     try { target = new URL(current); } catch { throw new SourceError('The server sent a link that is not a URL.', 'bad-response'); }
     if (target.protocol !== 'https:') throw new SourceError(`The download was sent to ${target.protocol}//${target.host}; only https is followed.`, 'not-https');
+    await checkHost(target.hostname, net);
     const h = { 'user-agent': 'skp-platform', ...headers };
     if (token && target.hostname === 'api.github.com') h.authorization = `Bearer ${token}`;
     let res;
@@ -144,14 +185,14 @@ async function readLimited(res, max) {
 
 // The release a GitHub source points at (its tag, or the latest published one): { unchanged }
 // when the ETag says nothing changed, else { tag, etag, download: { name, url, size, accept } }.
-async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURCE_LIMITS }) {
+async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURCE_LIMITS, net }) {
   const url = source.tag !== undefined
     ? `${API}/repos/${source.repo}/releases/tags/${encodeURIComponent(source.tag)}`
     : `${API}/repos/${source.repo}/releases/latest`;
   const headers = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' };
   if (etag) headers['if-none-match'] = etag;
   const deadline = anySignal(signal, max.apiMs);
-  const res = await request(fetchFn, url, { headers, token, signal: deadline, max });
+  const res = await request(fetchFn, url, { headers, token, signal: deadline, max, net });
   if (res.status === 304) {
     await res.body?.cancel().catch(() => {});
     return { unchanged: true, etag };
@@ -190,7 +231,7 @@ async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURC
 
 // Downloads to a file in dir, refusing more than the limit: { file, size, etag, lastModified },
 // or { unchanged } when a conditional request says the file is the one already seen.
-async function download(fetchFn, url, dir, { token, accept, etag, lastModified, signal, max = SOURCE_LIMITS }) {
+async function download(fetchFn, url, dir, { token, accept, etag, lastModified, signal, max = SOURCE_LIMITS, net }) {
   const headers = {};
   if (accept) headers.accept = accept;
   if (etag) headers['if-none-match'] = etag;
@@ -198,7 +239,7 @@ async function download(fetchFn, url, dir, { token, accept, etag, lastModified, 
   const file = path.join(dir, `.download-${randomBytes(6).toString('hex')}`);
   const deadline = anySignal(signal, max.downloadMs);
   try {
-    const res = await request(fetchFn, url, { headers, token, signal: deadline, max });
+    const res = await request(fetchFn, url, { headers, token, signal: deadline, max, net });
     if (res.status === 304 && (etag || lastModified)) {
       await res.body?.cancel().catch(() => {});
       return { unchanged: true };
@@ -242,25 +283,32 @@ function tooLarge(rel, max) {
 }
 
 // Fetches one package from a source, once, for `skp template install <source>`: { file, origin,
-// label } (the caller installs it, then removes the file). limits: a test hook.
-export async function fetchPackage(input, { dir, token, fetch: fetchFn = globalThis.fetch, signal, limits } = {}) {
+// label } (the caller installs it, then removes the file). allowPrivate: the owner's
+// SKP_ALLOW_PRIVATE_DOWNLOADS. lookup and limits: test hooks.
+export async function fetchPackage(input, { dir, token, fetch: fetchFn = globalThis.fetch, signal, limits, lookup: lookupFn = defaultLookup, allowPrivate = false } = {}) {
   const max = { ...SOURCE_LIMITS, ...limits };
+  const net = { lookup: lookupFn, allowPrivate };
   const source = typeof input === 'string' ? parseSource(input) : input;
   if (source.kind === 'github') {
-    const rel = await githubRelease(fetchFn, source, { token, signal, max });
+    const rel = await githubRelease(fetchFn, source, { token, signal, max, net });
     tooLarge(rel, max);
-    const got = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal, max });
+    const got = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal, max, net });
     return { file: got.file, origin: { kind: 'github', repo: source.repo, tag: rel.tag, asset: rel.download.name }, label: `${source.repo}@${rel.tag}`, tag: rel.tag, etag: rel.etag };
   }
-  const got = await download(fetchFn, source.url, dir, { signal, max });
+  const got = await download(fetchFn, source.url, dir, { signal, max, net });
   return { file: got.file, origin: { kind: 'url', url: source.url }, label: source.url, etag: got.etag, lastModified: got.lastModified };
 }
 
-// The sources the platform follows. record(op, details) writes operations.log. limits: a test
-// hook (SOURCE_LIMITS).
-// onAir(overlayId): whether the overlay's show is live (automatic upgrades wait).
-export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits, onAir = () => false }) {
-  const max = { ...SOURCE_LIMITS, ...limits };
+// Errors a release won't grow out of by itself: until the source publishes something else, it
+// isn't downloaded again (an unchanged release costs one small request, 04 §4.13).
+const LASTING = new Set(['invalid', 'wrong-template', 'id-taken', 'reserved-id', 'version-exists', 'too-large']);
+
+// The sources the platform follows. record(op, details) writes operations.log. onAir(overlayId):
+// whether the overlay's show is live (an upgrade reloads its pages, so it waits). allowPrivate:
+// the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. limits and lookup: test hooks.
+export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
+  const max = { minuteMs: 60000, ...SOURCE_LIMITS, ...limits };
+  const net = { lookup: lookupFn, allowPrivate };
   let chain = Promise.resolve();
   let timer = null;
   let stopped = false;
@@ -284,12 +332,15 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
     return [...all()].find((d) => d.data.label === label);
   }
 
-  function add(input, { autoUpgrade = 'safe', actor = 'cli' } = {}) {
+  // claim: a template id this source may take over although it is installed from elsewhere (the
+  // operator's own choice: `follow … --template <id>`).
+  function add(input, { autoUpgrade = 'safe', actor = 'cli', claim } = {}) {
     if (!AUTO_UPGRADE.includes(autoUpgrade)) throw new SourceError(`autoUpgrade must be one of ${AUTO_UPGRADE.join(', ')}.`, 'bad-option');
+    if (claim !== undefined && (typeof claim !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+){2,}$/.test(claim))) throw new SourceError(`"${claim}" is not a template id.`, 'bad-option');
     const source = parseSource(input);
     const label = describeSource(source);
     if (find(label)) throw new SourceError(`${label} is already followed.`, 'exists');
-    return store.put(COLLECTION, newId('src'), { label, ...source, autoUpgrade, addedAt: new Date().toISOString(), actor });
+    return store.put(COLLECTION, newId('src'), { label, ...source, autoUpgrade, ...(claim ? { claim } : {}), addedAt: new Date().toISOString(), actor });
   }
 
   function remove(ref) {
@@ -307,14 +358,43 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
     return store.put(COLLECTION, doc.id, data);
   }
 
+  // Where an installed version came from, and whether that is this source (the same repository
+  // or URL, whatever tag it pins).
+  const sameOrigin = (from, d) => !!from && ((from.kind === 'github' && d.kind === 'github' && from.repo === d.repo) || (from.kind === 'url' && d.kind === 'url' && from.url === d.url));
+  const sameSource = (a, b) => (a.kind === 'github' && b.kind === 'github' && a.repo === b.repo) || (a.kind === 'url' && b.kind === 'url' && a.url === b.url);
+  const originOf = (t) => {
+    const s = t.receipt?.source;
+    if (!s || templates.fromPlatform(t)) return 'the platform';
+    if (s.kind === 'github') return `github:${s.repo}`;
+    if (s.kind === 'url') return s.url;
+    return `a package (${s.name || 'a file'})`;
+  };
+
+  // Whether this source may install template `id` (its first release decides what it installs):
+  // never one that ships with the platform, never one another source installs, and not one
+  // installed from elsewhere unless the operator said so (04 §4.13: a repository can't take over
+  // another template's overlays).
+  function claimProblem(doc, id) {
+    const d = doc.data;
+    const versions = templates.versions(id);
+    if (versions.some((t) => templates.fromPlatform(t))) return `${id} ships with the platform; a source can't publish versions of it.`;
+    const other = [...all()].find((o) => o.id !== doc.id && o.data.templateId === id && !sameSource(o.data, d));
+    if (other) return `${id} already comes from ${other.data.label}; one template has one source.`;
+    if (d.claim === id) return undefined;
+    const foreign = versions.find((t) => !sameOrigin(t.receipt?.source, d));
+    if (foreign) return `${id} is already installed from ${originOf(foreign)}. To have this source update it, follow it with --template ${id}.`;
+    return undefined;
+  }
+
   // Checks one source (ref) or all of them, one at a time. Resolves with one result per source:
-  // { source, id, tag?, unchanged?, installed?: { id, version, build, noop }, upgraded: [],
-  //   waiting: [], error?: { code, message } }. Never rejects for a source's own failure.
+  // { source, id, tag?, unchanged?, installed?: { id, version, build, noop, warnings },
+  //   upgraded: [], waiting: [], error?: { code, message } }. Never rejects for a source's own
+  // failure; with nothing followed, resolves with [].
   function check(ref, { force = false } = {}) {
     const run = chain.then(async () => {
       if (stopped) throw new SourceError('The platform is shutting down.', 'stopped');
       const docs = ref === undefined ? [...all()] : [find(ref)];
-      if (docs[0] === undefined) throw new SourceError(`${ref} is not followed.`, 'not-found');
+      if (ref !== undefined && docs[0] === undefined) throw new SourceError(`${ref} is not followed.`, 'not-found');
       const results = [];
       for (const doc of docs) {
         if (stopped) break;
@@ -330,35 +410,40 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
     const d = doc.data;
     const result = { source: d.label, id: doc.id, upgraded: [], waiting: [] };
     const checkedAt = new Date().toISOString();
+    // A release that failed for good (it isn't a template, it claims another one, …) is what the
+    // conditional request compares against, so it isn't fetched again until something changes.
+    const known = force ? {} : d.failed || { etag: d.etag, lastModified: d.lastModified, release: d.release };
+    let seen = {};
     let file;
+    const unchanged = async () => {
+      update(doc, { checkedAt, ...(d.failed ? {} : { error: undefined }) });
+      if (d.failed) return { ...result, tag: d.failed.release, unchanged: true, error: d.error };
+      return { ...result, tag: d.release, unchanged: true, ...(await upgradeOverlays(doc, { pendingOnly: true })) };
+    };
     try {
       const dir = templates.downloadDir;
       if (!dir) throw new SourceError('Templates can\'t be installed here: another process holds the data directory.', 'read-only');
       let origin;
       let label;
-      let seen;
       if (d.kind === 'github') {
-        const rel = await githubRelease(fetchFn, d, { token, etag: force ? undefined : d.etag, signal: stopping.signal, max });
-        if (rel.unchanged || (!force && rel.tag === d.release && d.version)) {
-          update(doc, { checkedAt, error: undefined, etag: rel.etag ?? d.etag });
-          return { ...result, tag: d.release, unchanged: true, ...(await pending(d)) };
+        const rel = await githubRelease(fetchFn, d, { token, etag: known.etag, signal: stopping.signal, max, net });
+        if (rel.unchanged || (!force && rel.tag === known.release && (d.version || d.failed))) {
+          if (rel.etag && !d.failed) update(doc, { etag: rel.etag });
+          return await unchanged();
         }
+        seen = { release: rel.tag, etag: rel.etag }; // `tag` is the one a source may pin
         result.tag = rel.tag;
         tooLarge(rel, max);
-        ({ file } = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal: stopping.signal, max }));
+        ({ file } = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal: stopping.signal, max, net }));
         origin = { kind: 'github', repo: d.repo, tag: rel.tag, asset: rel.download.name };
         label = `${d.repo}@${rel.tag}`;
-        seen = { release: rel.tag, etag: rel.etag }; // `tag` is the one a source may pin
       } else {
-        const got = await download(fetchFn, d.url, dir, force ? { signal: stopping.signal, max } : { etag: d.etag, lastModified: d.lastModified, signal: stopping.signal, max });
-        if (got.unchanged) {
-          update(doc, { checkedAt, error: undefined });
-          return { ...result, unchanged: true, ...(await pending(d)) };
-        }
+        const got = await download(fetchFn, d.url, dir, { etag: known.etag, lastModified: known.lastModified, signal: stopping.signal, max, net });
+        if (got.unchanged) return await unchanged();
         file = got.file;
+        seen = { etag: got.etag, lastModified: got.lastModified };
         origin = { kind: 'url', url: d.url };
         label = d.url;
-        seen = { etag: got.etag, lastModified: got.lastModified };
       }
       let checked;
       try {
@@ -374,21 +459,31 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       if (d.templateId && id !== d.templateId) {
         throw new SourceError(`This source installs ${d.templateId}, but this release is ${id}; a source can't switch templates (follow the new one on its own).`, 'wrong-template');
       }
-      const { template, noop } = templates.install(file, { actor: 'updater', name: label, origin });
-      result.installed = { id, version, build: template.build, noop };
+      if (!d.templateId) {
+        const problem = claimProblem(doc, id);
+        if (problem) throw new SourceError(problem, 'id-taken');
+      }
+      const { template, noop, warnings } = templates.install(file, { actor: 'updater', name: label, origin });
+      result.installed = { id, version, build: template.build, noop, warnings };
       if (!noop) {
         log.info('template installed from its source', { source: d.label, template: `${id}@${version}`, build: template.build });
         record('template update', { source: d.label, release: seen.release, template: `${id}@${version}`, build: template.build });
       }
-      update(doc, { templateId: id, version, checkedAt, error: undefined, ...seen });
-      if (d.autoUpgrade !== 'off') Object.assign(result, await upgradeOverlays(id, version, d.label, { announce: true }));
+      // What 04 §4.11 has to show: the warnings, for releases nobody watched install.
+      for (const w of warnings) log.warn('a template release has a warning', { source: d.label, template: `${id}@${version}`, code: w.code, path: w.path, message: w.message });
+      // Only a version that is new to this source moves overlays; the same one again (a URL with
+      // no validators, a new tag on the same package) never undoes an operator's revert.
+      const fresh = version !== d.version;
+      const saved = update(doc, { templateId: id, version, checkedAt, error: undefined, failed: undefined, ...seen });
+      Object.assign(result, await upgradeOverlays(saved, { pendingOnly: !fresh, announce: fresh }));
     } catch (err) {
       if (!(err instanceof SourceError || err instanceof TemplateError)) log.error('checking a template source failed', { source: d.label, err });
       const error = { code: err.code || 'failed', message: err.message };
       result.error = error;
       if (error.code !== 'stopped') {
         log.warn('a template source could not be checked', { source: d.label, code: error.code, err: error.message });
-        update(doc, { checkedAt, error: { ...error, at: checkedAt } });
+        const failed = LASTING.has(error.code) && (seen.etag || seen.lastModified || seen.release) ? { ...seen } : undefined;
+        update(doc, { checkedAt, error: { ...error, at: checkedAt }, ...(failed ? { failed } : {}) });
       }
     } finally {
       if (file) rmSync(file, { force: true });
@@ -396,46 +491,58 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
     return result;
   }
 
-  // With nothing new to install: overlays that waited for their show to end (or were created on an
-  // older version since) move now, if they can.
-  const pending = (d) => (d.autoUpgrade !== 'off' && d.templateId && d.version ? upgradeOverlays(d.templateId, d.version, d.label) : {});
-
-  // Moves each overlay on an older version of `id` to `version`, when that is the newest installed
-  // version (a release older than what is installed never moves an overlay back), the upgrade
-  // needs no confirmation, and the overlay's show isn't live: an upgrade reloads the overlay's
-  // page, which is never done on air. announce: say why the others wait (once, when the version
-  // arrives, not at every check after).
-  async function upgradeOverlays(id, version, label, { announce = false } = {}) {
+  // Moves this source's overlays to the version it last installed, when that is the newest
+  // installed version (a release older than what is installed never moves an overlay back), the
+  // version they are on came from this source (or the operator let it claim the template), and
+  // the upgrade needs no confirmation and runs no migrate.js (04 §4.10). An overlay whose show is
+  // live waits, and is kept as pending: it moves at the first check after. pendingOnly: only those
+  // (nothing new arrived: anything else stays where the operator left it, a revert included).
+  // announce: log why the others wait (once, when the version arrives).
+  async function upgradeOverlays(doc, { pendingOnly = false, announce = false } = {}) {
+    const d = doc.data;
     const upgraded = [];
     const waiting = [];
-    const newest = templates.versions(id)[0];
-    if (!newest || newest.version !== version) return { upgraded, waiting };
+    const pending = [];
+    const id = d.templateId;
+    const version = d.version;
+    const newest = id && templates.versions(id)[0];
+    if (d.autoUpgrade === 'off' || !newest || newest.version !== version) return { upgraded, waiting };
+    const was = new Set(d.pending || []);
     for (const o of overlays.list()) {
       const pin = o.data.template;
       if (pin.id !== id || compareVersions(pin.version, version) >= 0) continue;
+      if (pendingOnly && !was.has(o.id)) continue;
+      const own = templates.get(pin.id, pin.version);
+      if (d.claim !== id && own && !sameOrigin(own.receipt?.source, d)) continue; // installed from elsewhere since
       const slug = o.data.slug;
+      const wait = (why, run, level = 'warn') => {
+        waiting.push({ overlay: slug, from: pin.version, to: version, why });
+        if (announce) log[level]('a template update waits', { overlay: slug, from: pin.version, to: version, why, ...(run ? { run } : {}) });
+      };
       if (onAir(o.id)) {
-        waiting.push({ overlay: slug, from: pin.version, to: version, why: 'its show is live; it moves at the first check after' });
-        if (announce) log.info('a template update waits for the show to end', { overlay: slug, to: version });
+        pending.push(o.id);
+        wait('its show is live; it moves at the first check after', undefined, 'info');
         continue;
       }
       try {
         const plan = await overlays.upgrade(slug, version, { dryRun: true });
         if (plan.confirm) {
-          const why = plan.major ? 'a major version' : 'it drops settings or scenes';
-          waiting.push({ overlay: slug, from: pin.version, to: version, why });
-          if (announce) log.warn('a template update waits for the operator', { overlay: slug, from: pin.version, to: version, why, run: `skp overlay upgrade ${slug} --to ${version}` });
+          wait(plan.major ? 'a major version' : 'it drops settings or scenes', `skp overlay upgrade ${slug} --to ${version}`);
+          continue;
+        }
+        if (plan.migrated === 'skipped') {
+          wait('it ships a migrate.js, which runs only when you allow it', `skp overlay upgrade ${slug} --to ${version} --run-migrate`);
           continue;
         }
         await overlays.upgrade(slug, version);
         upgraded.push({ overlay: slug, from: pin.version, to: version });
-        log.info('overlay upgraded to its template\'s new version', { overlay: slug, from: pin.version, to: version, source: label });
-        record('overlay upgrade', { overlay: slug, from: pin.version, to: version, source: label, automatic: true });
+        log.info('overlay upgraded to its template\'s new version', { overlay: slug, from: pin.version, to: version, source: d.label });
+        record('overlay upgrade', { overlay: slug, from: pin.version, to: version, source: d.label, automatic: true });
       } catch (err) {
-        waiting.push({ overlay: slug, from: pin.version, to: version, why: err.message });
-        log.warn('an overlay could not be upgraded to its template\'s new version', { overlay: slug, to: version, err: err.message });
+        wait(err.message);
       }
     }
+    update(doc, { pending: pending.length ? pending : undefined });
     return { upgraded, waiting };
   }
 
@@ -450,7 +557,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       if (!minutes || stopped) return;
       const next = (ms) => {
         timer = setTimeout(() => {
-          check().catch(() => {}).finally(() => { if (!stopped) next(minutes * 60000); });
+          check().catch(() => {}).finally(() => { if (!stopped) next(minutes * max.minuteMs); });
         }, ms);
         timer.unref?.();
       };

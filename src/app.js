@@ -35,7 +35,7 @@ export class StartupError extends Error {
 // { lock, store, bus, templates, overlays, media, sources, close() }. Holds the data-directory
 // lock until close(). ffmpeg, media and fetch: test hooks ([executable, ...args] in place of
 // config.ffmpeg; options for the media library; the fetch template sources use).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits }) {
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -61,7 +61,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
     const shows = createShows({ store, bus, overlays, templates, log: log.child('shows') });
     const sources = createTemplateSources({
-      store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits,
+      store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
       onAir: (overlayId) => shows.onAir(overlayId),
       record: (op, details) => recordOperation(config.dataDir, op, { ...details, actor: 'updater' }),
     });
@@ -91,13 +91,13 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // replaces the configured ffmpeg, options.media goes to the media library, options.fetch and
 // options.sourceLimits are what template sources fetch with and their limits, and
 // options.simulateHoldMs shortens how long simulated state lasts.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, simulateHoldMs } = {}) {
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
-  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits });
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup });
   const { store, bus, templates, overlays, media, shows, sources } = data;
   const hosts = () => ownHosts(server);
   const server = createHttpServer({

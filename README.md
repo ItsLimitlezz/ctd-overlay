@@ -112,11 +112,17 @@ npm run skp -- template follow your-name/your-template
 
 The running platform checks every hour (`SKP_TEMPLATE_CHECK_MINUTES`). A new release is installed
 next to the old version, and overlays move to it on their own when that can't break anything:
-the same major version, with no setting, scene or action they use removed. A breaking release is
-installed too, but its overlays stay where they are until you run the `overlay upgrade` the log
-names. `template sources` shows what each source last installed, `template update` checks now,
-and `template unfollow` stops (installed versions stay). For a private repository, set
-`SKP_GITHUB_TOKEN` to a token that can read it.
+the same major version, with no setting, scene or action they use removed, and no `migrate.js`
+to run. A breaking release is installed too, but its overlays stay where they are until you run
+the `overlay upgrade` the log names. If you `overlay revert` one, it stays reverted until the
+source brings a newer version. `template sources` shows what each source last installed,
+`template update` checks now, and `template unfollow` stops (installed versions stay). For a
+private repository, set `SKP_GITHUB_TOKEN` to a token that can read it.
+
+A source can't take over a template you installed some other way (from a file, or another
+repository): following it says so. To hand such a template over to the repository on purpose,
+follow it with `--template <id>`. Downloads only go to public addresses; to fetch from a server
+on your own network, set `SKP_ALLOW_PRIVATE_DOWNLOADS=true`.
 
 To publish a release: bump `version` in `template.json`, then make a GitHub release and attach
 the package from `npm run skp -- template pack .`. With `template.json` at the repository's root

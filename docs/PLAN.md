@@ -79,7 +79,8 @@ option that keeps a live show running with nobody touching it.
    which records each change in `<dataDir>/operations.log` until the audit log exists (step 11).
    Settings patterns run with a deadline (a vm timeout), since no shape rule bounds
    backtracking. Upgrades keep the previous version for `revert`. Deferred: the headless
-   `?mock=1` check (step 14 or 24), installing from a URL (step 13). Carried forward: the upgrade
+   `?mock=1` check (step 14 or 24), installing from a URL over HTTP (step 13; the CLI has it
+   since step 8b). Carried forward: the upgrade
    route's "run this package's migrate.js" must be an owner/admin decision (steps 11 and 13);
    template file URLs are public by design (07 §7.6), and if private templates ever matter,
    step 12 can key the build path per installation (an HMAC of the build with a server secret).
@@ -108,9 +109,13 @@ option that keeps a live show running with nobody touching it.
    followed repository's new releases install by themselves, with overlays moved to them when
    the upgrade can't break anything (04 §4.13). Through the CLI for now (`skp template install
    owner/name`, `template follow|unfollow|sources|update`); the running platform checks every
-   hour. Carried forward: automatic upgrades reload the overlay's page, so once shows exist
-   (step 9) they wait while a show is live; the HTTP routes and an admin-UI page for sources
-   come with steps 13–14.
+   hour. A template has one source (a release can't take over a template installed otherwise
+   without `--template`), a `migrate.js` waits for the operator, a revert stands until a newer
+   version, and downloads stay off private addresses (07 §7.11) unless the owner allows them.
+   Carried forward: automatic upgrades reload the overlay's page, so once shows exist (step 9)
+   they wait while a show is live; the address check resolves names separately from the
+   download, so step 12 should pin the resolved address (a custom connect lookup) against DNS
+   rebinding; the HTTP routes and an admin-UI page for sources come with steps 13–14.
 
 ### Milestone 2: the show runs itself
 9. **Shows.** Shared scene for member overlays, triggers, timed scenes returning server-side,

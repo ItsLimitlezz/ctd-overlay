@@ -40,6 +40,7 @@ export const USAGE = `Usage: skp <command> [options]
   template uninstall <id>[@<version>]     remove an installed version, or every version
   template follow <owner/name|url>        install its releases as they come out, and move
         [--auto-upgrade safe|off]         overlays to them when nothing breaks (default safe)
+        [--template <id>]                 let it update a template installed from elsewhere
   template unfollow <owner/name|url>      stop following (installed versions stay)
   template sources                        followed sources and what they last installed
   template update [<owner/name|url>]      check followed sources now (the running platform
@@ -75,8 +76,8 @@ const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level', 'port'];
 const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boundary', 'lineup', 'transition', 'args'];
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
-// fetch: a test hook for what template sources download with.
-export async function run(argv, { stdout = process.stdout, stderr = process.stderr, env = process.env, fetch: fetchHook } = {}) {
+// fetch and lookup: test hooks for what template sources download with and resolve names with.
+export async function run(argv, { stdout = process.stdout, stderr = process.stderr, env = process.env, fetch: fetchHook, lookup: lookupHook } = {}) {
   const out = (s) => stdout.write(`${s}\n`);
   let args;
   try {
@@ -86,7 +87,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       strict: true,
       options: {
         json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' },
+        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
         ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
     });
@@ -110,7 +111,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   // The data directory, locked, for a command that may write to it.
   const openFor = (purpose, cfg = config()) => {
     checkOwner(cfg.dataDir);
-    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook });
+    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook });
     return Object.assign(data, { record: (details) => recordOperation(cfg.dataDir, purpose, details) });
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
@@ -197,7 +198,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
               throw missing();
             }
           }
-          if (source) fetched = await fetchPackage(source, { dir: data.templates.downloadDir, token: cfg.githubToken, fetch: fetchHook });
+          if (source) fetched = await fetchPackage(source, { dir: data.templates.downloadDir, token: cfg.githubToken, fetch: fetchHook, lookup: lookupHook, allowPrivate: cfg.allowPrivateDownloads });
           const { template, warnings, noop } = fetched
             ? data.templates.install(fetched.file, { actor: 'cli', name: fetched.label, origin: fetched.origin })
             : data.templates.install(rest[0], { actor: 'cli' });
@@ -219,7 +220,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('template follow takes one source: owner/name or an https URL');
         const data = openFor('template follow');
         try {
-          const doc = data.sources.add(rest[0], { autoUpgrade: opts['auto-upgrade'] ?? 'safe', actor: 'cli' });
+          const doc = data.sources.add(rest[0], { autoUpgrade: opts['auto-upgrade'] ?? 'safe', actor: 'cli', claim: opts.template });
           data.record({ source: doc.data.label, autoUpgrade: doc.data.autoUpgrade });
           // The first check now, so a mistyped repository shows up while you're here.
           const results = await data.sources.check(doc.id);
@@ -580,6 +581,7 @@ function printChecks(out, results) {
     else if (r.installed) {
       const what = `${r.installed.id}@${r.installed.version}`;
       out(`${r.source}${r.tag ? ` release ${r.tag}` : ''}: ${r.installed.noop ? `${what} was already installed` : `installed ${what} (build ${r.installed.build})`}`);
+      for (const w of r.installed.warnings || []) out(`  warning: ${w.message}`);
     }
     for (const u of r.upgraded || []) out(`  "${u.overlay}" moved from ${u.from} to ${u.to} (skp overlay revert ${u.overlay} goes back)`);
     for (const w of r.waiting || []) out(`  "${w.overlay}" stays on ${w.from}: ${w.why}. To move it: skp overlay upgrade ${w.overlay} --to ${w.to}`);
