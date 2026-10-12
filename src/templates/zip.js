@@ -204,14 +204,20 @@ function inflate(e, stored) {
     if (e.compressed !== e.size) throw new ZipError(`"${e.name}" has inconsistent sizes.`);
     data = stored;
   } else {
+    let used;
     try {
       // One byte over the declared size is enough to know the declaration was a lie.
-      data = zlib.inflateRawSync(stored, { maxOutputLength: Math.max(1, e.size + 1) });
+      const out = zlib.inflateRawSync(stored, { maxOutputLength: Math.max(1, e.size + 1), info: true });
+      data = out.buffer;
+      used = out.engine.bytesWritten; // the compressed bytes the stream actually took
     } catch (err) {
       if (err.code === 'ERR_BUFFER_TOO_LARGE') throw new ZipError(`"${e.name}" inflates to more than it declares.`, 'too-large');
       throw new ZipError(`"${e.name}" can't be decompressed (${err.code || err.message}).`);
     }
     if (data.length !== e.size) throw new ZipError(`"${e.name}" inflates to ${data.length} bytes but declares ${e.size}.`);
+    // Bytes after the end of the stream belong to no file and no checksum covers them (another
+    // tool could read them as an entry of its own, and they'd pad a bomb under the ratio cap).
+    if (used !== stored.length) throw new ZipError(`"${e.name}" has ${stored.length - used} bytes after its compressed data.`, 'trailing-data');
   }
   if ((zlib.crc32(data) >>> 0) !== e.crc) throw new ZipError(`"${e.name}" is damaged (its checksum doesn't match).`, 'bad-crc');
   return data;

@@ -147,12 +147,22 @@ Supported: `string`, `number`, `integer`, `boolean`, `enum`, `array` of primitiv
 `required`, `multipleOf`…) is refused, because the generated form couldn't show it. Further:
 
 - Every field declares exactly one `type`. Names are like identifiers (`^[A-Za-z][A-Za-z0-9_]*$`).
-- Groups nest at most 3 deep and carry no `default` of their own; their fields do.
+- Groups nest at most 3 deep and carry no `default` of their own; their fields do. Neither does
+  the settings object itself, and `x-skp-bind` goes on fields, not groups.
+- Keyword values make sense: lengths and item counts are whole numbers, `minimum`/`maximum`
+  are numbers, and no lower bound exceeds its upper bound (a field no value can satisfy is an
+  error).
 - Formats mean what a form writes: `color` is `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`;
   `date` is `YYYY-MM-DD`; `time` is `HH:MM` or `HH:MM:SS` local time (the show's time zone, no
-  offset); `uri` is an absolute `http(s)` URL.
-- A `pattern` is at most 200 characters and may not repeat a repeating group without bound;
-  values longer than 4096 characters are refused before any pattern runs.
+  offset); `uri` is an absolute `https` URL (an overlay's CSP loads nothing else, §4.8). A
+  `media` field holds an uploaded file (`/media/<fileId>/<name>`) or an `https` URL.
+- No setting value is longer than 4096 characters, whatever `maxLength` says. A `pattern` is at
+  most 200 characters; it is checked with a deadline, and a value it can't be checked against
+  in time is refused. Shapes known to backtrack badly (a repeated group that itself repeats or
+  alternates, backreferences, lookarounds) are flagged at install.
+- Sizes, as UTF-8 JSON: the values an operator saves are at most 24 KiB, and the defaults
+  alone at most 6 KiB, so an overlay's resolved settings fit one envelope beside their previous
+  value (02 §2.9). A bound state value that would push them past that is left out.
 - A template with no settings schema has no settings.
 - The platform stores the values the operator set; what the template receives is the
   resolution: per field, the saved value if it is valid, else the `x-skp-bind` state value if
@@ -165,7 +175,7 @@ Extensions (`x-skp-*`):
 | `x-skp-widget` | `color`, `font`, `media`, `position`, `size`, `slider`, `textarea`, `code` |
 | `x-skp-labels` | Display labels for `enum` values |
 | `x-skp-group` | Groups fields into a collapsible section |
-| `x-skp-bind` | Default the value from a state key (still overridable). The key **MUST** be one `consumes.state` declares |
+| `x-skp-bind` | Default the value from a state key (still overridable). The key **MUST** be one `consumes.state` declares, or `show.scene`, which the runtime delivers to every overlay without it being declared |
 | `x-skp-showIf` | `{ "field": "showPoster", "equals": true }` conditional display |
 | `x-skp-preview` | `"live"` — update the preview on every keystroke instead of on blur |
 | `x-skp-axis` | `"x"` or `"y"`, for a `position` widget |
@@ -237,13 +247,14 @@ oldest OBS version the platform supports (10 §10.2).
 - **Relative URLs.** The runtime serves the entry document at `/o/<slug>` and inserts, as the
   first children of `<head>`, `<base href="/o/<slug>/t/<build>/">` and the SDK `<script>`.
   Relative references in the entry document and its stylesheets therefore resolve to the pinned
-  template's files. `<build>` is at least 16 hex digits of a SHA-256 over the package's files
-  (each path, sorted, with the SHA-256 of its content), so the same content has the same build
-  whether it ships with the platform or was installed, on every OS. An upgrade changes every
-  file URL, so immutable caching never serves stale files (H14), and the URLs can't be guessed
-  without first loading the keyed page (07 §7.6). Only the package's own files are served
-  there, matched exactly (case included). Templates **MUST** use relative URLs for their own
-  files and **MUST NOT** add a `<base>` of their own.
+  template's files. `<build>` is the first 16 hex digits (lowercase) of the SHA-256 of one line
+  per file, `<path>` NUL `<lowercase hex SHA-256 of its content>` LF, with paths in UTF-8,
+  `/`-separated, relative to the package root, and the lines in the byte order of those paths.
+  The same content therefore has the same build whether it ships with the platform or was
+  installed, on every OS and in every implementation. An upgrade changes every file URL, so
+  immutable caching never serves stale files (H14). A build is not a secret (07 §7.6). Only the
+  package's own files are served there, matched exactly (case included). Templates **MUST**
+  use relative URLs for their own files and **MUST NOT** add a `<base>` of their own.
 - The page background **MUST** be transparent unless the active scene declares otherwise. OBS
   composites the overlay over the camera.
 - A template **MUST** render something sensible with empty data: before the snapshot, with no
@@ -327,15 +338,21 @@ include them.
   by an overlay is kept even after a platform release drops it.
 - `POST /overlays/{id}/upgrade` moves an overlay to a **newer** installed version of the same
   template and migrates settings: unchanged keys copy over, removed keys drop, values the new
-  version no longer accepts drop, and new keys take defaults. A dry run returns the plan first.
+  version no longer accepts drop, and new keys take defaults. A dry run returns the plan first:
+  every change, including what `migrate.js` did, and settings the real run would refuse (too
+  large, invalid) refuse the dry run too.
 - A template **MAY** ship `migrate.js` for renames: a classic script defining
-  `migrate(fromVersion, settings) → settings` (`export function migrate` or
-  `export default function` is accepted), with no imports, synchronous, receiving the stored
-  values and returning an object. It runs server-side in an isolated context with no I/O.
-  It runs on its own only for templates that ship with the platform; for an installed package
-  it runs only when the operator allows it for that upgrade.
+  `migrate(fromVersion, settings) → settings` (a line beginning `export function migrate(` or
+  `export default function [name](` is accepted too), with no imports, synchronous, receiving
+  the stored values and returning an object of at most 64 KiB of JSON. It runs server-side in
+  an isolated context with no I/O. It runs on its own only for templates that ship with the
+  platform; for an installed package it runs only when the operator allows it for that upgrade.
 - Across a **major** version the UI **MUST** show what will change before upgrading. Under
-  1.0.0 a minor version counts as major, and so does any move involving a prerelease.
+  1.0.0 a minor version counts as major, and so does any move involving a prerelease. The same
+  holds for any version that drops something the operator set (a value removed or no longer
+  valid) or something a show or button may name (a scene, action or canvas).
+- An upgrade keeps the overlay's previous version and settings. `POST /overlays/{id}/revert`
+  puts them back exactly, as long as that version is still installed.
 
 ## 4.11 Validation
 
@@ -349,9 +366,15 @@ The result is a list of findings `{ level, code, path, message }`: `level` is `e
 `warning`, `path` a file in the package or a JSON pointer into `template.json`, and `message`
 says what is wrong and what to do. When no headless browser is available the result says the
 check was skipped. Beyond the list above, the platform also checks: strict SemVer; core scenes
-mapped once; `then` targets and zero-length loops; `consumes` patterns; `https` fonts and an
-`http(s)` `author.url`; the settings schema (§4.3); that `migrate.js` compiles; and that the
-entry has no `<base>`.
+mapped once, and no scene id that is another scene's core; `then` targets and zero-length
+loops; `consumes` patterns; `https` fonts and an `http(s)` `author.url`; the settings schema
+(§4.3); that `migrate.js` compiles; and that the entry has no `<base>` and loads no script from
+elsewhere. `template.schema.json` caps the manifest's lists (100 scenes and actions, 64
+`consumes` patterns of each kind, 32 transitions, 20 previews, 8 canvases and fonts).
+
+An installed version is checked once, at install. If its files change on disk afterwards, the
+platform checks it again at the next start and doesn't serve it if it no longer passes; a
+template that can't be used takes only its own overlays off air (503), never the platform.
 
 ## 4.12 A minimal template
 

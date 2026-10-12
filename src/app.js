@@ -14,7 +14,14 @@ import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
 import { BUILTIN_DIR, createTemplateRegistry } from './templates/registry.js';
 
-export class StartupError extends Error {}
+// code: 'locked' when another process holds the data directory, else 'startup'.
+export class StartupError extends Error {
+  constructor(message, code = 'startup') {
+    super(message);
+    this.name = 'StartupError';
+    this.code = code;
+  }
+}
 
 // Everything but HTTP, for the platform and for CLI commands that change the data directory:
 // { lock, store, bus, templates, overlays, close() }. Holds the data-directory lock until close().
@@ -25,7 +32,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform' 
   try {
     lock = lockDataDir(config.dataDir, { log, purpose });
   } catch (err) {
-    if (err instanceof LockError) throw new StartupError(err.message);
+    if (err instanceof LockError) throw new StartupError(err.message, 'locked');
     throw err;
   }
   let store;

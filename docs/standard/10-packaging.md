@@ -120,7 +120,10 @@ any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_
   interrupted install or uninstall left.
 - One process uses a data directory at a time (`<data>/skp.lock`). Offline tools that change it
   (installing templates, upgrading overlays) refuse while the platform runs; a lock left by a
-  process that is gone is taken over.
+  process that is gone (or from before a reboot, where the OS can tell) is taken over, by
+  exactly one process when several start at once. Each change they make is appended to
+  `<data>/operations.log`. Run them as the user that owns the data directory: as root on
+  another user's directory they refuse, since the files they wrote would be root's.
 
 ## 10.7 Updates and backups
 

@@ -45,7 +45,9 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
   // Ids that are the platform's own: bundled from a reserved root, or retained from one by an
   // earlier platform version (a later one may no longer ship it; the id stays the platform's).
   const reserved = new Set();
-  const shipped = new Set(); // `${id}@${version}` this platform ships: never uninstalled
+  // `${id}@${version}` → the copy this platform ships (kept even when an installed copy with
+  // other content is the one served, so it can be served again if that copy goes).
+  const shipped = new Map();
   const installedListeners = new Set();
   const root = dataDir ? path.join(dataDir, 'templates') : null;
 
@@ -55,13 +57,16 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
   }
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
+    const reservedRoot = reserve.some((r) => path.resolve(r) === path.resolve(dir));
     for (const name of readdirSync(dir).sort()) {
       const sub = path.join(dir, name);
       if (!lstatSync(sub).isDirectory() || !existsSync(path.join(sub, 'template.json'))) continue;
       try {
-        const t = register(loadBundled(sub, log));
-        shipped.add(`${t.id}@${t.version}`);
-        if (reserve.some((r) => path.resolve(r) === path.resolve(dir))) reserved.add(t.id);
+        const t = loadBundled(sub, log);
+        t.reservedRoot = reservedRoot;
+        shipped.set(`${t.id}@${t.version}`, t);
+        register(t);
+        if (reservedRoot) reserved.add(t.id);
       } catch (err) {
         log.error('skipping a template that could not be loaded', { dir: sub, err: err.message, findings: err.findings });
       }
@@ -74,7 +79,7 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
         if (!BUILD_DIR.test(build)) continue;
         try {
           const t = loadInstalled(path.join(root, id, build), log);
-          if (t.receipt.source?.kind === 'bundled') reserved.add(t.id);
+          if (t.receipt.source?.kind === 'bundled' && t.receipt.source.reserved !== false) reserved.add(t.id);
           register(t);
         } catch (err) {
           log.error('skipping an installed template that could not be loaded', { dir: path.join(root, id, build), err: err.message, findings: err.findings });
@@ -98,6 +103,15 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     }
     if (!had || t.source === 'installed') byKey.set(key, t);
     return byKey.get(key);
+  }
+
+  // Whether a template came with the platform: bundled, a retained copy of a bundled one, or an
+  // installed copy whose content is exactly the shipped one. Decided by content, not by name: a
+  // package installed under a shipped id@version is still the package's code (its migrate.js
+  // must not run unasked, 04 §4.10).
+  function fromPlatform(t) {
+    if (!t) return false;
+    return t.source === 'bundled' || t.receipt?.source?.kind === 'bundled' || shipped.get(`${t.id}@${t.version}`)?.build === t.build;
   }
 
   // Installs a package: a file path, or { buffer } (tests). Returns { template, warnings, noop }.
@@ -166,17 +180,21 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
   function uninstall(id, version, { pinnedBy = () => [], actor = 'cli' } = {}) {
     const targets = [...byKey.values()].filter((t) => t.id === id && (version === undefined || t.version === version));
     if (!targets.length) throw new TemplateError(`${version ? `${id}@${version}` : id} is not installed.`, 'not-found');
-    // A retained copy of a version the platform still ships is the platform's too.
-    const bundled = targets.filter((t) => t.source === 'bundled' || shipped.has(`${t.id}@${t.version}`));
-    if (bundled.length) throw new TemplateError(`${bundled[0].id}@${bundled[0].version} ships with the platform and can't be uninstalled.`, 'bundled');
+    // What came with the platform stays, retained copies included: removing one would also free
+    // its id for any package after the next start.
+    const bundled = targets.filter((t) => fromPlatform(t));
+    if (bundled.length) throw new TemplateError(`${bundled[0].id}@${bundled[0].version} came with the platform and can't be uninstalled.`, 'bundled');
     for (const t of targets) {
       const slugs = pinnedBy(t.id, t.version);
       if (slugs.length) throw new TemplateError(`${t.id}@${t.version} is used by ${slugs.map((s) => `"${s}"`).join(', ')}; move ${slugs.length === 1 ? 'it' : 'them'} to another template first.`, 'in-use');
     }
     for (const t of targets) {
+      const key = `${t.id}@${t.version}`;
       trash(root, path.dirname(t.dir)); // <id>/<build>, which holds package/ and the receipt
-      byKey.delete(`${t.id}@${t.version}`);
-      log.info('template uninstalled', { template: `${t.id}@${t.version}`, build: t.build, actor });
+      // An installed copy that hid the platform's own copy of the same version: that one returns.
+      if (shipped.has(key)) byKey.set(key, shipped.get(key));
+      else byKey.delete(key);
+      log.info('template uninstalled', { template: key, build: t.build, actor });
     }
     return targets.map((t) => ({ id: t.id, version: t.version, build: t.build }));
   }
@@ -189,7 +207,9 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     const staging = path.join(root, `.staging-${randomBytes(6).toString('hex')}`);
     try {
       const files = extract(packageFromDir(t.dir), path.join(staging, 'package'));
-      const receipt = { id, version, build: buildFromFiles(files), installedAt: new Date().toISOString(), source: { kind: 'bundled', name: path.basename(t.dir) }, actor: 'platform', files };
+      // reserved: whether the id is the platform's own, so it stays reserved after a release that
+      // no longer ships this version.
+      const receipt = { id, version, build: buildFromFiles(files), installedAt: new Date().toISOString(), source: { kind: 'bundled', name: path.basename(t.dir), reserved: Boolean(t.reservedRoot) }, actor: 'platform', files };
       atomicWriteFileSync(path.join(staging, RECEIPT), `${JSON.stringify(receipt, null, 2)}\n`);
       const target = path.join(root, id, receipt.build);
       placeIn(root, id, staging, target);
@@ -204,8 +224,7 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     list() { return [...byKey.values()]; },
     // Every version of an id, newest first.
     versions(id) { return [...byKey.values()].filter((t) => t.id === id).sort((a, b) => compareVersions(b.version, a.version)); },
-    // Whether a template came with the platform (bundled, or a retained copy of a bundled one).
-    fromPlatform(t) { return t.source === 'bundled' || t.receipt?.source?.kind === 'bundled' || shipped.has(`${t.id}@${t.version}`); },
+    fromPlatform,
     // fn(template) after each install that added a version; returns an unsubscribe function.
     onInstalled(fn) {
       installedListeners.add(fn);

@@ -193,8 +193,12 @@ export class Channel {
     const json = JSON.stringify(pending.value);
     if (last && last.json === json) return; // it changed back; the client already has this value
     this.#lastEmit.set(key, { at: this.#bus.now(), json });
+    // prev is what this client last got, which the size checks on the way in didn't see: when it
+    // would push the envelope past 64 KiB (02 §2.9), the change goes without it (prev is optional).
     const prev = last && last.json !== undefined ? JSON.parse(last.json) : undefined;
-    this.#emit(this.#bus.envelope('state.changed', changeData(key, pending.value, prev), pending.src));
+    let data = changeData(key, pending.value, prev);
+    if (prev !== undefined && Buffer.byteLength(JSON.stringify(data)) + ENVELOPE_OVERHEAD > MAX_ENVELOPE_BYTES) data = changeData(key, pending.value);
+    this.#emit(this.#bus.envelope('state.changed', data, pending.src));
   }
 
   #emit(env) {

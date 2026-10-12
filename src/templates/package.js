@@ -127,9 +127,12 @@ export function buildOf(pkg) {
   return { build: buildFromFiles(files), files };
 }
 
+// Lines in the UTF-8 byte order of the paths (04 §4.5): what any language's byte comparison
+// gives, unlike JavaScript's UTF-16 order, which differs past U+FFFF.
 export function buildFromFiles(files) {
   const hash = createHash('sha256');
-  for (const f of files.slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) hash.update(`${f.path}\0${f.sha256}\n`);
+  const lines = files.map((f) => ({ key: Buffer.from(f.path, 'utf8'), line: `${f.path}\0${f.sha256}\n` }));
+  for (const { line } of lines.sort((a, b) => Buffer.compare(a.key, b.key))) hash.update(line);
   return hash.digest('hex').slice(0, 16);
 }
 

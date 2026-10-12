@@ -79,7 +79,8 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 |---|---|
 | `GET/POST /overlays` | List · create from a template |
 | `GET/PATCH/DELETE /overlays/{id}` | Read · update settings/bindings/slug · delete |
-| `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate` |
+| `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate` |
+| `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL**; UI must confirm |
 | `GET /overlays/{id}/url` | Production URL(s) per canvas |
 | `PUT /overlays/{id}/scene` | `{ "scene": "brb", "transition": "fade" }` |

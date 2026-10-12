@@ -373,6 +373,60 @@ describe('coalescing: at most 10 state.changed per key per second per overlay (0
     clock.advance(100);
     assert.deepEqual(ch.since(cursor).envelopes.map((e) => e.data.value), [1, 2]);
   });
+
+  test('a value still waiting when the channel stops consuming its key is never sent', () => {
+    const { bus, clock } = fixture();
+    const a = bus.channel('ovl_a', { consumes: { state: ['viewers.*'] } });
+    const b = bus.channel('ovl_b', { consumes: { state: ['viewers.*'] } });
+    const aGot = watch(a);
+    bus.setState('viewers.total', 1);
+    bus.setState('viewers.total', 2);
+    assert.equal(clock.pendingTimers(), 2); // the 2 is held in both channels until the window ends
+    // ovl_a is reconfigured in place; ovl_b as an upgrade does it (configure, then reset).
+    bus.channel('ovl_a', { consumes: { state: ['custom.*'] } });
+    bus.channel('ovl_b', { consumes: { state: ['custom.*'] } }).reset();
+    const bGot = watch(b);
+    clock.advance(200);
+    assert.deepEqual(aGot.map((e) => e.data.value), [1]);
+    assert.equal(a.bufferSize, 1);
+    assert.deepEqual(bGot, []);
+    assert.equal(b.bufferSize, 0);
+  });
+
+  test('a value still waiting from a connection the overlay no longer binds is never sent', () => {
+    const { bus, clock } = fixture();
+    const ch = bus.channel('ovl_a', { consumes: { state: ['viewers.*'] }, connections: ['con_tw'] });
+    const got = watch(ch);
+    bus.setState('viewers.twitch', 1, { src: twitch });
+    bus.setState('viewers.twitch', 2, { src: twitch });
+    bus.channel('ovl_a', { consumes: { state: ['viewers.*'] }, connections: ['con_kk'] });
+    clock.advance(200);
+    assert.deepEqual(got.map((e) => e.data.value), [1]);
+    assert.equal(ch.bufferSize, 1);
+  });
+
+  test('channel-only state waiting out the window is still sent, whatever the channel consumes', () => {
+    const { bus, clock } = fixture();
+    const ch = bus.channel('ovl_a', {}); // consumes nothing; show.recStartedAt is no runtime key
+    const got = watch(ch);
+    ch.setLocalState('show.recStartedAt', 1);
+    ch.setLocalState('show.recStartedAt', 2);
+    clock.advance(100);
+    assert.deepEqual(got.map((e) => e.data), [{ key: 'show.recStartedAt', value: 1 }, { key: 'show.recStartedAt', value: 2, prev: 1 }]);
+  });
+
+  test('a channel-only value that replaces a waiting bus value is still sent after the key stops being consumed', () => {
+    const { bus, clock } = fixture();
+    const ch = bus.channel('ovl_a', { consumes: { state: ['show.*'] } });
+    const got = watch(ch);
+    bus.setState('show.recStartedAt', 1);
+    bus.setState('show.recStartedAt', 2); // held until the window ends
+    ch.setLocalState('show.recStartedAt', 3); // takes the held value's place
+    bus.channel('ovl_a', { consumes: {} });
+    clock.advance(200);
+    assert.deepEqual(got.map((e) => e.data), [{ key: 'show.recStartedAt', value: 1 }, { key: 'show.recStartedAt', value: 3, prev: 1 }]);
+    assert.equal(ch.snapshot().state['show.recStartedAt'], 3); // what the client heard last is what a re-sync shows
+  });
 });
 
 describe('isolation', () => {
@@ -407,6 +461,76 @@ describe('isolation', () => {
     assert.deepEqual(got.map((e) => e.data), [set, removed, set, removed]);
     ch.setLocalState('overlay.settings', null);
     assert.equal(got.length, 4); // already absent: nothing sent
+  });
+
+  test('channel-only state too large for one envelope is refused and the old value stays (02 §2.9)', () => {
+    const { bus } = fixture();
+    const ch = bus.channel('ovl_a', {});
+    const got = watch(ch);
+    const a = { blob: 'a'.repeat(40 * 1024) };
+    ch.setLocalState('overlay.settings', a);
+    // B alone fits; B with A as prev doesn't.
+    assert.throws(() => ch.setLocalState('overlay.settings', { blob: 'b'.repeat(40 * 1024) }), (e) => e.code === 'too-large');
+    assert.deepEqual(ch.snapshot().state['overlay.settings'], a);
+    assert.deepEqual(ch.visibleState('overlay.settings'), a);
+    assert.equal(got.length, 1);
+    // Measured in UTF-8 bytes: 40 Ki of "é" is 80 KiB.
+    assert.throws(() => ch.setLocalState('show.scene', 'é'.repeat(40 * 1024)), (e) => e.code === 'too-large');
+    assert.equal('show.scene' in ch.snapshot().state, false);
+    assert.equal(got.length, 1);
+  });
+
+  test('a channel-only change sent at once fits in a 64 KiB envelope, id, type, time and source included', () => {
+    const { bus } = fixture();
+    let channels = 0;
+    // The envelope a fresh channel sends for a value of n characters, or null when it's refused.
+    const send = (n) => {
+      const ch = bus.channel(`ovl_${channels++}`, {});
+      const got = watch(ch);
+      try {
+        ch.setLocalState('show.scene', 'x'.repeat(n));
+      } catch (err) {
+        assert.equal(err.code, 'too-large', String(n));
+        return null;
+      }
+      return got[0];
+    };
+    // The exact largest size accepted: sampling would miss an allowance only a few bytes short.
+    let lo = 60000;
+    let hi = 65536;
+    assert.ok(send(lo));
+    assert.equal(send(hi), null);
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (send(mid)) lo = mid;
+      else hi = mid;
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(send(lo)));
+    assert.ok(bytes <= 65536, `${lo} characters were accepted and made an envelope of ${bytes} bytes`);
+    assert.equal(send(lo + 1), null);
+  });
+
+  test('a coalesced change fits in a 64 KiB envelope too: past it, it goes without prev', () => {
+    for (const local of [true, false]) {
+      const { bus, clock } = fixture();
+      const ch = bus.channel('ovl_a', { consumes: { state: ['custom.*'] } });
+      const got = watch(ch);
+      const key = local ? 'show.scene' : 'custom.big';
+      const set = (v) => (local ? ch.setLocalState(key, v) : bus.setState(key, v));
+      set('a'.repeat(40 * 1024)); // sent at once
+      set('brb'); // held, so the 40 KiB value stays the last one this channel sent
+      // Measured beside "brb" this fits; the flush would send it beside the 40 KiB value.
+      set('b'.repeat(40 * 1024));
+      clock.advance(100);
+      for (const env of got) {
+        const bytes = Buffer.byteLength(JSON.stringify(env));
+        assert.ok(bytes <= 65536, `an envelope of ${bytes} bytes was sent`);
+      }
+      assert.equal(got.length, 2);
+      assert.equal(got[1].data.value, 'b'.repeat(40 * 1024));
+      assert.equal('prev' in got[1].data, false);
+      assert.equal(got[1].data.value, ch.snapshot().state[key]);
+    }
   });
 
   test('a targeted publish (the simulator) reaches one overlay only, and not the chat buffer', () => {

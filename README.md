@@ -67,4 +67,7 @@ npm run skp -- template install my-template.skp
 
 `template list` and `template uninstall <id>[@<version>]` do what they say, and
 `overlay upgrade <slug> --to <version> [--dry-run] [--yes]` moves an overlay to a newer version of
-its template; its OBS URL never changes.
+its template; its OBS URL never changes. The plan lists every setting that changes, and an
+upgrade that drops anything the overlay uses needs `--yes`. `overlay revert <slug>` goes back to
+the version and settings it had before. Each change is recorded in `operations.log` in the data
+folder.

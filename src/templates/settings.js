@@ -39,7 +39,9 @@ export const SETTINGS_FORMATS = {
   uri: https,
 };
 // A media field holds an uploaded file (/media/<fileId>/<name>, 03 §3.4) or an https URL.
-const isMediaValue = (s) => /^\/media\/[A-Za-z0-9_-]{1,64}\/[^/\\?#\s]{1,255}$/.test(s) || https(s);
+// The name may not be "." or "..", or hide one behind %-escapes: a browser would resolve those
+// out of the file's own path.
+const isMediaValue = (s) => /^\/media\/[A-Za-z0-9_-]{1,64}\/(?!\.{1,2}$)[^/\\?#%\s]{1,255}$/.test(s) || https(s);
 // No setting value is longer than this; a template's pattern never runs on more.
 export const MAX_VALUE_LENGTH = 4096;
 // Sizes, in UTF-8 bytes of JSON. overlay.settings travels in a state.changed envelope beside its
@@ -55,6 +57,8 @@ const NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MAX_DEPTH = 3; // nested groups; a form deeper than this isn't a settings form
 const opts = (manifest, match) => ({ root: manifest, formats: SETTINGS_FORMATS, maxStringLength: MAX_VALUE_LENGTH, match });
 const has = (o, k) => isObject(o) && Object.prototype.hasOwnProperty.call(o, k);
+// A key as one JSON pointer segment (RFC 6901): a saved key may hold "/" or "~".
+const ptr = (k) => String(k).replace(/~/g, '~0').replace(/\//g, '~1');
 
 // The settings object's schema, with any top-level $ref followed; undefined when there is none.
 export function settingsSchema(manifest) {
@@ -69,6 +73,12 @@ export function settingsSchema(manifest) {
 export function checkSettingsSchema(manifest) {
   const errors = [];
   const warnings = [];
+  // `settings` itself is usually only a $ref; anything beside it (a default, a binding) would be
+  // ignored unseen, as beside any other $ref.
+  if (isObject(manifest?.settings) && manifest.settings.$ref !== undefined) {
+    const beside = Object.keys(manifest.settings).filter((k) => k !== '$ref' && k !== 'title' && k !== 'description');
+    if (beside.length) errors.push(`settings: nothing but "title" and "description" may stand beside "$ref" (found ${beside.join(', ')})`);
+  }
   let root;
   try {
     root = settingsSchema(manifest);
@@ -310,9 +320,9 @@ export function validateSettings(manifest, settings) {
     if (depth > MAX_DEPTH || !isObject(value)) return;
     for (const key of Object.keys(value)) {
       const field = has(schema.properties, key) ? deref(manifest, schema.properties[key]) : undefined;
-      if (!isObject(field)) errors.push({ path: `${path}/${key}`, message: 'is not a setting of this template' });
-      else if (field.type === 'object') unknown(field, value[key], `${path}/${key}`, depth + 1);
-      else for (const p of mediaProblems(manifest, field, value[key])) errors.push({ ...p, path: `${path}/${key}${p.path === '/' ? '' : p.path}` });
+      if (!isObject(field)) errors.push({ path: `${path}/${ptr(key)}`, message: 'is not a setting of this template' });
+      else if (field.type === 'object') unknown(field, value[key], `${path}/${ptr(key)}`, depth + 1);
+      else for (const p of mediaProblems(manifest, field, value[key])) errors.push({ ...p, path: `${path}/${ptr(key)}${p.path === '/' ? '' : p.path}` });
     }
   };
   unknown(root, settings, '', 0);
@@ -381,7 +391,7 @@ export function migrateSettings(fromManifest, toManifest, settings) {
   const from = safe(() => settingsSchema(fromManifest));
   const changes = [];
   if (!to) {
-    for (const [key, v] of Object.entries(isObject(settings) ? settings : {})) changes.push({ path: `/${key}`, change: 'removed', from: v });
+    for (const [key, v] of Object.entries(isObject(settings) ? settings : {})) changes.push({ path: `/${ptr(key)}`, change: 'removed', from: v });
     return { settings: {}, changes };
   }
   const match = boundedMatch();
@@ -392,7 +402,7 @@ export function migrateSettings(fromManifest, toManifest, settings) {
     const props = toSchema.properties || {};
     const old = (fromSchema && fromSchema.properties) || {};
     for (const [key, v] of Object.entries(isObject(value) ? value : {})) {
-      const at = `${path}/${key}`;
+      const at = `${path}/${ptr(key)}`;
       const field = has(props, key) ? deref(toManifest, props[key]) : undefined;
       if (!isObject(field)) { changes.push({ path: at, change: 'removed', from: v }); continue; }
       if (field.type === 'object') {
@@ -407,7 +417,7 @@ export function migrateSettings(fromManifest, toManifest, settings) {
     for (const [key, raw] of Object.entries(props)) {
       const field = deref(toManifest, raw);
       const before = has(old, key) ? deref(fromManifest, old[key]) : undefined;
-      const at = `${path}/${key}`;
+      const at = `${path}/${ptr(key)}`;
       if (!isObject(field)) continue;
       const saved = has(value, key);
       if (!isObject(before)) {
@@ -432,7 +442,7 @@ export function diffSettings(before, after, path = '', depth = 0) {
   const a = isObject(before) ? before : {};
   const b = isObject(after) ? after : {};
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    const at = `${path}/${key}`;
+    const at = `${path}/${ptr(key)}`;
     const x = has(a, key) ? a[key] : undefined;
     const y = has(b, key) ? b[key] : undefined;
     if (isObject(x) && isObject(y) && depth < MAX_DEPTH) out.push(...diffSettings(x, y, at, depth + 1));

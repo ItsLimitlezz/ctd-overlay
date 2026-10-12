@@ -95,10 +95,12 @@ OBS browser sources can't log in, so overlays use capability URLs.
 - Grants read access to that overlay's page, snapshot, stream and poll — nothing else.
 - **Files are not behind the key.** An OBS browser source requests template files and images as
   plain URLs, which can't carry `?key=`. So template files (`/o/<slug>/t/<build>/…`, 04 §4.5)
-  and uploaded media (`/media/<fileId>/…`) are served without it. Their paths protect them:
-  `<build>` carries at least 64 bits of the package hash and `fileId` at least 128 random bits,
-  and only the keyed page or an authenticated API call reveals either. They hold design files
-  and media, never live data or credentials.
+  and uploaded media (`/media/<fileId>/…`) are served without it. A `fileId` carries at least
+  128 random bits, and only the keyed page or an authenticated API call reveals it. A `<build>`
+  is not a secret: it is a hash of the package, so anyone who has the same package (a bundled or
+  published template) can compute it, and a slug is not secret either. Template files are
+  therefore public to anyone who can reach the platform; they hold design files, never live
+  data or credentials, and a template **MUST NOT** ship anything its author wouldn't publish.
 - Stored encrypted (not hashed), because the UI must be able to show the URL again for copying.
 - Rotating it is explicit and warns that OBS sources must be updated.
 - Overlay responses send `Referrer-Policy: no-referrer`; the platform **MUST** redact `key=`

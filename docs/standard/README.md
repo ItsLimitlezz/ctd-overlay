@@ -150,6 +150,22 @@ These are settled. An implementation that departs from one is not SKP-conformant
    *(03 §3.1, §3.4)*
 8. alert.schema.json: an `amount` without `unit` no longer requires `currency`.
 9. Installed templates' layout on disk, and one process per data directory. *(10 §10.6)*
+10. From the review of the above: a settings `pattern` runs with a deadline and a value it
+    can't be checked against in time is refused (bad shapes are a warning, no longer an error,
+    and need no `maxLength`); keyword values must make sense; no default on the settings object
+    and no binding on a group; `uri` and media values are `https` (or uploaded media); saved
+    settings at most 24 KiB and defaults at most 6 KiB of UTF-8. *(04 §4.3)*
+11. An upgrade's plan lists what `migrate.js` changed, a dry run refuses what the real run
+    would, a version that drops anything the overlay uses needs a confirmation like a major
+    one, and `POST /overlays/{id}/revert` undoes an upgrade; `migrate.js` may name its default
+    export and returns at most 64 KiB. *(04 §4.10, 03 §3.4)*
+12. Manifest lists are capped; a scene id may not be another scene's core; an installed version
+    whose files changed is validated again, and a template that can't be used takes only its
+    own overlays off air. *(04 §4.11, template.schema.json)*
+13. A `<build>` is a content hash, not a secret: template files are public. Its exact input is
+    spelled out (line format, UTF-8 byte order), so implementations agree. *(04 §4.5, 07 §7.6)*
+14. JSON Schema formats: `time` and `date-time` are RFC 3339 (seconds and offset required);
+    `$ref` is a JSON pointer. *(schemas)*
 
 **2026-10-11.** From building the runtime SDK (plan step 5):
 

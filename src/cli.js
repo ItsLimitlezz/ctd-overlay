@@ -57,12 +57,14 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     });
   } catch (err) {
     stderr.write(`skp: ${err.message}\n\n${USAGE}\n`);
+    if (argv.includes('--json')) out(JSON.stringify({ error: 'usage', message: err.message }, null, 2));
     return 64;
   }
   const { values: opts, positionals: [noun, verb, ...rest] } = args;
   const json = (value) => out(JSON.stringify(value, null, 2));
   const usage = (msg) => {
     stderr.write(`${msg ? `skp: ${msg}\n\n` : ''}${USAGE}\n`);
+    if (msg && opts.json) json({ error: 'usage', message: msg });
     return msg ? 64 : 0;
   };
   if (opts.help || noun === 'help') return usage();
@@ -119,7 +121,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
           templates = data.templates;
           pins = (id, version) => data.overlays.pinnedBy(id, version).length;
         } catch (err) {
-          if (!(err instanceof StartupError) || !/running|already uses/.test(err.message)) throw err;
+          if (!(err instanceof StartupError) || err.code !== 'locked') throw err;
           // The platform holds the data directory: list what is installed, without touching it.
           templates = createTemplateRegistry({ dirs: [BUILTIN_DIR], dataDir: cfg.dataDir, log: logger(), readOnly: true });
         }
@@ -221,18 +223,16 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         return usage(noun ? `unknown command "${command}"` : '');
     }
   } catch (err) {
-    if (err instanceof ConfigError) {
-      stderr.write(`skp: configuration error: ${err.message}\n`);
-      return 78;
-    }
-    if (err instanceof WrongUserError) {
-      stderr.write(`skp: ${err.message}\n`);
-      return 77;
-    }
-    if (err instanceof StartupError && /running|already uses/.test(err.message)) {
-      stderr.write(`skp: ${err.message}\n`);
-      return 75;
-    }
+    // A refusal before the command could start: one line on stderr, and with --json the same as
+    // JSON on stdout, like every other error.
+    const refuse = (code, message, exit) => {
+      stderr.write(`skp: ${message}\n`);
+      if (opts.json) json({ error: code, message });
+      return exit;
+    };
+    if (err instanceof ConfigError) return refuse('config', `configuration error: ${err.message}`, 78);
+    if (err instanceof WrongUserError) return refuse('wrong-user', err.message, 77);
+    if (err instanceof StartupError && err.code === 'locked') return refuse('locked', err.message, 75);
     if (err instanceof TemplateError && err.findings.length) {
       if (opts.json) json({ error: err.code, message: err.message, ...findingsJson({ errors: err.findings.filter((f) => f.level === 'error'), warnings: err.findings.filter((f) => f.level === 'warning') }) });
       else {

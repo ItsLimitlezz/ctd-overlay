@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { BOOT_BADGE, injectRuntime, overlayCsp } from '../src/overlays/routes.js';
-import { DIAG, defer, memoryLogger, startWithOverlay, tempDir } from './helpers.js';
+import { DIAG, DIAG_DIR, defer, memoryLogger, packTemplate, startWithOverlay, tempDir } from './helpers.js';
 
 // Reads SSE frames from a fetch response; each call returns the next frame or throws on timeout.
 function frames(res) {
@@ -43,9 +44,15 @@ function pageMeta(html) {
   return JSON.parse(attr.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 }
 
+// A GET with the path sent exactly as written (fetch would normalize it); { status, body }.
 function rawGet(port, rawPath) {
   return new Promise((resolve, reject) => {
-    http.get({ host: '127.0.0.1', port, path: rawPath }, (res) => { res.resume(); resolve(res.statusCode); }).on('error', reject);
+    http.get({ host: '127.0.0.1', port, path: rawPath }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
   });
 }
 
@@ -89,7 +96,7 @@ test('the page sends the overlay CSP and caching rules (04 §4.8, 03 §3.4)', as
 });
 
 test('template files are served under the build hash, immutable; anything else is 404', async (t) => {
-  const { platform, base, build } = await startWithOverlay(t);
+  const { base, build } = await startWithOverlay(t);
   const css = await fetch(`${base}/t/${build}/template.css`);
   assert.equal(css.status, 200);
   assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
@@ -98,8 +105,29 @@ test('template files are served under the build hash, immutable; anything else i
   assert.equal((await fetch(`${base}/t/0000000000000000/template.css`)).status, 404);
   assert.equal((await fetch(`${base}/t/${build}/missing.css`)).status, 404);
   assert.equal((await fetch(`${base}/t/${build}/previews`)).status, 404);
-  for (const p of ['%2e%2e/%2e%2e/package.json', '..%2f..%2fpackage.json', 'previews/..%5c..%5ctemplate.json', '%2e%2e%2f%2e%2e%2f%2e%2e%2fpackage.json']) {
-    assert.equal(await rawGet(platform.port, `/o/diag-1/t/${build}/${p}`), 404, p);
+});
+
+test('an encoded ../ never reaches past the template\'s files: not its receipt, not the data directory', async (t) => {
+  const { platform, build, config } = await startWithOverlay(t);
+  const served = platform.overlays.resolve('diag-1').template.dir; // <dataDir>/templates/<id>/<build>/package
+  const secret = `not for overlays ${Math.random()}`;
+  writeFileSync(path.join(config.dataDir, 'leak.txt'), secret);
+  // Both targets exist, so a 404 means the route refused them, not that nothing was there.
+  const receipt = readFileSync(path.join(served, '..', 'install.json'), 'utf8');
+  assert.match(receipt, /"installedAt"/);
+  assert.ok(existsSync(path.join(served, '..', '..', '..', '..', 'leak.txt')));
+  // The %5c (backslash) forms only matter where backslash separates paths (Windows); elsewhere
+  // they name a file that doesn't exist.
+  const paths = [
+    '../install.json', '%2e%2e/install.json', 'previews/../../install.json', 'previews/%2e%2e/%2e%2e/install.json',
+    '..%2finstall.json', '%2e%2e%2finstall.json', '..%5cinstall.json', 'previews/..%2f..%2finstall.json',
+    'previews%2f..%2f..%2finstall.json', 'previews/..%5c..%5cinstall.json',
+    '..%2f..%2f..%2f..%2fleak.txt', '%2e%2e%5c%2e%2e%5c%2e%2e%5c%2e%2e%5cleak.txt',
+  ];
+  for (const p of paths) {
+    const { status, body } = await rawGet(platform.port, `/o/diag-1/t/${build}/${p}`);
+    assert.equal(status, 404, p);
+    assert.ok(!body.includes('installedAt') && !body.includes(secret), `${p} leaked a file`);
   }
 });
 
@@ -217,6 +245,39 @@ test('an idle stream gets a heartbeat comment, with server time and the overlay\
   const next = frames(await fetch(`${base}/stream?cursor=${cursor}`, { signal: ctrl.signal }));
   await next();
   assert.match((await next(1000)).comment, new RegExp(`^hb \\d{13} ${build}$`));
+});
+
+test('a stream that outlives a change of pin hears the new build in its heartbeats', async (t) => {
+  const sample = (version) => packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version } });
+  const { platform, base, build, overlay } = await startWithOverlay(t, {
+    heartbeatMs: 50, template: { id: 'dev.skp.sample', version: '1.0.0' }, install: [sample('1.0.0'), sample('1.1.0')],
+  });
+  const newBuild = platform.templates.get('dev.skp.sample', '1.1.0').build;
+  assert.notEqual(newBuild, build);
+  const { cursor } = await (await fetch(`${base}/snapshot`)).json();
+  const ctrl = new AbortController();
+  defer(t, () => ctrl.abort());
+  const next = frames(await fetch(`${base}/stream?cursor=${cursor}`, { signal: ctrl.signal }));
+  assert.match((await next()).comment, new RegExp(`^open \\d{13} ${build}$`));
+
+  // Re-pinned without a channel reset (an upgrade would end the stream), so only the heartbeat
+  // can tell this page to reload.
+  const doc = platform.store.get('overlays', overlay.id);
+  platform.store.put('overlays', doc.id, { ...doc.data, template: { id: 'dev.skp.sample', version: '1.1.0' } }, { ifRev: doc.rev });
+  platform.overlays.reopen('dev.skp.sample', '1.1.0');
+  const changedAt = Date.now();
+
+  // Heartbeats already on their way may still name the old build; the first one stamped after the
+  // change must name the new one.
+  for (let i = 0; ; i++) {
+    assert.ok(i < 100, 'no heartbeat after the change');
+    const f = await next(1000);
+    assert.notEqual(f.done, true, 'the stream ended');
+    const hb = /^hb (\d{13}) (\S+)$/.exec(f.comment || '');
+    if (!hb || Number(hb[1]) <= changedAt) continue;
+    assert.equal(hb[2], newBuild);
+    break;
+  }
 });
 
 test('deleting the overlay ends its open streams', async (t) => {
