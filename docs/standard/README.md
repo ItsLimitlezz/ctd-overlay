@@ -139,8 +139,9 @@ These are settled. An implementation that departs from one is not SKP-conformant
    re-reads wall-clock strings; a lineup slot may carry `logo` (uploaded media or an https URL).
    *(02 §2.5, 09 §9.1, show.schema.json)*
 2. Simulated state is held on the targeted overlay only, ends by itself (60 s here) or at
-   "Reset" and then gives the real values back; the answer says whether the overlay consumes
-   what was sent. *(08 §8.5)*
+   "Reset" and then gives the real values back, and never reaches settings bound to the key;
+   the answer says whether the overlay consumes what was sent. *(08 §8.5)*
+3. `media.stop` may leave out `url` (stop whatever plays). *(02 §2.6)*
 
 **2026-10-12.** From building media (plan step 7):
 

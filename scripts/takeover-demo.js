@@ -44,7 +44,9 @@ const set = (key, value) => platform.bus.setState(key, value);
 set('show.lineup', lineup);
 set('show.headliner', 'VIKKSTAR');
 set('show.goLiveAt', goLive);
-set('show.date', new Date().toISOString().slice(0, 10));
+// The show's own (local) calendar date, not UTC's: in the evening UTC is already tomorrow.
+const today = new Date();
+set('show.date', `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`);
 set('show.recStartedAt', Date.now() - 42 * MIN);
 set('show.currentSlot', 0);
 let viewers = 1159;

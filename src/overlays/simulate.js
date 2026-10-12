@@ -13,14 +13,21 @@
 //
 // Until auth arrives (steps 11–13) the server only listens on this machine. A web page in the
 // operator's browser could still post here, so only JSON is accepted (a cross-origin JSON post
-// needs a CORS preflight, which this server never grants) and a request from another origin is
-// refused outright.
+// needs a CORS preflight, which this server never grants), and the request must be addressed to
+// this platform by one of its own names (hosts(): 127.0.0.1, localhost or [::1] with its port),
+// from one of its own origins if it names one. That is checked against those fixed names, never
+// against the Host the request brought: a DNS-rebinding page sends a Host and an Origin that
+// match each other.
+import { BusError } from '../bus/index.js';
 import { readBody, sendJson, sendProblem } from '../http/server.js';
 import { newId } from '../ids.js';
 
 const BODY_LIMIT = 16 * 1024;
 const SIM = { connector: 'simulator' };
 export const SIM_HOLD_MS = 60000;
+// 02 §2.3: the closed set of chat roles.
+const ROLES = new Set(['broadcaster', 'moderator', 'vip', 'subscriber', 'member', 'verified', 'founder', 'artist', 'bot']);
+const MEDIA_URL = /^\/media\/[A-Za-z0-9_-]+\/[^/\\?#\s]+$/;
 let seq = 0;
 
 const NAMES = ['Trapment', 'BIA', 'NightRaider', 'xX_long_display_name_that_wraps_Xx', 'Deecee'];
@@ -41,13 +48,20 @@ const KINDS = {
   track: (o) => [{ state: { 'music.nowPlaying': track(o) } }],
   viewers: (o) => [{ state: { 'viewers.total': int(o.value, 1159, 0, 100000000) } }],
   'viewers-clear': () => [{ state: { 'viewers.total': undefined } }],
-  'media.play': (o) => (typeof o.url === 'string' && /^\/media\/[A-Za-z0-9_-]+\/[^/\\?#\s]+$/.test(o.url) ? [{ type: 'media.play', data: { mediaId: o.mediaId || 'med_sim', url: o.url } }] : null),
-  'media.stop': () => [{ type: 'media.stop', data: {} }],
+  'media.play': (o) => (typeof o.url === 'string' && MEDIA_URL.test(o.url) ? [{ type: 'media.play', data: { mediaId: mediaId(o), url: o.url } }] : null),
+  // Naming the clip is optional for a stop (02 §2.6): without it, whatever plays stops.
+  'media.stop': (o) => [{ type: 'media.stop', data: { mediaId: mediaId(o), ...(typeof o.url === 'string' && MEDIA_URL.test(o.url) ? { url: o.url } : {}) } }],
   reset: () => [{ reset: true }],
 };
 
+// A media id as the library makes them (med_ and a ULID), or a stand-in: never the caller's
+// arbitrary JSON.
+const mediaId = (o) => (typeof o.mediaId === 'string' && /^med_[0-9A-Za-z]{1,40}$/.test(o.mediaId) ? o.mediaId : 'med_sim');
+
+// A number or numeric string in range, else the fallback (never Number() of the caller's objects:
+// a deeply nested array would recurse in its toString).
 function int(v, fallback, min, max) {
-  const n = Number(v);
+  const n = typeof v === 'number' || typeof v === 'string' ? Number(v) : NaN;
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
 }
 
@@ -61,7 +75,7 @@ function chatMessage(o) {
   return {
     id: newId('msg'),
     channel: 'simulator',
-    user: { ...u, login: u.name.toLowerCase(), color: '#16E0FF', roles: Array.isArray(o.roles) ? o.roles.filter((r) => typeof r === 'string').slice(0, 5) : ['subscriber'], badges: [] },
+    user: { ...u, login: u.name.toLowerCase(), color: '#16E0FF', roles: Array.isArray(o.roles) ? [...new Set(o.roles.filter((r) => ROLES.has(r)))] : ['subscriber'], badges: [] },
     text,
     fragments: [{ type: 'text', text }],
     reply: null,
@@ -83,12 +97,14 @@ function track(o) {
   };
 }
 
-// holdMs: how long simulated state lasts (tests shorten it).
-export function simulateRoutes({ overlays, bus, log, holdMs = SIM_HOLD_MS }) {
+// hosts(): the names this platform answers to, as host:port. holdMs: how long simulated state
+// lasts (tests shorten it).
+export function simulateRoutes({ overlays, bus, log, hosts, holdMs = SIM_HOLD_MS }) {
   async function simulate({ req, res, params }) {
+    const own = hosts();
     const origin = req.headers.origin;
-    if (origin !== undefined && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
-      return sendProblem(res, 403, 'Forbidden', 'Simulation can only be requested from this platform\'s own pages.');
+    if (!own.includes(String(req.headers.host || '').toLowerCase()) || (origin !== undefined && !own.some((h) => origin === `http://${h}`))) {
+      return sendProblem(res, 403, 'Forbidden', 'Simulation can only be requested from this platform\'s own pages, at its own address.');
     }
     if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
       return sendProblem(res, 415, 'Unsupported media type', 'Send a JSON body with Content-Type: application/json, e.g. { "kind": "follow" }.');
@@ -124,7 +140,14 @@ export function simulateRoutes({ overlays, bus, log, holdMs = SIM_HOLD_MS }) {
         }
       } else {
         const takes = channel.accepts({ type: item.type, src: SIM, data: item.data });
-        const env = bus.publish(item.type, item.data, { src: SIM, target: found.doc.id });
+        let env;
+        try {
+          env = bus.publish(item.type, item.data, { src: SIM, target: found.doc.id });
+        } catch (err) {
+          // What the caller sent doesn't make an envelope (too large): their mistake, not a crash.
+          if (err instanceof BusError) return sendProblem(res, 422, 'Not sendable', err.message);
+          throw err;
+        }
         sent.push({ type: env.type, id: env.id, delivered: takes });
       }
     }

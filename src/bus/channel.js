@@ -126,8 +126,10 @@ export class Channel {
 
   // One state key as this overlay sees it (its own state first, then global state it consumes
   // from connections bound to it), or undefined: what an x-skp-bind setting may read.
-  visibleState(key) {
-    if (this.#sim.has(key)) return structuredClone(this.#sim.get(key).value);
+  // real: leave simulated state out (what x-skp-bind settings read: a simulation never becomes
+  // part of an overlay's settings, 08 §8.5).
+  visibleState(key, { real = false } = {}) {
+    if (!real && this.#sim.has(key)) return structuredClone(this.#sim.get(key).value);
     if (this.#local.has(key)) return structuredClone(this.#local.get(key));
     if (!(RUNTIME_KEYS.has(key) || this.wantsState(key))) return undefined;
     const entry = this.#bus.stateEntry(key);
