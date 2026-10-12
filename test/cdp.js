@@ -56,9 +56,19 @@ function findBrowser() {
 }
 
 // With a test context, the browser closes when that test ends; without one (a browser shared by
-// a whole file), the caller closes it.
+// a whole file), the caller closes it. A browser that doesn't bring DevTools up in time (a busy CI
+// runner starting several at once) is killed and started once more, with a fresh profile.
 export async function launchBrowser(t) {
   if (!browserPath) throw new Error(noBrowser);
+  try {
+    return await launchOnce(t);
+  } catch (err) {
+    if (!/did not start DevTools in time/.test(err.message)) throw err;
+    return launchOnce(t);
+  }
+}
+
+async function launchOnce(t) {
   const profile = mkdtempSync(path.join(tmpdir(), 'skp-browser-'));
   const args = [
     '--headless=new',
@@ -169,7 +179,7 @@ function removeProfile(profile) {
 
 async function waitForDevTools(profile, child, stderr, spawnError) {
   const file = path.join(profile, 'DevToolsActivePort');
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (spawnError()) throw new Error(`could not start ${browserPath}: ${spawnError().message}`);
     if (child.exitCode !== null) throw new Error(`the browser exited (${child.exitCode}): ${stderr()}`);
