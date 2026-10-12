@@ -3,12 +3,13 @@
 //
 // Commands that change the data directory (install, uninstall, upgrade, revert) take its lock, so
 // they run while the platform is stopped: a running server would neither see the change nor keep
-// the JSON store's copy of it. Each is appended to <dataDir>/operations.log, the record of who
-// changed what from the command line until the audit log arrives (step 14). validate and pack
-// never touch the data directory.
+// the JSON store's copy of it. Each goes to the audit log (07 §7.12) as cli:<user>. validate and
+// pack never touch the data directory.
 //
-// The show commands (show …, overlay take / fire) are different: they drive the running platform
-// through its local API (src/shows/routes.js), so a show can be run while it is on air.
+// The show, user, token and audit commands are different: they drive the running platform through
+// its API, so a show can be run while it is on air. They sign in with the local token the
+// platform writes to the config directory at startup (auth/index.js), which works from this
+// machine only.
 //
 // Exit codes: 0 done, 1 refused or invalid, 64 usage, 69 the platform isn't running (for the
 // commands that drive it), 75 the data directory is in use, 77 wrong user (root on a data
@@ -17,10 +18,11 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { openData, StartupError } from './app.js';
+import { cliActor } from './auth/audit.js';
+import { readLocalToken } from './auth/index.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createLogger } from './log.js';
 import { MediaError, mediaUrl } from './media/library.js';
-import { recordOperation } from './oplog.js';
 import { OverlayError } from './overlays/registry.js';
 import { StoreVersionError } from './store/migrate.js';
 import { MigrateError } from './templates/migrate.js';
@@ -78,6 +80,22 @@ These drive the running platform (start it first):
   show plan delete <show> <plan>
   overlay take <slug> <scene> [--transition ...]     an overlay outside a show
   overlay fire <slug> <action> [--args <json>]
+  setup --code <code> --username <name>   create the owner account with the setup code the
+                                          platform printed in its log (asks for a password)
+  user list                               accounts and roles
+  user add <name> --role admin|operator|viewer       asks for their password
+  user role <name> <role>                 change a role (signs them out everywhere)
+  user password <name>                    set a new password (the owner's too, if forgotten)
+  user reset-2fa <name>                   turn off two-factor for someone who lost their phone
+  user remove <name>
+  token list [--all]                      API tokens (for a Stream Deck, a bot …)
+  token create --name <n> [--scopes a,b] [--expires-days N] [--ips 192.168.1.0/24]
+                                          prints the token once; by default with all the
+                                          owner's scopes
+  token revoke <id>
+  audit [--limit N] [--action login]      the audit log, newest first
+
+A password is asked for without echo, or read from standard input when it is piped.
 
 Options: --json (machine-readable output), and the server's own --data-dir, --config-dir,
 --store and --port to find the data directory and the platform (the same environment variables
@@ -88,7 +106,7 @@ const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boun
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
 // fetch and lookup: test hooks for what template sources download with and resolve names with.
-export async function run(argv, { stdout = process.stdout, stderr = process.stderr, env = process.env, fetch: fetchHook, lookup: lookupHook } = {}) {
+export async function run(argv, { stdout = process.stdout, stderr = process.stderr, stdin = process.stdin, env = process.env, fetch: fetchHook, lookup: lookupHook } = {}) {
   const out = (s) => stdout.write(`${s}\n`);
   let args;
   try {
@@ -97,7 +115,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       allowPositionals: true,
       strict: true,
       options: {
-        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' },
+        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' }, all: { type: 'boolean' },
+        code: { type: 'string' }, username: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' }, 'expires-days': { type: 'string' }, ips: { type: 'string' }, limit: { type: 'string' },
         to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
         ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
@@ -123,7 +142,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const openFor = (purpose, cfg = config()) => {
     checkOwner(cfg.dataDir);
     const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook });
-    return Object.assign(data, { record: (details) => recordOperation(cfg.dataDir, purpose, details) });
+    return Object.assign(data, { record: (details) => data.audit.record({ action: purpose.replace(/ /g, '.'), actor: cliActor(), ...details }) });
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
   const platform = (method, apiPath, body) => callPlatform(config(), method, apiPath, body, fetchHook || globalThis.fetch);
@@ -566,6 +585,104 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         return 0;
       }
 
+      case 'setup': {
+        if (verb !== undefined) return usage('setup takes options only: --code and --username');
+        if (!opts.code || !opts.username) return usage('setup needs --code (from the platform\'s log) and --username');
+        const needed = await platform('GET', '/setup');
+        if (!needed.needed) return usage('The owner account exists already. Sign in to the admin UI, or use skp user password <name> if the password is lost.');
+        const password = await readSecret(`Password for ${opts.username} (12 characters or more): `, { stdin, stderr, confirm: true });
+        const s = await platform('POST', '/setup', { code: opts.code, username: opts.username, password });
+        if (opts.json) json({ user: s.user });
+        else out(`created the owner account ${s.user.username}. Sign in with it in the admin UI; turn on two-factor there.`);
+        return 0;
+      }
+
+      case 'user list': {
+        if (rest.length) return usage('user list takes no arguments');
+        const users = await platform('GET', '/users');
+        if (opts.json) json(users);
+        else for (const u of users) out(`${u.username.padEnd(20)} ${u.role.padEnd(9)} ${u.totp ? '2FA on ' : '2FA off'}  ${u.lastLoginAt ? `last signed in ${u.lastLoginAt}` : 'never signed in'}`);
+        return 0;
+      }
+
+      case 'user add': {
+        if (rest.length !== 1 || !opts.role) return usage('user add takes <name> and --role admin|operator|viewer');
+        const password = await readSecret(`Password for ${rest[0]} (12 characters or more): `, { stdin, stderr, confirm: true });
+        const u = await platform('POST', '/users', { username: rest[0], role: opts.role, password });
+        if (opts.json) json(u);
+        else out(`added ${u.username} (${u.role})`);
+        return 0;
+      }
+
+      case 'user role':
+      case 'user password':
+      case 'user reset-2fa': {
+        if (rest.length !== (verb === 'role' ? 2 : 1)) return usage(verb === 'role' ? 'user role takes <name> <role>' : `user ${verb} takes <name>`);
+        let patch;
+        if (verb === 'role') patch = { role: rest[1] };
+        else if (verb === 'password') patch = { password: await readSecret(`New password for ${rest[0]}: `, { stdin, stderr, confirm: true }) };
+        else patch = { totp: false };
+        const u = await platform('PATCH', `/users/${encodeURIComponent(rest[0])}`, patch);
+        if (opts.json) json(u);
+        else out(verb === 'role' ? `${u.username} is ${u.role} now (signed out everywhere)` : verb === 'password' ? `set a new password for ${u.username} (signed out everywhere)` : `two-factor is off for ${u.username}; they can set it up again after signing in`);
+        return 0;
+      }
+
+      case 'user remove': {
+        if (rest.length !== 1) return usage('user remove takes <name>');
+        const u = await platform('DELETE', `/users/${encodeURIComponent(rest[0])}`);
+        if (opts.json) json(u);
+        else out(`removed ${u.username}, their sessions and tokens`);
+        return 0;
+      }
+
+      case 'token list': {
+        if (rest.length) return usage('token list takes no arguments');
+        const tokens = await platform('GET', `/tokens${opts.all ? '?all=true' : ''}`);
+        if (opts.json) json(tokens);
+        else {
+          for (const k of tokens) out(`${k.id}  ${k.name}  (${k.user})  ${k.scopes.join(' ')}${k.expiresAt ? `  expires ${k.expiresAt}` : ''}${k.lastUsedAt ? `  last used ${k.lastUsedAt}` : '  never used'}`);
+          if (!tokens.length) out('No API tokens: skp token create --name "Stream Deck" --scopes overlays:control');
+        }
+        return 0;
+      }
+
+      case 'token create': {
+        if (rest.length || !opts.name) return usage('token create takes --name, and optionally --scopes, --expires-days and --ips');
+        const body = { name: opts.name };
+        if (opts.scopes !== undefined) body.scopes = opts.scopes.split(',').map((s) => s.trim()).filter(Boolean);
+        if (opts['expires-days'] !== undefined) {
+          if (!/^\d+$/.test(opts['expires-days'])) return usage('--expires-days is a number of days');
+          body.expiresInDays = Number(opts['expires-days']);
+        }
+        if (opts.ips !== undefined) body.ips = opts.ips.split(',').map((s) => s.trim()).filter(Boolean);
+        const k = await platform('POST', '/tokens', body);
+        if (opts.json) json(k);
+        else {
+          out(k.token);
+          stderr.write(`That is the token for "${k.name}" (${k.id}), with ${k.scopes.join(', ')}. It is shown this once: copy it now.\n`);
+        }
+        return 0;
+      }
+
+      case 'token revoke': {
+        if (rest.length !== 1) return usage('token revoke takes <id>');
+        const k = await platform('DELETE', `/tokens/${encodeURIComponent(rest[0])}`);
+        if (opts.json) json(k);
+        else out(`revoked ${k.id}`);
+        return 0;
+      }
+
+      case 'audit': {
+        if (verb !== undefined) return usage('audit takes options only: --limit, --action');
+        const limit = opts.limit === undefined ? 50 : Number(opts.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) return usage('--limit is 1 to 200');
+        const page = await platform('GET', `/system/audit?limit=${limit}${opts.action ? `&action=${encodeURIComponent(opts.action)}` : ''}`);
+        if (opts.json) json(page);
+        else for (const e of page.items) out(`${e.at}  ${e.action.padEnd(18)} ${e.actor}${e.ip ? ` from ${e.ip}` : ''}${e.target ? `  → ${e.target}` : ''}${e.details ? `  ${JSON.stringify(e.details)}` : ''}`);
+        return 0;
+      }
+
       default:
         return usage(noun ? `unknown command "${command}"` : '');
     }
@@ -619,20 +736,68 @@ class PlatformError extends Error {
 // reason.
 async function callPlatform(cfg, method, apiPath, body, fetchFn) {
   const base = `http://${cfg.host.includes(':') ? `[${cfg.host}]` : cfg.host}:${cfg.port}`;
+  const token = readLocalToken(cfg.configDir);
   let res;
   try {
     res = await fetchFn(`${base}/api/v1${apiPath}`, {
       method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.name}). Start it first (npm start): show commands drive it.`, 'not-running', 69);
+    throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.name}). Start it first (npm start): this command drives it.`, 'not-running', 69);
   }
   const value = await res.json().catch(() => null);
-  if (!res.ok) throw new PlatformError(value?.detail || `The platform answered ${res.status}.`, (value?.type || '').split('/').pop() || `http-${res.status}`);
+  if (!res.ok) {
+    const code = (value?.type || '').split('/').pop() || `http-${res.status}`;
+    if (code === 'unauthenticated' && !token) throw new PlatformError(`The platform at ${base} wants a sign-in, and there is no local token in ${cfg.configDir}: is it running with this config directory (SKP_CONFIG_DIR)?`, code);
+    throw new PlatformError(value?.detail || `The platform answered ${res.status}.`, code);
+  }
   return value;
+}
+
+// A password typed at the terminal without echo (twice, for a new one), or the first line of
+// standard input when it isn't a terminal (echo "…" | skp user add …).
+async function readSecret(prompt, { stdin, stderr, confirm = false }) {
+  if (!stdin.isTTY) {
+    let text = '';
+    for await (const chunk of stdin) {
+      text += chunk;
+      if (text.includes('\n')) break;
+    }
+    const line = text.split(/\r?\n/)[0];
+    if (!line) throw new PlatformError('No password given: type it when asked, or pipe it to standard input.', 'usage', 64);
+    return line;
+  }
+  const ask = (q) => new Promise((resolve, reject) => {
+    stderr.write(q);
+    let s = '';
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    const done = (err) => {
+      stdin.off('data', onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      stderr.write('\n');
+      if (err) reject(err);
+      else resolve(s);
+    };
+    const onData = (chunk) => {
+      for (const c of chunk) {
+        if (c === '\r' || c === '\n') return done();
+        if (c === '\u0003') return done(new PlatformError('Cancelled.', 'cancelled', 130));
+        if (c === '\u007f' || c === '\b') s = s.slice(0, -1);
+        else s += c;
+      }
+      return undefined;
+    };
+    stdin.on('data', onData);
+  });
+  const first = await ask(prompt);
+  if (confirm && (await ask('Again, to be sure: ')) !== first) throw new PlatformError('The two passwords differ. Nothing was changed.', 'mismatch');
+  return first;
 }
 
 function readJsonFile(file, what) {

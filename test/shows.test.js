@@ -8,7 +8,7 @@ import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { TRIGGER_LEAD_MS } from '../src/shows/registry.js';
-import { defer, FIXTURE_TEMPLATES, memoryLogger, tempDir, TESTBED } from './helpers.js';
+import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const MIN = 60000;
 const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
@@ -28,7 +28,7 @@ async function setup(t, { dataRoot = tempDir(t) } = {}) {
   const local = (slug) => platform.overlays.resolve(slug).channel.snapshot().state;
   const api = (method, url, body, headers = {}) => fetch(`${platform.url}/api/v1${url}`, {
     method,
-    headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
+    headers: signedIn(platform, body === undefined ? headers : { 'content-type': 'application/json', ...headers }),
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then(async (res) => ({ status: res.status, type: res.headers.get('content-type'), body: await res.json().catch(() => null) }));
   return { platform, config, entries, got, watch, local, api, dataRoot };
@@ -316,7 +316,7 @@ test('what a show must be: refusals say what to fix', async (t) => {
   assert.equal(show.admin, undefined);
 });
 
-test('the show API: local only, JSON, problems with reasons', async (t) => {
+test('the show API: signed in, JSON, problems with reasons', async (t) => {
   const { platform, api, got, watch } = await setup(t);
   overlaysFor(platform);
   const created = await api('POST', '/shows', SHOW);
@@ -345,13 +345,13 @@ test('the show API: local only, JSON, problems with reasons', async (t) => {
     assert.match(res.type, /application\/problem\+json/);
     assert.ok(res.body.detail, 'says why');
   }
-  const form = await fetch(`${platform.url}/api/v1/shows/${id}/scene`, { method: 'PUT', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'scene=brb' });
+  const form = await fetch(`${platform.url}/api/v1/shows/${id}/scene`, { method: 'PUT', headers: signedIn(platform, { 'content-type': 'application/x-www-form-urlencoded' }), body: 'scene=brb' });
   assert.equal(form.status, 415);
   await form.arrayBuffer();
   // Another name for this machine (a DNS-rebinding page) is refused, for reading too.
   const { port } = new URL(platform.url);
   const raw = (method, host) => new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, method, path: '/api/v1/shows', headers: { host } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    const req = request({ host: '127.0.0.1', port, method, path: '/api/v1/shows', headers: signedIn(platform, { host }) }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
     req.on('error', reject);
     req.end();
   });

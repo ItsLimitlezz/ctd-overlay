@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SIM_HOLD_MS } from '../src/overlays/simulate.js';
-import { DIAG, TESTBED, TESTBED_DIR, packTemplate, startWithOverlay } from './helpers.js';
+import { DIAG, TESTBED, TESTBED_DIR, packTemplate, signedIn, startWithOverlay } from './helpers.js';
 
 // A platform with two testbed overlays (both would take any event) and a diagnostic one (which
 // consumes only custom.*), and every envelope each one's channel sends.
@@ -21,7 +21,7 @@ async function setup(t, { install, settings = {}, options } = {}) {
   platform.bus.subscribeAll((env) => global.push(env));
   const post = (ref, body, headers = {}) => fetch(`${platform.url}/api/v1/overlays/${ref}/simulate`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: signedIn(platform, { 'content-type': 'application/json', ...headers }),
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   const send = async (ref, body) => {
@@ -141,6 +141,11 @@ test('only JSON from the platform\'s own pages is accepted: no form posts, no ot
   assert.equal(own.status, 200);
   await own.arrayBuffer();
   assert.equal(got.bed.length, 1);
+  // Signed in, or nothing: simulating takes overlays:control.
+  const anonymous = await fetch(`${platform.url}/api/v1/overlays/bed/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"kind":"follow"}' });
+  assert.equal(anonymous.status, 401);
+  assert.equal((await anonymous.json()).type, 'https://skp.dev/errors/unauthenticated');
+  assert.equal(got.bed.length, 1);
   // No CORS grant: a browser on another site can't even send the JSON.
   const preflight = await fetch(`${platform.url}/api/v1/overlays/bed/simulate`, {
     method: 'OPTIONS',
@@ -156,7 +161,7 @@ test('a page that reaches the platform under another name (DNS rebinding) is ref
   const { port } = new URL(platform.url);
   const raw = (host, origin) => new Promise((resolve, reject) => {
     const body = JSON.stringify({ kind: 'raid' });
-    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/v1/overlays/bed/simulate', headers: { host, ...(origin ? { origin } : {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/v1/overlays/bed/simulate', headers: signedIn(platform, { host, ...(origin ? { origin } : {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }) }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode));
     });

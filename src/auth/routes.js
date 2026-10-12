@@ -84,8 +84,9 @@ export function authRoutes({ auth, audit, guard, hosts, log }) {
       try {
         const [status, value] = await run({ who, params, body, ctx, url });
         // A sign-in's cookie goes in its header, never the body.
-        const { cookie, ...rest } = value && typeof value === 'object' && !Array.isArray(value) ? value : { value };
-        sendJson(res, status, cookie === undefined && !(value && typeof value === 'object' && !Array.isArray(value)) ? value : rest, cookie ? { 'set-cookie': cookie } : {});
+        const isObject = value && typeof value === 'object' && !Array.isArray(value);
+        const { cookie, ...rest } = isObject ? value : {};
+        sendJson(res, status, isObject ? rest : value, cookie ? { 'set-cookie': cookie } : {});
       } catch (err) {
         if (err instanceof AuthError) {
           return sendProblem(res, err.status, TITLES[err.status] || 'Refused', err.message, { type: problemType(err.code), headers: err.retryAfterS ? { 'retry-after': String(err.retryAfterS) } : {} });

@@ -1,23 +1,22 @@
-// Login protection (07 §7.3): ten failures for one account or from one address within 15 minutes,
-// and each further try waits longer: 1 s, 2 s, 4 s … up to 15 minutes. The same for setup codes.
+// Login protection (07 §7.3): ten failures for one account or from one address, each within
+// 15 minutes of the last, and every further try waits longer: 1 s, 2 s, 4 s … up to 15 minutes. A
+// quiet quarter of an hour (no failure) starts the count over; a success does for the account.
+// The same for setup codes.
+//
+// The count is a streak, not a sliding window: with delays that double, a 15-minute window would
+// empty before the delay could reach its 15-minute cap, and a patient guesser would be back to
+// one try a second.
 export const LIMIT = 10;
 export const WINDOW_MS = 15 * 60 * 1000;
 export const MAX_DELAY_MS = 15 * 60 * 1000;
 
 export function createThrottle({ now = Date.now, limit = LIMIT, windowMs = WINDOW_MS, maxDelayMs = MAX_DELAY_MS } = {}) {
-  const keys = new Map(); // key → { fails: [ms], until }
+  const keys = new Map(); // key → { count, last, until }
 
-  const entry = (key) => {
-    let e = keys.get(key);
-    if (!e) keys.set(key, (e = { fails: [], until: 0 }));
-    e.fails = e.fails.filter((t) => now() - t < windowMs);
-    return e;
-  };
-
-  // Forget keys with nothing recent, so the map stays small.
+  // Forget keys gone quiet, so the map stays small.
   function sweep() {
     if (keys.size < 10000) return;
-    for (const [key, e] of keys) if (e.until <= now() && !e.fails.some((t) => now() - t < windowMs)) keys.delete(key);
+    for (const [key, e] of keys) if (e.until <= now() && now() - e.last > windowMs) keys.delete(key);
   }
 
   return {
@@ -33,10 +32,11 @@ export function createThrottle({ now = Date.now, limit = LIMIT, windowMs = WINDO
     fail(...list) {
       sweep();
       for (const key of list) {
-        const e = entry(key);
-        e.fails.push(now());
-        if (e.fails.length > 100) e.fails.splice(0, e.fails.length - 100);
-        if (e.fails.length >= limit) e.until = now() + Math.min(maxDelayMs, 1000 * 2 ** Math.min(30, e.fails.length - limit));
+        let e = keys.get(key);
+        if (!e || now() - e.last > windowMs) keys.set(key, (e = { count: 0, last: 0, until: 0 }));
+        e.count++;
+        e.last = now();
+        if (e.count >= limit) e.until = now() + Math.min(maxDelayMs, 1000 * 2 ** Math.min(30, e.count - limit));
       }
     },
     succeed(...list) {

@@ -1,5 +1,5 @@
 // The command line (src/cli.js): template validate, pack, list, install, uninstall, overlay
-// upgrade and revert, operations.log, its exit codes, the lock that keeps it off a running
+// upgrade and revert, the audit log, its exit codes, the lock that keeps it off a running
 // platform's data, and how src/main.js tells a command from the server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import { run } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
 import { openStore } from '../src/store/index.js';
 import { validateTemplate } from '../src/templates/registry.js';
-import { DIAG, DIAG_DIR, FIXTURE_TEMPLATES, TESTBED, defer, memoryLogger, packTemplate, tempDir } from './helpers.js';
+import { DIAG, DIAG_DIR, FIXTURE_TEMPLATES, TESTBED, auditOf, defer, memoryLogger, packTemplate, tempDir } from './helpers.js';
 
 const MAIN = fileURLToPath(new URL('../src/main.js', import.meta.url));
 
@@ -77,12 +77,6 @@ function stored(config) {
   } finally {
     data.close();
   }
-}
-
-// <dataDir>/operations.log, parsed.
-function operations(config) {
-  const file = path.join(config.dataDir, 'operations.log');
-  return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 }
 
 test('template validate: a directory or a package, readable or --json; errors exit 1', async (t) => {
@@ -317,7 +311,7 @@ test('overlay revert puts an upgraded overlay back on its version and settings; 
   assert.deepEqual(doc.previous.template, { id: ID, version: '1.1.0' }, 'the revert can be undone in turn');
 });
 
-test('each change made from the command line appends one line to operations.log; looking, dry runs and refusals append nothing', async (t) => {
+test('each change made from the command line goes to the audit log as cli:<user>; looking, dry runs and refusals add nothing', async (t) => {
   const { root, env, config } = dirs(t);
   const pack = (version, settings) => {
     const file = path.join(root, `${version}.skp`);
@@ -347,36 +341,24 @@ test('each change made from the command line appends one line to operations.log;
   await ok('overlay', 'revert', 'main');
   await ok('template', 'uninstall', 'dev.skp.sample@1.1.0');
 
-  const ops = operations(config);
-  assert.deepEqual(ops.map(({ ts, user, pid, file, build, ...rest }) => rest), [
-    { op: 'template install', template: 'dev.skp.sample@1.0.0' },
-    { op: 'template install', template: 'dev.skp.sample@1.1.0' },
-    { op: 'overlay upgrade', overlay: 'main', from: '1.0.0', to: '1.1.0', migrated: false, changes: 1 },
-    { op: 'overlay revert', overlay: 'main', from: '1.1.0', to: '1.0.0' },
-    { op: 'template uninstall', removed: ['dev.skp.sample@1.1.0'] },
+  const ops = auditOf(config);
+  assert.deepEqual(ops.map((o) => {
+    const { file, build, ...details } = o.details || {};
+    return { action: o.action, ...details };
+  }), [
+    { action: 'template.install', template: 'dev.skp.sample@1.0.0' },
+    { action: 'template.install', template: 'dev.skp.sample@1.1.0' },
+    { action: 'overlay.upgrade', overlay: 'main', from: '1.0.0', to: '1.1.0', migrated: false, changes: 1 },
+    { action: 'overlay.revert', overlay: 'main', from: '1.1.0', to: '1.0.0' },
+    { action: 'template.uninstall', removed: ['dev.skp.sample@1.1.0'] },
   ]);
   const me = (() => { try { return userInfo().username; } catch { return undefined; } })();
   for (const o of ops) {
-    assert.ok(Math.abs(Date.parse(o.ts) - Date.now()) < 60_000, o.ts);
-    assert.equal(o.user, me);
-    assert.equal(o.pid, process.pid);
+    assert.ok(Math.abs(Date.parse(o.at) - Date.now()) < 60_000, o.at);
+    assert.equal(o.actor, me ? `cli:${me}` : 'cli');
   }
-  assert.equal(ops[0].file, path.resolve(v1));
-  assert.match(ops[0].build, /^[0-9a-f]{16}$/);
-  // Only its owner reads who changed what (POSIX; Windows has no mode bits to check).
-  if (process.platform !== 'win32') assert.equal(statSync(path.join(config.dataDir, 'operations.log')).mode & 0o777, 0o600);
-});
-
-test('a change is made and reported even when operations.log can\'t be written', async (t) => {
-  const { root, env, config } = dirs(t);
-  mkdirSync(path.join(config.dataDir, 'operations.log'), { recursive: true });
-  const file = path.join(root, 'x.skp');
-  writeFileSync(file, packTemplate(DIAG_DIR, { manifest: { id: ID, version: '1.0.0' } }));
-  const res = await cli(['template', 'install', file], env);
-  assert.equal(res.code, 0, res.stderr);
-  assert.match(res.stdout, /installed dev\.skp\.sample@1\.0\.0/);
-  assert.equal(res.stderr, '');
-  assert.equal(readdirSync(path.join(config.dataDir, 'templates', ID)).length, 1);
+  assert.equal(ops[0].details.file, path.resolve(v1));
+  assert.match(ops[0].details.build, /^[0-9a-f]{16}$/);
 });
 
 test('a minor upgrade that drops a value the operator set shows the plan and needs --yes', async (t) => {
@@ -424,7 +406,7 @@ test('settings from migrate.js that can\'t be saved are refused with the plan, o
   assert.deepEqual([body.plan.overlay, body.plan.from, body.plan.to, body.plan.migrated], ['main', '1.0.0', '1.1.0', true]);
   assert.equal(body.plan.changes.filter((c) => c.change === 'migrated').length, 8);
   assert.deepEqual(stored(config).template, { id: ID, version: '1.0.0' });
-  assert.deepEqual(operations(config).map((o) => o.op), ['template install', 'template install']);
+  assert.deepEqual(auditOf(config).map((o) => o.action), ['template.install', 'template.install']);
 });
 
 test('a known error is one line, or JSON with --json, and never a stack', async (t) => {

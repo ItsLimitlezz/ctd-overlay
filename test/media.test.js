@@ -16,7 +16,7 @@ import { parseRange } from '../src/media/routes.js';
 import { sniff } from '../src/media/sniff.js';
 import { openStore } from '../src/store/index.js';
 import { validateSettings } from '../src/templates/settings.js';
-import { defer, DIAG_DIR, memoryLogger, packTemplate, tempDir } from './helpers.js';
+import { auditOf, defer, DIAG_DIR, memoryLogger, packTemplate, tempDir } from './helpers.js';
 
 const FAKE = [process.execPath, fileURLToPath(new URL('./fixtures/fake-ffmpeg.mjs', import.meta.url))];
 const NO_FFMPEG = [path.join(fileURLToPath(new URL('.', import.meta.url)), 'no-such-ffmpeg-here')];
@@ -659,7 +659,7 @@ async function cli(argv, env) {
   return { code, stdout, stderr };
 }
 
-test('skp media add, list and remove, each change in operations.log', async (t) => {
+test('skp media add, list and remove, each change in the audit log', async (t) => {
   const root = tempDir(t);
   const env = { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config'), SKP_FFMPEG: NO_FFMPEG[0] };
   const file = path.join(root, 'My Logo.png');
@@ -683,9 +683,9 @@ test('skp media add, list and remove, each change in operations.log', async (t) 
   const removed = await cli(['media', 'remove', doc.id], env);
   assert.equal(removed.code, 0, removed.stderr);
   assert.equal((await cli(['media', 'remove', doc.id], env)).code, 1);
-  const ops = readFileSync(path.join(root, 'data', 'operations.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(ops.map((o) => o.op), ['media add', 'media add', 'media remove']);
-  assert.equal(ops[0].url, doc.url);
+  const ops = auditOf(loadConfig({ argv: [], env }));
+  assert.deepEqual(ops.map((o) => o.action), ['media.add', 'media.add', 'media.remove']);
+  assert.equal(ops[0].details.url, doc.url);
   // SKP_FFMPEG names an ffmpeg that isn't there: a phone clip is kept as uploaded, and says so.
   const clip = path.join(root, 'IMG_0001.MOV');
   writeFileSync(clip, SAMPLES.mov);
