@@ -29,6 +29,7 @@ const SETTINGS = {
   githubToken: ['SKP_GITHUB_TOKEN', null, false], // a secret: for template sources in private repos
   templateCheckMinutes: ['SKP_TEMPLATE_CHECK_MINUTES', 'template-check-minutes', true],
   allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
+  auditDays: ['SKP_AUDIT_DAYS', 'audit-days', true], // how long the audit log keeps entries (07 §7.12)
 };
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -102,11 +103,12 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
   const githubToken = str(get('githubToken'));
   const templateCheckMinutes = parseMinutes(get('templateCheckMinutes'), 60);
   const allowPrivateDownloads = parseBool(get('allowPrivateDownloads'), false);
+  const auditDays = parseDays(get('auditDays'), 90);
 
   return Object.freeze({
     port, host, exposure, dataDir, configDir,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
-    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, warnings: Object.freeze(warnings),
+    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, auditDays, warnings: Object.freeze(warnings),
   });
 }
 
@@ -122,6 +124,13 @@ function parseBool(picked, fallback) {
   if (/^(true|1|yes)$/i.test(v)) return true;
   if (/^(false|0|no)$/i.test(v)) return false;
   throw new ConfigError(`${picked.source} must be true or false (got "${v}").`);
+}
+
+function parseDays(picked, fallback) {
+  const v = str(picked);
+  if (v === undefined) return fallback;
+  if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 3650) throw new ConfigError(`${picked.source} must be a number of days from 1 to 3650 (got "${v}").`);
+  return Number(v);
 }
 
 // How often template sources are checked: whole minutes, 0 (never on its own) to a week.

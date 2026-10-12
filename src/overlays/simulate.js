@@ -11,10 +11,9 @@
 //
 // The answer says what was sent and whether the overlay takes it (its template consumes it).
 //
-// Until auth arrives (steps 11–13) it is guarded like every control route (http/local.js): the
-// platform's own names only, JSON only.
+// It needs overlays:control, like taking a scene (auth/routes.js), and a JSON body.
 import { BusError } from '../bus/index.js';
-import { jsonBody, refusedHere } from '../http/local.js';
+import { jsonBody } from '../http/local.js';
 import { sendJson, sendProblem } from '../http/server.js';
 import { newId } from '../ids.js';
 
@@ -93,11 +92,11 @@ function track(o) {
   };
 }
 
-// hosts(): the names this platform answers to, as host:port. holdMs: how long simulated state
-// lasts (tests shorten it).
-export function simulateRoutes({ overlays, bus, log, hosts, holdMs = SIM_HOLD_MS }) {
+// guard(req, res, scope): who asks (auth/routes.js). holdMs: how long simulated state lasts
+// (tests shorten it).
+export function simulateRoutes({ overlays, bus, log, guard, holdMs = SIM_HOLD_MS }) {
   async function simulate({ req, res, params }) {
-    if (refusedHere(req, res, hosts)) return undefined;
+    if (!guard(req, res, 'overlays:control')) return undefined;
     const body = await jsonBody(req, res, BODY_LIMIT);
     if (body === undefined) return undefined;
     // By slug or by id.

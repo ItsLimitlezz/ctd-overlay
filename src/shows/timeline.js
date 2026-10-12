@@ -11,7 +11,7 @@
 // a cue more than five minutes late is marked missed, never fired, so a wrong date or a restart
 // after downtime can't replay a night's graphics at once; a cue is written as fired before its
 // effect is published, so a crash can't fire it twice; the operator can fire now, skip or re-arm,
-// and each of those is recorded (operations.log until the audit log, step 11).
+// and each of those goes to the audit log (07 §7.12).
 //
 // A cue set at a time of the show ("01:00") belongs to the show's night: it moves when the show's
 // date, zone or day boundary changes, and a new night (another date) arms it again. A cue set at
@@ -212,7 +212,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       result = view(saved);
     } else throw new ShowError('The override is fire, skip or rearm.', 'invalid');
     log.info(`cue ${op === 'fire' ? 'fired by hand' : op === 'skip' ? 'skipped' : 're-armed'}`, { show: show.id, cue: doc.id, actor });
-    record(`cue.${op}`, { show: show.id, cue: doc.id, action: doc.data.action.type, actor });
+    record(`cue.${op}`, { actor, target: doc.id, show: show.id, type: doc.data.action.type });
     return result;
   }
 

@@ -11,7 +11,7 @@
 // older version of that template moves to the new one when the upgrade needs no confirmation:
 // the same major version, nothing the operator set or a show may name dropped, no migrate.js to
 // run (04 §4.10). The rest wait for the operator (`skp overlay upgrade`), and the log says so.
-// "off" only installs. Every install and upgrade it makes is in operations.log.
+// "off" only installs. Every install and upgrade it makes is in the audit log.
 //
 // From a GitHub release it takes the attached .skp (else a .zip), or failing both the release's
 // source zip, which works for a repository with template.json at its root.
@@ -303,7 +303,7 @@ export async function fetchPackage(input, { dir, token, fetch: fetchFn = globalT
 // isn't downloaded again (an unchanged release costs one small request, 04 §4.13).
 const LASTING = new Set(['invalid', 'wrong-template', 'id-taken', 'reserved-id', 'version-exists', 'too-large']);
 
-// The sources the platform follows. record(op, details) writes operations.log. onAir(overlayId):
+// The sources the platform follows. record(action, details) writes the audit log. onAir(overlayId):
 // whether the overlay's show is live (an upgrade reloads its pages, so it waits). allowPrivate:
 // the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. limits and lookup: test hooks.
 export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
@@ -467,7 +467,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       result.installed = { id, version, build: template.build, noop, warnings };
       if (!noop) {
         log.info('template installed from its source', { source: d.label, template: `${id}@${version}`, build: template.build });
-        record('template update', { source: d.label, release: seen.release, template: `${id}@${version}`, build: template.build });
+        record('template.update', { source: d.label, release: seen.release, template: `${id}@${version}`, build: template.build });
       }
       // What 04 §4.11 has to show: the warnings, for releases nobody watched install.
       for (const w of warnings) log.warn('a template release has a warning', { source: d.label, template: `${id}@${version}`, code: w.code, path: w.path, message: w.message });
@@ -537,7 +537,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
         await overlays.upgrade(slug, version);
         upgraded.push({ overlay: slug, from: pin.version, to: version });
         log.info('overlay upgraded to its template\'s new version', { overlay: slug, from: pin.version, to: version, source: d.label });
-        record('overlay upgrade', { overlay: slug, from: pin.version, to: version, source: d.label, automatic: true });
+        record('overlay.upgrade', { overlay: slug, from: pin.version, to: version, source: d.label, automatic: true });
       } catch (err) {
         wait(err.message);
       }

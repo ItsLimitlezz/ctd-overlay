@@ -1,6 +1,5 @@
-// The control routes before sign-in exists (steps 11–13): shows, scenes, triggers, simulation.
-// The server listens on this machine only, but a web page open in the operator's browser can
-// still send requests to it, so a control request must:
+// What every API request must be, signed in or not (auth/routes.js adds who is asking). A web
+// page open in the operator's browser can send requests to the platform, so a request must:
 // - be addressed to the platform by one of its own names (hosts(): 127.0.0.1, localhost or [::1]
 //   with its port), checked against those fixed names, never against the Host the request
 //   brought: a DNS-rebinding page sends a Host and an Origin that match each other;
