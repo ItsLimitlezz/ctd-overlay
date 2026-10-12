@@ -126,7 +126,9 @@ option that keeps a live show running with nobody touching it.
    v0's rule; a show is live while REC runs (12 h at most). The control routes of 03 for shows
    and overlay scenes and actions exist now, local-only and JSON-only with the platform's own
    names checked (src/http/local.js), and `skp show …` drives the running platform through them
-   (until steps 11–14 bring sign-in and the admin UI). The demo runs on a show.
+   (until steps 11–14 bring sign-in and the admin UI). Until sign-in, no web page may use them,
+   not even one the platform serves: a template's script runs on its origin. Step 11 must keep
+   templates out once pages can sign in (sandboxed overlay pages). The demo runs on a show.
 10. **Timeline.** Cues, the scheduler rules (durable before visible, grace window), lineup
     recipe, timezone + day boundary + DST, planned shows (09). Clock tests per H19.
     Done in `src/shows/timeline.js`, with routes under `/api/v1/shows/:ref/cues|plans` and

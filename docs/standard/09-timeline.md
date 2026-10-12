@@ -33,10 +33,21 @@ broadcast advances with every browser closed and survives a restart mid-show.
   so a countdown never re-interprets wall-clock strings. This is each member overlay's own state:
   two shows never see each other's.
 - **REC.** `show.recStartedAt` is set by the server when the show first goes on air (it takes a
-  scene whose core is `program`, or `auto` reaches `goLiveAt` while on air, which anchors it at
-  `goLiveAt`) and cleared when it takes a scene whose core is `starting`; the operator can also
-  start or reset it. A show is **live** while REC runs. What must not happen on air waits for a
-  live show to end, such as an automatic template upgrade (04 §4.13), which reloads its pages.
+  scene whose core is `program`, or a scene whose core is `auto` is on air at `goLiveAt`, which
+  anchors it at `goLiveAt`) and cleared when it takes a scene whose core is `starting`; the
+  operator can also start or reset it. Go-live counts while it is less than 12 hours ago: a
+  platform that was down at go-live, or a go-live moved into the past, anchors REC at `goLiveAt`
+  as soon as it can, and a go-live from an earlier date anchors nothing.
+- A show is **live** while REC runs, for **12 hours** at most: a show "on air" longer than that
+  was left so. What must not happen on air waits for a live show to end, such as an automatic
+  template upgrade (04 §4.13), which reloads its pages.
+- **Scenes by core.** A take, a timed scene's `then` and a button name a scene by its id or by
+  its core (04 §4.2). Each member gets the name its own template knows: the same id, else the
+  core, so a horizontal and a vertical feed from different templates change together.
+- **Who's on** (`show.currentSlot`) is a lineup position the server keeps on the same act through
+  a lineup edit, and clears if the act is removed.
+- What a show publishes must fit an envelope (02 §2.9): a lineup over 24 KiB as published is
+  refused when saved, and a slot's `logo` is at most 500 characters.
 
 ## 9.2 The time rule
 

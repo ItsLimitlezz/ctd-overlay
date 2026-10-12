@@ -108,7 +108,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
 
   const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock });
   const { store, bus, templates, overlays, media, shows, timeline, sources } = data;
-  const hosts = () => ownHosts(server);
+  const hosts = () => ownHosts(server, config.host);
   const server = createHttpServer({
     log: log.child('http'),
     crash,
@@ -176,9 +176,18 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
 
 // The names this platform answers to on this machine, as host:port (until LAN and public modes
 // add theirs, step 12): what a request that changes something must be addressed to.
-function ownHosts(server) {
+// The configured host is one of them (SKP_HOST=127.0.0.2, say), and on port 80 each name also
+// without the port, as browsers and fetch send it.
+export function ownHosts(server, configuredHost) {
   const port = server.address()?.port;
-  return port ? [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`] : [];
+  if (!port) return [];
+  const names = ['127.0.0.1', 'localhost', '[::1]'];
+  if (configuredHost) {
+    const h = String(configuredHost).toLowerCase();
+    const name = h.includes(':') ? `[${h}]` : h;
+    if (!names.includes(name)) names.push(name);
+  }
+  return [...names.map((n) => `${n}:${port}`), ...(port === 80 ? names : [])];
 }
 
 function ensureDir(dir, label, envName, mode) {
