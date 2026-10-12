@@ -11,9 +11,10 @@ const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DAY = 24 * 60 * 60 * 1000;
 
 export const isTime = (s) => typeof s === 'string' && TIME.test(s);
+// A real calendar date, from 1970 to 2999 (a show's next day must still be a date).
 export function isDate(s) {
   const m = typeof s === 'string' && DATE.exec(s);
-  if (!m) return false;
+  if (!m || Number(m[1]) < 1970 || Number(m[1]) > 2999) return false;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
   return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]);
 }

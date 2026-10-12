@@ -165,6 +165,9 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       if (stopped) return;
       stopped = true;
       await close(server);
+      // Nothing fires while the rest shuts down (a conversion can take seconds to stop).
+      timeline.stop();
+      shows.stop();
       // A template check in progress is abandoned before the store closes.
       await sources.stop();
       // Conversions are stopped, and what they leave is cleared before the store closes.

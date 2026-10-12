@@ -536,8 +536,14 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (opts.json) json(plans);
         else {
           for (const p of plans) {
-            const what = [p.lineup && `${p.lineup.length} slot${p.lineup.length === 1 ? '' : 's'}`, p.goLive && `go-live ${p.goLive}`, p.overlaySettings && `settings for ${Object.keys(p.overlaySettings).join(', ')}`].filter(Boolean).join(', ');
+            const what = [
+              p.lineup && `${p.lineup.length} slot${p.lineup.length === 1 ? '' : 's'}`,
+              p.goLive === null ? 'no go-live' : p.goLive && `go-live ${p.goLive}`,
+              p.dayBoundary && `day boundary ${p.dayBoundary}`,
+              p.overlaySettings && `settings for ${Object.keys(p.overlaySettings).join(', ')}`,
+            ].filter(Boolean).join(', ');
             out(`${p.date}  ${p.activatedAt ? (p.error ? `not activated: ${p.error}` : 'activated') : `activates ${p.activateAt}`}  ${what || 'same show, new date'}  (${p.id})`);
+            for (const w of p.warnings || []) out(`    ${w}`);
           }
           if (!plans.length) out('No planned dates: skp show plan add <show> --date <YYYY-MM-DD> …');
         }
@@ -658,8 +664,8 @@ function cueInput(opts) {
       break;
     }
     case 'slot':
-      if (!/^\d+$/.test(opts.slot)) usage('--slot is a lineup position: 0 for the first act');
-      action = { type: 'show.slot', slot: Number(opts.slot) };
+      // An act's name (it follows the act through lineup edits), or a position.
+      action = { type: 'show.slot', slot: /^\d+$/.test(opts.slot) ? Number(opts.slot) : opts.slot };
       break;
     case 'play': action = { type: 'media.play', mediaId: opts.play }; break;
     case 'stop': action = { type: 'media.stop' }; break;
