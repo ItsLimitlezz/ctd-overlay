@@ -422,7 +422,9 @@ each new release by itself.
   **MAY** be moved to it automatically, but only when the upgrade needs no confirmation under
   §4.10: the same major version, nothing the operator set or a show may name dropped, and no
   `migrate.js` to run for an installed package. The others wait for the operator, who is told.
-  A release older than the newest installed version never moves an overlay back. Automatic
-  upgrades are recorded like the operator's, and `revert` undoes them.
+  A release older than the newest installed version never moves an overlay back. An upgrade
+  reloads the overlay's pages, so it **MUST NOT** happen while the overlay's show is live
+  (09 §9.1): it happens at the first check after. Automatic upgrades are recorded like the
+  operator's, and `revert` undoes them.
 - Following a source is trusting it: its releases are code that runs in OBS and in the admin UI's
   previews (§4.8).

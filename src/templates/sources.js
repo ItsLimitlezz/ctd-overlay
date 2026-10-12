@@ -258,7 +258,8 @@ export async function fetchPackage(input, { dir, token, fetch: fetchFn = globalT
 
 // The sources the platform follows. record(op, details) writes operations.log. limits: a test
 // hook (SOURCE_LIMITS).
-export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits }) {
+// onAir(overlayId): whether the overlay's show is live (automatic upgrades wait).
+export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits, onAir = () => false }) {
   const max = { ...SOURCE_LIMITS, ...limits };
   let chain = Promise.resolve();
   let timer = null;
@@ -340,7 +341,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
         const rel = await githubRelease(fetchFn, d, { token, etag: force ? undefined : d.etag, signal: stopping.signal, max });
         if (rel.unchanged || (!force && rel.tag === d.release && d.version)) {
           update(doc, { checkedAt, error: undefined, etag: rel.etag ?? d.etag });
-          return { ...result, tag: d.release, unchanged: true };
+          return { ...result, tag: d.release, unchanged: true, ...(await pending(d)) };
         }
         result.tag = rel.tag;
         tooLarge(rel, max);
@@ -352,7 +353,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
         const got = await download(fetchFn, d.url, dir, force ? { signal: stopping.signal, max } : { etag: d.etag, lastModified: d.lastModified, signal: stopping.signal, max });
         if (got.unchanged) {
           update(doc, { checkedAt, error: undefined });
-          return { ...result, unchanged: true };
+          return { ...result, unchanged: true, ...(await pending(d)) };
         }
         file = got.file;
         origin = { kind: 'url', url: d.url };
@@ -380,7 +381,7 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
         record('template update', { source: d.label, release: seen.release, template: `${id}@${version}`, build: template.build });
       }
       update(doc, { templateId: id, version, checkedAt, error: undefined, ...seen });
-      if (d.autoUpgrade !== 'off') Object.assign(result, await upgradeOverlays(id, version, d.label));
+      if (d.autoUpgrade !== 'off') Object.assign(result, await upgradeOverlays(id, version, d.label, { announce: true }));
     } catch (err) {
       if (!(err instanceof SourceError || err instanceof TemplateError)) log.error('checking a template source failed', { source: d.label, err });
       const error = { code: err.code || 'failed', message: err.message };
@@ -395,10 +396,16 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
     return result;
   }
 
+  // With nothing new to install: overlays that waited for their show to end (or were created on an
+  // older version since) move now, if they can.
+  const pending = (d) => (d.autoUpgrade !== 'off' && d.templateId && d.version ? upgradeOverlays(d.templateId, d.version, d.label) : {});
+
   // Moves each overlay on an older version of `id` to `version`, when that is the newest installed
-  // version (a release older than what is installed never moves an overlay back) and the upgrade
-  // needs no confirmation.
-  async function upgradeOverlays(id, version, label) {
+  // version (a release older than what is installed never moves an overlay back), the upgrade
+  // needs no confirmation, and the overlay's show isn't live: an upgrade reloads the overlay's
+  // page, which is never done on air. announce: say why the others wait (once, when the version
+  // arrives, not at every check after).
+  async function upgradeOverlays(id, version, label, { announce = false } = {}) {
     const upgraded = [];
     const waiting = [];
     const newest = templates.versions(id)[0];
@@ -407,12 +414,17 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       const pin = o.data.template;
       if (pin.id !== id || compareVersions(pin.version, version) >= 0) continue;
       const slug = o.data.slug;
+      if (onAir(o.id)) {
+        waiting.push({ overlay: slug, from: pin.version, to: version, why: 'its show is live; it moves at the first check after' });
+        if (announce) log.info('a template update waits for the show to end', { overlay: slug, to: version });
+        continue;
+      }
       try {
         const plan = await overlays.upgrade(slug, version, { dryRun: true });
         if (plan.confirm) {
           const why = plan.major ? 'a major version' : 'it drops settings or scenes';
           waiting.push({ overlay: slug, from: pin.version, to: version, why });
-          log.warn('a template update waits for the operator', { overlay: slug, from: pin.version, to: version, why, run: `skp overlay upgrade ${slug} --to ${version}` });
+          if (announce) log.warn('a template update waits for the operator', { overlay: slug, from: pin.version, to: version, why, run: `skp overlay upgrade ${slug} --to ${version}` });
           continue;
         }
         await overlays.upgrade(slug, version);

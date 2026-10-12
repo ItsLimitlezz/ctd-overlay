@@ -14,6 +14,8 @@ import { recordOperation } from './oplog.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
+import { createShows } from './shows/registry.js';
+import { showRoutes } from './shows/routes.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
@@ -57,15 +59,18 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
+    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows') });
     const sources = createTemplateSources({
       store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits,
+      onAir: (overlayId) => shows.onAir(overlayId),
       record: (op, details) => recordOperation(config.dataDir, op, { ...details, actor: 'updater' }),
     });
     return {
-      lock, store, bus, templates, overlays, media, sources,
+      lock, store, bus, templates, overlays, media, shows, sources,
       close() {
         clearInterval(freshen);
         sources.stop();
+        shows.stop();
         media.close();
         bus.close();
         store.close();
@@ -93,13 +98,15 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
   const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits });
-  const { store, bus, templates, overlays, media, sources } = data;
+  const { store, bus, templates, overlays, media, shows, sources } = data;
+  const hosts = () => ownHosts(server);
   const server = createHttpServer({
     log: log.child('http'),
     crash,
     routes: [
       ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
-      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts: () => ownHosts(server), holdMs: simulateHoldMs }),
+      ...showRoutes({ shows, hosts, log: log.child('shows') }),
+      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts, holdMs: simulateHoldMs }),
       ...mediaRoutes({ media }),
       ...routes,
     ],
@@ -136,6 +143,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     templates,
     overlays,
     media,
+    shows,
     sources,
     crash,
     server,

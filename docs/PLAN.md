@@ -116,6 +116,12 @@ option that keeps a live show running with nobody touching it.
 9. **Shows.** Shared scene for member overlays, triggers, timed scenes returning server-side,
    `show.*` state, REC anchor (01 §1.3, 09 §9.1). Automatic template upgrades (step 8b) wait
    while a show an overlay belongs to is live.
+   Done in `src/shows/`. The time rule (09 §9.2, listed under step 10) came forward: published
+   lineups need it. Show state is each member's own channel state, never global. REC follows
+   v0's rule; a show is live while REC runs (12 h at most). The control routes of 03 for shows
+   and overlay scenes and actions exist now, local-only and JSON-only with the platform's own
+   names checked (src/http/local.js), and `skp show …` drives the running platform through them
+   (until steps 11–14 bring sign-in and the admin UI). The demo runs on a show.
 10. **Timeline.** Cues, the scheduler rules (durable before visible, grace window), lineup
     recipe, timezone + day boundary + DST, planned shows (09). Clock tests per H19.
 

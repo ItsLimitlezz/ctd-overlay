@@ -124,6 +124,15 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** From building shows (plan step 9):
+
+1. Show state is each member overlay's own; REC is anchored by the server at the first take of
+   the live scene (or at go-live under `auto`) and cleared by `starting`; a show is live while
+   REC runs, and what must not happen on air waits for it. *(09 §9.1)*
+2. A timed scene's return is stored with the show: a restart mid-scene still returns, and any
+   other take cancels it. *(09 §9.4)*
+3. Automatic template upgrades wait while the overlay's show is live. *(04 §4.13)*
+
 **2026-10-12.** Template sources (plan step 8b, at the operator's request):
 
 1. New §4.13: a template can be followed from a GitHub repository's releases or an https URL;
