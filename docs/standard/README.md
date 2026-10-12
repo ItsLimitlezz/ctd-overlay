@@ -130,9 +130,10 @@ These are settled. An implementation that departs from one is not SKP-conformant
    (MP4, MOV, MKV, AVI, WebM), audio (MP3, M4A, Ogg, FLAC, WAV) and fonts (WOFF2, WOFF, TTF,
    OTF). SVG is not: it is a document that can carry script. *(07 §7.11)*
 2. With ffmpeg, phone video becomes H.264/AAC MP4 (rotation baked in, at most 1920 px, no
-   metadata) and HEIC becomes JPEG; WebM is kept, for stingers' alpha. Without it, video is
-   kept as uploaded with a note and HEIC is refused. A failed conversion keeps the video as
-   uploaded rather than losing it. *(10 §10.2)*
+   metadata, HDR tone-mapped to SDR where the build can) and HEIC becomes JPEG, which needs
+   ffmpeg 7.1 or later; WebM is kept, for stingers' alpha. Without it, video is kept as
+   uploaded with a note and HEIC is refused. A failed conversion keeps the video as uploaded
+   rather than losing it. ffmpeg runs below normal priority. *(10 §10.2)*
 3. Media lives at `<data>/media/<fileId>/<name>`; the fileId is 128 random bits; the route
    answers byte ranges; a file an overlay's settings point to can't be deleted.
    *(10 §10.6, 03 §3.4)*

@@ -204,10 +204,12 @@ export function createOverlays({ store, bus, templates, log }) {
 
     list() { return [...all()]; },
 
-    // Slugs of the overlays whose settings point to a media URL, now or in the version an upgrade
-    // kept for revert (a removed file would leave either broken).
-    mediaUsers(url) {
-      const needle = JSON.stringify(url);
+    // Slugs of the overlays whose settings point to a media file, now or in the version an upgrade
+    // kept for revert (a removed file would leave either broken), by its fileId: 128 random bits
+    // match nothing else, and an absolute URL to the same file counts too.
+    mediaUsers(fileId) {
+      if (!/^[0-9a-f]{32}$/.test(fileId)) return [];
+      const needle = `/media/${fileId}/`;
       const slugs = [];
       for (const doc of all()) {
         const used = [doc.data.settings, doc.data.previous?.settings].some((s) => s && JSON.stringify(s).includes(needle));

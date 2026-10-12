@@ -81,7 +81,12 @@ Clips, images, sounds and fonts for templates (a poster setting, a stinger, a DJ
 npm run skp -- media add path/to/IMG_0042.MOV
 ```
 
-It prints the file's URL (`/media/<id>/IMG_0042.mp4`) to paste into a setting. With
-[ffmpeg](https://ffmpeg.org) installed (or `SKP_FFMPEG` pointing to it), phone video is converted
-to H.264 MP4, which OBS's browser plays, and HEIC photos to JPEG. `media list` and
-`media remove <id>` do what they say.
+It prints the file's id (`med_…`) and its URL (`/media/<fileId>/IMG_0042.mp4`, where the
+fileId is a long random string) to paste into a setting. With [ffmpeg](https://ffmpeg.org)
+installed (or `SKP_FFMPEG` pointing to it), phone video is converted to H.264 MP4, which OBS's
+browser plays, and HEIC photos to JPEG (that needs ffmpeg 7.1 or later). Without it, video is
+kept as uploaded with a note that OBS may not play it. `media list` shows every file;
+`media remove <med_id>` deletes one, and refuses while an overlay's settings use it.
+
+These commands change the data folder, so stop the platform first; until the admin UI (step 14)
+they are the way to manage media.

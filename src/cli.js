@@ -262,7 +262,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('media remove takes <id>');
         const data = openFor('media remove');
         try {
-          const doc = data.media.remove(rest[0], { usedBy: (url) => data.overlays.mediaUsers(url) });
+          const doc = data.media.remove(rest[0], { usedBy: (d) => data.overlays.mediaUsers(d.data.fileId) });
           data.record({ media: doc.id, name: doc.data.name });
           if (opts.json) json({ removed: doc.id });
           else out(`removed ${doc.id} (${doc.data.name})`);

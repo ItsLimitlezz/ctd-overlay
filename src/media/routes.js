@@ -1,8 +1,8 @@
 // GET /media/<fileId>/<name> (03 §3.4): an uploaded file, for overlays (settings, lineups,
 // media.play) and the admin UI. No key: the fileId is the secret (07 §7.6). Immutable: a file never
 // changes at its URL (H14). Byte ranges, because a <video> seeks with them.
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import { sendProblem } from '../http/server.js';
 
 const HEADERS = {
@@ -16,36 +16,54 @@ const HEADERS = {
 };
 
 export function mediaRoutes({ media }) {
+  // The file is opened before anything is sent, so its size and its bytes are one file's; a
+  // client gone while it opened gets nothing, and the stream ends with the response either way
+  // (an fd left open would leak, and on Windows keep the file from being removed).
   async function file({ req, res, params }) {
     const found = media.file(params.fileId, params.name);
+    let handle;
     let size;
     try {
-      if (found) size = (await stat(found.file)).size;
-    } catch { /* removed meanwhile */ }
-    if (size === undefined) {
+      if (found) {
+        handle = await open(found.file, 'r');
+        size = (await handle.stat()).size;
+      }
+    } catch {
+      await handle?.close().catch(() => {});
+      handle = undefined;
+    }
+    if (!handle) {
       return sendProblem(res, 404, 'Not found', 'There is no such media file. It may have been removed; upload it again.', { headers: { 'access-control-allow-origin': '*', 'referrer-policy': 'no-referrer' } });
     }
-    const headers = { ...HEADERS, 'content-type': found.doc.data.type };
+    if (res.destroyed || req.socket?.destroyed) {
+      await handle.close().catch(() => {});
+      return;
+    }
     const range = parseRange(req.headers.range, size);
     if (range === 'invalid') {
-      res.writeHead(416, { ...headers, 'content-range': `bytes */${size}` });
+      await handle.close().catch(() => {});
+      // An answer about this request's Range, not the file: never cached.
+      res.writeHead(416, {
+        'access-control-allow-origin': '*', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+        'cache-control': 'no-store', 'content-range': `bytes */${size}`,
+      });
       res.end();
       return;
     }
     const [start, end] = range || [0, size - 1];
     res.writeHead(range ? 206 : 200, {
-      ...headers,
+      ...HEADERS,
+      'content-type': found.doc.data.type,
       'content-length': end - start + 1,
       ...(range ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
     });
-    if (req.method === 'HEAD') {
+    if (req.method === 'HEAD' || size === 0) {
+      await handle.close().catch(() => {});
       res.end();
       return;
     }
-    const stream = createReadStream(found.file, { start, end });
-    stream.on('error', () => res.destroy());
-    res.on('close', () => stream.destroy());
-    stream.pipe(res);
+    const stream = handle.createReadStream({ start, end, autoClose: true });
+    await pipeline(stream, res).catch(() => {}); // a client that leaves mid-file is routine
   }
 
   return [{ method: 'GET', path: '/media/:fileId/:name', handler: file }];

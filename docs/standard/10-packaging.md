@@ -28,7 +28,10 @@ hardcode `/`, and keep native dependencies out of the core (README decision 8).
   image. Without it, `GET /system/info` reports `ffmpeg: false`, videos are stored as-is with a
   note that HEVC clips will not play in OBS, and HEIC photos are refused (no browser shows
   them). With it, phone video (MP4, MOV, MKV, AVI) becomes H.264/AAC MP4 at most 1920 px on the
-  long side, rotation baked in, metadata (a phone's location) removed; HEIC photos become JPEG.
+  long side, rotation baked in, metadata (a phone's location) removed; HDR video (an iPhone's
+  10-bit HLG) is tone-mapped to SDR where the build has the `zscale` filter, and tagged BT.709
+  either way. HEIC photos become JPEG, which needs ffmpeg **7.1** or later; an older one refuses
+  them by name. ffmpeg runs below normal priority, so a conversion never starves a show on air.
   WebM is kept as it is: OBS plays VP8/VP9, and a stinger's alpha channel would not survive.
 - Footprint target: under 150 MB RAM idle with 10 overlays and 4 connections; runs on a
   Raspberry Pi 4–class device or a low-end NAS. A password hash adds up to 128 MiB while it runs,

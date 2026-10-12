@@ -17,6 +17,8 @@ const ascii = (buf, at, len) => buf.toString('latin1', at, at + len);
 const HEIF = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']);
 const AVIF = new Set(['avif', 'avis']);
 const M4A = new Set(['M4A ', 'M4B ', 'M4P ', 'F4A ', 'F4B ']);
+// ISO containers that hold no overlay media: camera raw (Canon CR3), JPEG 2000, encrypted music.
+const NOT_MEDIA = new Set(['crx ', 'jp2 ', 'jpx ', 'jpm ', 'mjp2', 'M4P ']);
 
 // { type, kind, ext, convert? } or undefined. convert: 'video' (to H.264 MP4) or 'image' (to JPEG).
 export function sniff(head) {
@@ -33,11 +35,18 @@ export function sniff(head) {
     return undefined;
   }
   if (b.length >= 12 && ascii(b, 4, 4) === 'ftyp') {
+    // The major brand, then the compatible ones (an AVIF often says mif1 first, avif after).
     const brand = ascii(b, 8, 4);
-    if (AVIF.has(brand)) return image('image/avif', 'avif');
+    const size = Math.min(b.readUInt32BE(0), b.length);
+    const brands = [brand];
+    for (let at = 16; at + 4 <= size; at += 4) brands.push(ascii(b, at, 4));
+    if (NOT_MEDIA.has(brand)) return undefined;
+    if (brands.some((x) => AVIF.has(x))) return image('image/avif', 'avif');
     if (HEIF.has(brand)) return { type: 'image/heic', kind: 'image', ext: 'heic', convert: 'image' };
     if (M4A.has(brand)) return { type: 'audio/mp4', kind: 'audio', ext: 'm4a' };
     if (brand === 'qt  ') return { type: 'video/quicktime', kind: 'video', ext: 'mov', convert: 'video' };
+    // Any other ISO media file goes to ffmpeg, which says what it holds: an MP4 with only sound
+    // is kept as audio (library.js).
     return { type: 'video/mp4', kind: 'video', ext: 'mp4', convert: 'video' };
   }
   if (b.readUInt32BE(0) === 0x1a45dfa3) {
