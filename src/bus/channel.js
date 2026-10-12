@@ -11,6 +11,8 @@ const KEEP_MS = 120000;
 const KEEP_COUNT = 500;
 const HARD_CAP = 5000;
 const COALESCE_MS = 100; // at most 10 state.changed per key per second (02 §2.9)
+const MAX_ENVELOPE_BYTES = 64 * 1024; // 02 §2.9
+const ENVELOPE_OVERHEAD = 256; // id, type, ts and src around the data
 const CHAT_DEFAULT = 50;
 const CHAT_MAX = 200;
 
@@ -68,15 +70,20 @@ export class Channel {
   // Channel-only state: never global, never sent to other overlays or API subscribers. Kept as a
   // JSON copy like bus state, and null after the round trip (NaN, Infinity, an invalid Date) is
   // absent, never null (02 §2.2).
+  // A change that wouldn't fit in one envelope (02 §2.9) is refused before anything is kept.
   setLocalState(key, value) {
     const text = value === undefined ? undefined : JSON.stringify(value);
     let json = text === undefined ? undefined : JSON.parse(text);
     if (json === null) json = undefined;
     const prev = this.#local.get(key);
     if (JSON.stringify(prev) === JSON.stringify(json)) return;
+    const data = changeData(key, json, prev);
+    if (Buffer.byteLength(JSON.stringify(data)) + ENVELOPE_OVERHEAD > MAX_ENVELOPE_BYTES) {
+      throw Object.assign(new Error(`${key} is too large to send to an overlay (02 §2.9)`), { code: 'too-large' });
+    }
     if (json === undefined) this.#local.delete(key);
     else this.#local.set(key, json);
-    this.#offerState(changeData(key, json, prev), { connector: 'core' });
+    this.#offerState(data, { connector: 'core' }, undefined, true);
   }
 
   // One state key as this overlay sees it (its own state first, then global state it consumes
@@ -153,7 +160,8 @@ export class Channel {
     }
   }
 
-  #offerState(data, src, env) {
+  // local: channel-only state, which the channel always accepts.
+  #offerState(data, src, env, local = false) {
     const { key } = data;
     const now = this.#bus.now();
     const last = this.#lastEmit.get(key);
@@ -161,6 +169,7 @@ export class Channel {
     if (pending) {
       pending.value = data.value;
       pending.src = src;
+      pending.local = local;
       return;
     }
     if (!last || now - last.at >= COALESCE_MS) {
@@ -170,13 +179,16 @@ export class Channel {
     }
     // Inside the window: hold the latest value and send it when the window ends.
     const timer = this.#bus.timers.setTimeout(() => this.#flush(key), last.at + COALESCE_MS - now);
-    this.#pending.set(key, { timer, value: data.value, src });
+    this.#pending.set(key, { timer, value: data.value, src, local });
   }
 
   #flush(key) {
     const pending = this.#pending.get(key);
     this.#pending.delete(key);
     if (!pending || this.#closed) return;
+    // What the channel accepts may have changed while the value waited (an upgrade that no longer
+    // consumes the key, a connection unbound): judge it again.
+    if (!pending.local && !((RUNTIME_KEYS.has(key) || this.wantsState(key)) && this.bound(pending.src))) return;
     const last = this.#lastEmit.get(key);
     const json = JSON.stringify(pending.value);
     if (last && last.json === json) return; // it changed back; the client already has this value

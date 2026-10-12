@@ -86,11 +86,16 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   defer(t, () => ctrl.abort());
   const stream = await fetch(`${base}/stream?cursor=${cursor}`, { signal: ctrl.signal });
   const ended = stream.text();
-  const plan = await platform.overlays.upgrade('main', '1.1.0');
+  // Values the operator set are dropped: a minor version too needs a confirmation.
+  await assert.rejects(platform.overlays.upgrade('main', '1.1.0'), (err) => err.code === 'confirm-changes' && err.detail.confirm === true && err.detail.major === false);
+  assert.equal(platform.store.get('overlays', overlay.id).rev, overlay.rev);
+  const plan = await platform.overlays.upgrade('main', '1.1.0', { confirm: true });
   await ended;
   assert.equal(plan.major, false);
   assert.deepEqual(plan.changes.map((c) => `${c.change} ${c.path}`), ['invalid /size', 'removed /old', 'default /accent', 'added /fresh']);
-  assert.deepEqual(platform.store.get('overlays', overlay.id).data, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
+  const { previous, ...data } = platform.store.get('overlays', overlay.id).data;
+  assert.deepEqual(data, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
+  assert.deepEqual({ ...previous, at: undefined }, { template: { id: ID, version: '1.0.0' }, settings: { size: 7, old: 'x' }, at: undefined });
   const snap = await (await fetch(`${base}/snapshot`)).json();
   assert.notEqual(snap.build, build);
   assert.equal(snap.build, platform.templates.get(ID, '1.1.0').build);
@@ -106,7 +111,7 @@ test('upgrade refuses an older, equal or missing version, and an edit made since
   await assert.rejects(platform.overlays.upgrade('main', '1.0.0'), { code: 'not-newer' });
   await assert.rejects(platform.overlays.upgrade('main', '3.0.0'), { code: 'no-template' });
   await assert.rejects(platform.overlays.upgrade('nobody', '1.1.0'), { code: 'not-found' });
-  await assert.rejects(platform.overlays.upgrade('main', '1.1.0', { ifRev: overlay.rev - 1 }), { name: 'ConflictError' });
+  await assert.rejects(platform.overlays.upgrade('main', '1.1.0', { ifRev: overlay.rev - 1, confirm: true }), { name: 'ConflictError' });
   assert.equal(platform.store.get('overlays', overlay.id).data.template.version, '1.0.0');
 });
 

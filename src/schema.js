@@ -16,11 +16,14 @@
 export const MAX_DEPTH = 64;
 export const MAX_STEPS = 200000;
 
+// RFC 3339 (2020-12 §7.3.1): full-date, full-time (seconds and an offset required; 60 is a leap
+// second) and date-time.
+const FULL_TIME = '([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)(\\.\\d+)?(Z|[+-]([01]\\d|2[0-3]):[0-5]\\d)';
 export const FORMATS = {
   uri: (s) => /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]*$/.test(s) && parses(s),
   date: (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && validDate(s),
-  time: (s) => /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)?$/i.test(s),
-  'date-time': (s) => /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/i.test(s) && validDate(s.slice(0, 10)),
+  time: (s) => new RegExp(`^${FULL_TIME}$`, 'i').test(s),
+  'date-time': (s) => new RegExp(`^\\d{4}-\\d{2}-\\d{2}T${FULL_TIME}$`, 'i').test(s) && validDate(s.slice(0, 10)),
   color: (s) => /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s),
 };
 
@@ -28,9 +31,11 @@ export class SchemaError extends Error {}
 
 // maxStringLength: a string longer than this fails as too long before any pattern or format runs
 // on it (a template's pattern is then never tried on a huge value).
-export function validate(schema, value, { root = schema, formats = FORMATS, maxStringLength = Infinity } = {}) {
+// match(pattern, string) → true, false, or null when the pattern couldn't be checked in time; by
+// default a plain RegExp test, for schemas the platform trusts.
+export function validate(schema, value, { root = schema, formats = FORMATS, maxStringLength = Infinity, match = plainMatch } = {}) {
   const errors = [];
-  check(schema, value, '', { root, formats, errors, depth: 0, steps: { n: 0 }, maxStringLength });
+  check(schema, value, '', { root, formats, errors, depth: 0, steps: { n: 0 }, maxStringLength, match });
   return errors;
 }
 
@@ -54,11 +59,17 @@ function check(schema, value, path, ctx) {
   if (typeof value === 'string') {
     const length = [...value].length; // code points, as the spec counts
     if (schema.minLength !== undefined && length < schema.minLength) fail(ctx, path, `must be at least ${schema.minLength} characters`);
-    if (schema.maxLength !== undefined && length > schema.maxLength) fail(ctx, path, `must be at most ${schema.maxLength} characters`);
-    if (length > ctx.maxStringLength) fail(ctx, path, `must be at most ${ctx.maxStringLength} characters`);
+    const tooLong = (schema.maxLength !== undefined && length > schema.maxLength) || length > ctx.maxStringLength;
+    if (tooLong) fail(ctx, path, `must be at most ${Math.min(schema.maxLength ?? Infinity, ctx.maxStringLength)} characters`);
     else {
-      if (schema.pattern !== undefined && !regex(schema.pattern).test(value)) fail(ctx, path, `must match ${schema.pattern}`);
-      if (schema.format !== undefined && ctx.formats[schema.format] && !ctx.formats[schema.format](value)) fail(ctx, path, `must be a valid ${schema.format}`);
+      // A pattern only ever runs on a value within its length limits.
+      if (schema.pattern !== undefined) {
+        const matched = ctx.match(schema.pattern, value);
+        if (matched === null) fail(ctx, path, `couldn't be checked against ${schema.pattern} in time`);
+        else if (!matched) fail(ctx, path, `must match ${schema.pattern}`);
+      }
+      const format = schema.format !== undefined && has(ctx.formats, schema.format) ? ctx.formats[schema.format] : undefined;
+      if (typeof format === 'function' && !format(value)) fail(ctx, path, `must be a valid ${schema.format}`);
     }
   }
 
@@ -67,7 +78,7 @@ function check(schema, value, path, ctx) {
     if (schema.maximum !== undefined && value > schema.maximum) fail(ctx, path, `must be at most ${schema.maximum}`);
     if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) fail(ctx, path, `must be more than ${schema.exclusiveMinimum}`);
     if (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum) fail(ctx, path, `must be less than ${schema.exclusiveMaximum}`);
-    if (schema.multipleOf !== undefined && !Number.isInteger(Number((value / schema.multipleOf).toPrecision(12)))) fail(ctx, path, `must be a multiple of ${schema.multipleOf}`);
+    if (schema.multipleOf !== undefined && !multipleOf(value, schema.multipleOf)) fail(ctx, path, `must be a multiple of ${schema.multipleOf}`);
   }
 
   if (Array.isArray(value)) {
@@ -125,16 +136,32 @@ function fail(ctx, path, message) {
   ctx.errors.push({ path: path || '/', message });
 }
 
-// "#", "#/definitions/settings", "#/$defs/a~1b" inside the root document. Nothing remote.
+// "#", "#/definitions/settings", "#/$defs/a~1b", "#/enum/0": a JSON pointer (RFC 6901) inside the
+// root document, as a URI fragment. Nothing remote, and no plain-name fragments ("#foo").
 export function resolve(root, ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#')) throw new SchemaError(`"${ref}" is not a reference inside this document`);
+  if (ref !== '#' && !ref.startsWith('#/')) throw new SchemaError(`"${ref}" is not a JSON pointer ("#/…"); named anchors are not supported`);
   let node = root;
-  for (const part of ref.slice(1).split('/').slice(1)) {
-    const key = decodeURIComponent(part).replace(/~1/g, '/').replace(/~0/g, '~');
-    if (!isObject(node) || !has(node, key)) throw new SchemaError(`"${ref}" points at nothing`);
-    node = node[key];
+  for (const part of ref === '#' ? [] : ref.slice(2).split('/')) {
+    let key;
+    try { key = decodeURIComponent(part).replace(/~1/g, '/').replace(/~0/g, '~'); } catch { throw new SchemaError(`"${ref}" is not a valid reference`); }
+    if (Array.isArray(node) && /^(0|[1-9]\d*)$/.test(key) && Number(key) < node.length) node = node[Number(key)];
+    else if (isObject(node) && has(node, key)) node = node[key];
+    else throw new SchemaError(`"${ref}" points at nothing`);
   }
   return node;
+}
+
+function plainMatch(pattern, value) {
+  return regex(pattern).test(value);
+}
+
+// Whether value / divisor is a whole number, allowing for binary rounding of decimal divisors
+// (0.1 × 3) but not for a fraction a large quotient would otherwise round away.
+function multipleOf(value, divisor) {
+  const q = value / divisor;
+  if (!Number.isFinite(q)) return false;
+  return Math.abs(q - Math.round(q)) <= Number.EPSILON * Math.max(1, Math.abs(q)) * 4;
 }
 
 const regexCache = new Map();
@@ -190,6 +217,7 @@ function parses(s) {
 
 function validDate(s) {
   const [y, m, d] = s.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
+  const date = new Date(0);
+  date.setUTCFullYear(y, m - 1, d); // not Date.UTC, which reads years 0–99 as 1900–1999
   return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }

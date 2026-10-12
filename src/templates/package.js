@@ -13,12 +13,12 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import vm from 'node:vm';
 import { compilePatterns, TYPE } from '../bus/names.js';
 import { validate } from '../schema.js';
-import { classicMigrate } from './migrate.js';
+import { attr, attrNames, rawText, scanTags, stripCssComments } from './html.js';
+import { migrateProblem } from './migrate.js';
 import { checkSettingsSchema, settingsSchema, boundKeys } from './settings.js';
-import { checkName, openZip, ZIP_LIMITS, ZipError } from './zip.js';
+import { checkName, fold, openZip, ZIP_LIMITS, ZipError } from './zip.js';
 
 export const STANDARD = 'skp/1';
 const MANIFEST = 'template.json';
@@ -96,7 +96,7 @@ export function packageFromDir(dir, limits = {}) {
   const names = [...sizes.keys()].sort();
   const folded = new Map();
   for (const name of names) {
-    const key = name.normalize('NFC').toLowerCase();
+    const key = fold(name);
     if (folded.has(key)) throw new ZipError(`"${folded.get(key)}" and "${name}" differ only in case or accents.`, 'duplicate');
     folded.set(key, name);
   }
@@ -196,7 +196,7 @@ export function validatePackage(pkg) {
   if (file('/entry', manifest.entry, 'The entry document')) {
     if (!/\.html?$/i.test(manifest.entry)) error('entry-not-html', '/entry', `The entry "${manifest.entry}" must be an .html file.`);
     else if (pkg.size(manifest.entry) > ENTRY_BYTES) error('entry-too-large', '/entry', `The entry document is over ${ENTRY_BYTES / 1024 / 1024} MiB.`);
-    else lintEntry(pkg.read(manifest.entry).toString('utf8'), manifest.entry, error, warn);
+    else lintEntry(pkg.read(manifest.entry).toString('utf8'), manifest.entry, error, warn, fontHostsOf(manifest));
   }
   manifest.previews.forEach((p, i) => file(`/previews/${i}`, p, 'The preview'));
 
@@ -218,6 +218,11 @@ export function validatePackage(pkg) {
     if (!s.core) return;
     if (cores.has(s.core)) error('duplicate-core', `/scenes/${i}/core`, `Scenes "${cores.get(s.core)}" and "${s.id}" both map to the core scene "${s.core}"; only one may.`);
     else cores.set(s.core, s.id);
+  });
+  // A name means one scene: an id that is another scene's core would make "then" ambiguous.
+  scenes.forEach((s, i) => {
+    const other = cores.get(s.id);
+    if (other !== undefined && other !== s.id) error('scene-core-ambiguous', `/scenes/${i}/id`, `Scene "${s.id}" has the name of scene "${other}"'s core scene "${s.id}"; rename one, so "then" and cues name one scene.`);
   });
   for (const core of CATEGORY_CORES[manifest.category] || []) {
     if (!cores.has(core)) error('core-scene-missing', '/scenes', `A "${manifest.category}" template must have a scene with "core": "${core}".`);
@@ -294,44 +299,75 @@ export function validatePackage(pkg) {
   }
 
   // migrate.js, if any, is a classic script with no imports, which compiles (04 §4.10). It is
-  // only compiled here, never run.
+  // only compiled here, never run. (A dynamic import() compiles, but can't load anything when it
+  // runs: the script has no module loader.)
   if (pkg.has('migrate.js')) {
-    const src = pkg.read('migrate.js').toString('utf8');
-    if (/^\s*import[\s{*]/m.test(src) || /\bimport\s*\(/.test(src)) error('migrate-import', 'migrate.js', 'migrate.js can\'t import anything; it runs with no I/O.');
-    else {
-      try {
-        new vm.Script(classicMigrate(src), { filename: 'migrate.js' }); // eslint-disable-line no-new
-      } catch (err) {
-        error('migrate-syntax', 'migrate.js', `migrate.js doesn't compile: ${err.message}.`);
-      }
-    }
+    const problem = migrateProblem(pkg.read('migrate.js').toString('utf8'));
+    if (problem) error(problem.code, 'migrate.js', problem.message);
   }
 
   // Paths that work but invite trouble (04 §4.1: lowercase recommended).
   for (const name of pkg.names) {
     if (/[#?%\s]/.test(name)) warn('path-escape', name, `"${name}" has a character that needs escaping in a URL (space, #, ? or %).`);
     else if (name !== name.toLowerCase()) warn('path-case', name, `"${name}" has capitals; lowercase paths avoid case mistakes.`);
-    if (/\.css$/i.test(name) && pkg.size(name) <= ENTRY_BYTES) lintCss(pkg.read(name).toString('utf8'), name, warn);
+    if (/\.css$/i.test(name) && pkg.size(name) <= ENTRY_BYTES) lintCss(pkg.read(name).toString('utf8'), name, warn, fontHostsOf(manifest));
   }
   return result(manifest);
 }
 
-// The entry document (04 §4.5, §4.8): no <base> of its own, no inline script (the CSP blocks it),
-// and its own files by relative URL.
-function lintEntry(html, where, error, warn) {
-  const visible = html.replace(/<!--[\s\S]*?-->/g, '');
-  if (/<base[\s>]/i.test(visible)) error('entry-base', where, 'The entry has its own <base>; the runtime inserts one, so remove it (04 §4.5).');
-  if (/<script(?![^>]*\bsrc\s*=)[^>]*>\s*[^<\s]/i.test(visible)) warn('inline-script', where, 'The entry has an inline <script>, which the overlay CSP blocks; move it into a .js file.');
-  if (/\son[a-z]+\s*=\s*["']/i.test(visible)) warn('inline-handler', where, 'The entry has an inline event handler (onclick=…), which the overlay CSP blocks.');
-  if (/\s(?:src|href)\s*=\s*["']\/(?!\/)/i.test(visible)) warn('absolute-url', where, 'The entry loads a file by an absolute "/…" URL; use a relative one, so it resolves inside the package.');
+// The entry document (04 §4.1, §4.5, §4.8): no <base> of its own, no inline script or handlers
+// (the CSP blocks them), its own files by relative URL, and nothing loaded from elsewhere except
+// the fonts it declares. Linear-time scanning: the document is third-party input.
+function lintEntry(html, where, error, warn, fontHosts) {
+  const once = new Set();
+  const report = (fn, code, message) => { if (!once.has(code)) { once.add(code); fn(code, where, message); } };
+  for (const tag of scanTags(html)) {
+    if (tag.name === 'base') report(error, 'entry-base', 'The entry has its own <base>; the runtime inserts one, so remove it (04 §4.5).');
+    if (tag.name === 'script') {
+      const src = attr(tag, 'src');
+      if (src === undefined && rawText(html, tag).trim()) report(warn, 'inline-script', 'The entry has an inline <script>, which the overlay CSP blocks; move it into a .js file.');
+      if (src !== undefined && external(src)) report(error, 'external-script', `The entry loads a script from ${JSON.stringify(src)}; the overlay CSP only runs the template's own scripts (04 §4.8). Put it in the package.`);
+    }
+    if (attrNames(tag).some((n) => n.startsWith('on') && n.length > 2)) report(warn, 'inline-handler', 'The entry has an inline event handler (onclick=…), which the overlay CSP blocks.');
+    for (const name of ['src', 'href']) {
+      const url = attr(tag, name);
+      if (url === undefined) continue;
+      if (url.startsWith('/') && !url.startsWith('//')) report(warn, 'absolute-url', 'The entry loads a file by an absolute "/…" URL; use a relative one, so it resolves inside the package.');
+      else if (external(url) && tag.name !== 'script' && tag.name !== 'a' && !(tag.name === 'link' && fontHosts.has(origin(url)))) {
+        report(warn, 'external-url', `The entry loads ${JSON.stringify(url)} from outside the package; everything but data images and declared fonts belongs in it (04 §4.1).`);
+      }
+    }
+  }
 }
 
-function lintCss(css, where, warn) {
-  const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  if (/\bbackdrop-filter\s*:/.test(code)) warn('css-backdrop-filter', where, 'backdrop-filter blurs nothing in a browser source and costs GPU; blur the camera with an OBS filter (05 §5.8).');
-  if (/\bmix-blend-mode\s*:\s*multiply/.test(code)) warn('css-blend', where, 'mix-blend-mode: multiply turns a transparent overlay black (05 §5.8, H10).');
-  if (/url\(\s*["']?\/(?!\/)/.test(code)) warn('absolute-url', where, 'A stylesheet loads a file by an absolute "/…" URL; use a relative one.');
-  if (/:has\(|@container\b/.test(code)) warn('css-too-new', where, ':has() and container queries need Chromium 105; OBS 30 runs 103.');
+function lintCss(css, where, warn, fontHosts) {
+  const code = stripCssComments(css);
+  const once = new Set();
+  const report = (code, message) => { if (!once.has(code)) { once.add(code); warn(code, where, message); } };
+  if (code.includes('backdrop-filter')) report('css-backdrop-filter', 'backdrop-filter blurs nothing in a browser source and costs GPU; blur the camera with an OBS filter (05 §5.8).');
+  if (/mix-blend-mode\s{0,8}:\s{0,8}multiply/.test(code)) report('css-blend', 'mix-blend-mode: multiply turns a transparent overlay black (05 §5.8, H10).');
+  if (code.includes(':has(') || /@container\b/.test(code)) report('css-too-new', ':has() and container queries need Chromium 105; OBS 30 runs 103.');
+  // url(…) and @import targets, one at a time.
+  for (let i = code.indexOf('url('); i >= 0; i = code.indexOf('url(', i + 4)) {
+    const close = code.indexOf(')', i);
+    const target = code.slice(i + 4, close < 0 ? code.length : close).trim().replace(/^["']|["']$/g, '');
+    if (target.startsWith('/') && !target.startsWith('//')) report('absolute-url', 'A stylesheet loads a file by an absolute "/…" URL; use a relative one.');
+    else if (external(target) && !fontHosts.has(origin(target))) report('external-url', `A stylesheet loads ${JSON.stringify(target.slice(0, 100))} from outside the package; put it in the package (04 §4.1).`);
+  }
+}
+
+// http(s) and protocol-relative URLs; data: and relative ones are the package's own.
+const external = (url) => /^(https?:)?\/\//i.test(url.trim());
+
+function origin(url) {
+  try { return new URL(url.trim().startsWith('//') ? `https:${url.trim()}` : url.trim()).origin; } catch { return ''; }
+}
+
+// The hosts a template's declared font stylesheets may load from (04 §4.8).
+function fontHostsOf(manifest) {
+  const hosts = new Set(['https://fonts.googleapis.com', 'https://fonts.gstatic.com']);
+  for (const u of manifest.fonts || []) hosts.add(origin(u));
+  return hosts;
 }
 
 function safe(fn) {

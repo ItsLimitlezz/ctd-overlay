@@ -147,7 +147,7 @@ test('one process per data directory: a second platform is refused, a dead holde
   // A lock left by a process that no longer exists.
   writeFileSync(path.join(config.dataDir, 'skp.lock'), JSON.stringify({ pid: 2 ** 22 + 7, purpose: 'platform' }));
   const lock = lockDataDir(config.dataDir, { log });
-  assert.ok(entries.some((e) => /taking over a lock/.test(e.msg)));
+  assert.ok(entries.some((e) => /took over a lock/.test(e.msg)));
   assert.throws(() => lockDataDir(config.dataDir, { log }), LockError);
   lock.release();
   assert.ok(!existsSync(path.join(config.dataDir, 'skp.lock')));

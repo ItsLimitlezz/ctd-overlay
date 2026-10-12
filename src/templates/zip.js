@@ -24,7 +24,8 @@ export const ZIP_LIMITS = Object.freeze({
   totalBytes: 100 * 1024 * 1024, // all files, uncompressed (04 §4.1)
   fileBytes: 50 * 1024 * 1024, // one file, uncompressed (04 §4.1)
   entries: 5000,
-  pathLength: 240, // leaves room under Windows' 260 for the install directory's prefix
+  pathLength: 240, // characters in the whole path, inside the package
+  segmentBytes: 255, // UTF-8 bytes in one name: what ext4, ZFS and APFS allow
   ratio: 100, // uncompressed:compressed, for files over ratioFrom bytes (07 §7.11's ratio cap)
   ratioFrom: 1024 * 1024,
 });
@@ -148,7 +149,6 @@ export function openZip(source, limits = {}) {
 
     // Folded for comparison: two names that differ only in case or Unicode normalization are one
     // file on Windows and macOS and two on Linux, so the same package would serve different files.
-    const fold = (s) => s.normalize('NFC').toLowerCase();
     if (isDir) {
       addFolder(name, fold);
       continue;
@@ -265,7 +265,7 @@ function decodeName(bytes, flags) {
 }
 
 // A package-relative, "/"-separated path that is safe to create on Windows, macOS and Linux.
-export function checkName(raw, { pathLength = ZIP_LIMITS.pathLength } = {}) {
+export function checkName(raw, { pathLength = ZIP_LIMITS.pathLength, segmentBytes = ZIP_LIMITS.segmentBytes } = {}) {
   const name = raw.replace(/\\/g, '/').replace(/\/$/, '');
   const bad = (why) => new ZipError(`"${raw}" is not an allowed path in a package: ${why}.`, 'unsafe-path');
   if (!name) throw bad('it is empty');
@@ -278,9 +278,14 @@ export function checkName(raw, { pathLength = ZIP_LIMITS.pathLength } = {}) {
     if (segment === '.' || segment === '..') throw bad('it leaves its folder');
     if (/[. ]$/.test(segment)) throw bad('a name ends with a dot or a space');
     if (WINDOWS_RESERVED.test(segment)) throw bad(`"${segment}" is a reserved name on Windows`);
+    if (Buffer.byteLength(segment, 'utf8') > segmentBytes) throw bad(`a name is longer than ${segmentBytes} bytes`);
   }
   return name;
 }
+
+// The form two names are compared in: what Windows and macOS treat as one name (case, Unicode
+// normalization, and case pairs like ı/I and ſ/S that a plain lowercase misses) is one key.
+export const fold = (s) => s.normalize('NFC').toUpperCase().toLowerCase();
 
 // Writes an archive: deflated when that is smaller, stored otherwise, with UTF-8 names and a fixed
 // timestamp, so the same files always make the same bytes. files: [{ name, data }].

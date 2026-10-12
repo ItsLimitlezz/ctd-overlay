@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrate, MigrateError } from '../src/templates/migrate.js';
-import { boundKeys, checkSettingsSchema, migrateSettings, resolveSettings, validateSettings } from '../src/templates/settings.js';
+import { boundKeys, checkSettingsSchema, migrateSettings, patternProblem, resolveSettings, validateSettings } from '../src/templates/settings.js';
 
 // The 04 §4.3 example, as a manifest would carry it.
 const manifest = (properties, extra = {}) => ({
@@ -35,9 +35,15 @@ test('a settings schema outside the 04 §4.3 subset is refused, with the reason'
   assert.match(errors({ a: { type: 'string', default: 3 } }).join(), /default 3 must be a string/);
   assert.match(errors({ a: { type: 'string', enum: ['x', 'y'], 'x-skp-labels': ['X'] } }).join(), /x-skp-labels/);
   assert.match(errors({ a: { type: 'string', enum: ['x', 2] } }).join(), /enum value 2/);
-  assert.match(errors({ a: { type: 'string', pattern: '(a+)+$' } }).join(), /exponential/);
-  assert.deepEqual(errors({ ip: { type: 'string', pattern: '^(\\d{1,3}\\.){3}\\d{1,3}$' } }), []); // bounded repeats are fine
+  // A pattern shape known to backtrack badly is flagged; the pattern still runs, with a deadline.
+  assert.deepEqual(errors({ a: { type: 'string', pattern: '(a+)+$' } }), []);
+  assert.match(checkSettingsSchema(manifest({ a: { type: 'string', pattern: '(a+)+$' } })).warnings.join(), /repeats a group/);
+  assert.deepEqual(errors({ hex: { type: 'string', pattern: '^#[0-9a-f]{6}$' } }), []);
   assert.match(errors({ a: { type: 'string', pattern: '[' } }).join(), /not a valid regular expression/);
+  assert.match(errors({ a: { type: 'string', pattern: 'a'.repeat(201) } }).join(), /at most 200 characters/);
+  // A keyword beside $ref would apply unchecked: refused.
+  const sneaky = manifest({ a: { $ref: '#/definitions/s', pattern: '^((a+))+$' } }, { definitions: { settings: { type: 'object', properties: { a: { $ref: '#/definitions/s', pattern: '^((a+))+$' } } }, s: { type: 'string' } } });
+  assert.match(checkSettingsSchema(sneaky).errors.join(), /beside "\$ref"/);
   assert.match(errors({ a: { type: 'string', 'x-skp-bind': 'Not A Key' } }).join(), /x-skp-bind/);
   assert.match(errors({ a: { type: 'number', 'x-skp-widget': 'media' } }).join(), /media field must be a string/);
   assert.match(errors(JSON.parse('{"__proto__": {"type": "string"}}')).join(), /can't be a setting name/);
@@ -50,6 +56,16 @@ test('a settings schema outside the 04 §4.3 subset is refused, with the reason'
   assert.match(warnings, /format "email"/);
   assert.match(warnings, /x-skp-widget "knob"/);
   assert.match(warnings, /x-skp-sparkle/);
+});
+
+test('pattern shapes that could backtrack for a long time are recognised (for the install warning)', () => {
+  // The bypasses measured against the earlier heuristic (seconds on under 30 characters), and more.
+  for (const p of ['^((a+))+$', '(a|a)*$', '(a+){1,99999}', '(?:a|a)+b', '(\\w*)*$', '(a)\\1', '(?<n>a)\\k<n>', '(?=a)b', '(?<!a)b', '\\d*\\d*\\d*\\d*x', '^(\\d{1,3}\\.){3}\\d{1,3}$']) {
+    assert.ok(patternProblem(p), p);
+  }
+  for (const p of ['^#[0-9a-f]{6}$', '^[A-Za-z0-9_]{3,25}$', '^(ab)?c+$', '^\\p{Lu}[\\p{L} ]*$', '^[a-z]+(-[a-z]+)?$']) {
+    assert.equal(patternProblem(p), undefined, p);
+  }
 });
 
 test('alerts.durationSetting should name a numeric setting (05 §5.5); otherwise durationMs is used, with a warning', () => {
@@ -146,8 +162,13 @@ test('migrate.js can\'t reach the platform, hang it, or exhaust its memory', asy
   assert.deepEqual(await runMigrate('function migrate() { return { p: typeof process, r: typeof require, f: typeof fetch, t: typeof setTimeout, b: typeof Buffer } }', '1', {}),
     { p: 'undefined', r: 'undefined', f: 'undefined', t: 'undefined', b: 'undefined' });
   await fails('function migrate() { return eval("1+1") }', /failed/); // no string-to-code
-  await fails('function migrate() { for (;;) {} }', /timed out|took longer|failed/);
-  await fails('function migrate() { const a = []; for (;;) a.push(new Array(1e6).fill(1)); }', /memory|failed|took longer/);
+  await fails('function migrate() { for (;;) {} }', /timed out|took longer/);
+  // The worker's memory limit ends a memory bomb long before a generous deadline would.
+  await assert.rejects(runMigrate('function migrate() { const a = []; for (;;) a.push(new Array(1e6).fill(1)); }', '1.0.0', {}, { timeoutMs: 20000 }), (err) => {
+    assert.ok(err instanceof MigrateError, String(err));
+    assert.match(err.message, /ran out of memory/);
+    return true;
+  });
   await fails('async function migrate() { return {}; }', /promise/);
   await fails('function migrate() { return 5; }', /as an object/);
   await fails('function notMigrate() {}', /must define migrate/);

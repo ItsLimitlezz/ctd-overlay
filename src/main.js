@@ -9,12 +9,29 @@ import { VERSION } from './version.js';
 const EX_CONFIG = 78;
 
 const argv = process.argv.slice(2);
-if (argv.length && !argv[0].startsWith('-')) {
+if (isCommand(argv)) {
   // A command: it closes what it opened, so the process ends once its output is written.
   const { run } = await import('./cli.js');
-  process.exitCode = await run(argv);
+  try {
+    process.exitCode = await run(argv);
+  } catch (err) {
+    process.stderr.write(`skp: unexpected error: ${err?.stack || err}\n`);
+    process.exitCode = 1;
+  }
 } else {
   await serve();
+}
+
+// A command has a word (`template list`), or a flag only commands take (--help, --json …), in any
+// order with the server's own flags, which all take a value (`--data-dir D template list`).
+function isCommand(args) {
+  const commandFlags = new Set(['--help', '-h', '--json', '--dry-run', '--yes', '--run-migrate', '-o', '--out', '--to']);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!a.startsWith('-') || commandFlags.has(a.split('=')[0])) return true;
+    if (!a.includes('=')) i++; // the server flag's value
+  }
+  return false;
 }
 
 async function serve() {

@@ -31,11 +31,35 @@ test('strings: length in code points, unicode patterns, formats', () => {
   assert.ok(fmt('uri', 'https://fonts.googleapis.com/css2?family=Archivo'));
   assert.ok(!fmt('uri', 'not a uri') && !fmt('uri', '/relative/path'));
   assert.ok(fmt('date', '2026-08-28') && !fmt('date', '2026-02-30') && !fmt('date', '26-08-28'));
-  assert.ok(fmt('time', '21:30') && fmt('time', '21:30:05Z') && !fmt('time', '24:00'));
-  assert.ok(fmt('date-time', '2026-08-28T21:30:00Z') && !fmt('date-time', '2026-08-28 21:30'));
+  assert.ok(fmt('date', '0050-01-01') && fmt('date', '0000-02-29') && !fmt('date', '0100-02-29'), 'years 0000–0099 are years, not 1900–1999');
+  // RFC 3339 full-time: seconds and an offset are required; 60 is a leap second.
+  assert.ok(fmt('time', '21:30:05Z') && fmt('time', '21:30:05.25+02:00') && fmt('time', '23:59:60Z'));
+  assert.ok(!fmt('time', '21:30') && !fmt('time', '21:30:05') && !fmt('time', '24:00:00Z'));
+  assert.ok(fmt('date-time', '2026-08-28T21:30:00Z') && !fmt('date-time', '2026-08-28 21:30') && !fmt('date-time', '2026-08-28T21:30Z'));
   assert.ok(fmt('color', '#EFC33F') && fmt('color', '#fff') && !fmt('color', 'gold') && !fmt('color', '#ggg'));
   assert.ok(fmt('something-unknown', 'anything'), 'unknown formats are annotations');
+  // A format name is looked up among the formats, never on Object.prototype.
+  for (const name of ['constructor', '__defineGetter__', 'isPrototypeOf', 'toString']) assert.ok(fmt(name, 'anything'), name);
   assert.deepEqual(messages({ type: 'string', format: 'color' }, 7), ['/ must be a string']);
+});
+
+test('multipleOf is exact for large quotients and allows decimal rounding', () => {
+  assert.deepEqual(messages({ multipleOf: 2 }, 2000000000001), ['/ must be a multiple of 2']);
+  assert.deepEqual(messages({ multipleOf: 1 }, 1234567890123.5), ['/ must be a multiple of 1']);
+  assert.deepEqual(messages({ multipleOf: 0.5 }, 1e13 + 0.25), ['/ must be a multiple of 0.5']);
+  assert.deepEqual(messages({ multipleOf: 0.1 }, 0.3), []);
+  assert.deepEqual(messages({ multipleOf: 0.01 }, 19.99), []);
+  assert.deepEqual(messages({ multipleOf: 3 }, 9e15), []);
+});
+
+test('$ref is a JSON pointer: "#" or "#/…", into objects and arrays; anything else is refused', () => {
+  const root = { $defs: { list: [{ type: 'string' }, { type: 'integer' }], 'a/b': { type: 'boolean' } } };
+  assert.deepEqual(validate({ ...root, $ref: '#/$defs/list/1' }, 3), []);
+  assert.equal(validate({ ...root, $ref: '#/$defs/list/1' }, 'x').length, 1);
+  assert.deepEqual(validate({ ...root, $ref: '#/$defs/a~1b' }, true), []);
+  for (const ref of ['#foo', '#$defs/list', '#/$defs/list/01', '#/$defs/list/2', '#/$defs/nope', '#/%E0%A4%A']) {
+    assert.throws(() => validate({ ...root, properties: { a: { $ref: ref } } }, { a: 1 }), SchemaError, ref);
+  }
 });
 
 test('numbers and arrays', () => {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createBus } from './bus/index.js';
 import { createCrashLog } from './crashlog.js';
 import { close, createHttpServer, listen } from './http/server.js';
-import { lockDataDir, LockError } from './lock.js';
+import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { migrate } from './store/migrate.js';
@@ -85,6 +85,10 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
   log.info('listening', { url: `http://${host}:${address.port}/`, exposure: config.exposure, store: store.kind, schemaVersion: store.schemaVersion });
 
+  // Keeps the data-directory lock fresh, for a process on another host that looks at it.
+  const freshen = setInterval(() => data.lock.refresh(), REFRESH_MS);
+  freshen.unref();
+
   let stopped = false;
   return {
     config,
@@ -99,6 +103,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     async stop() {
       if (stopped) return;
       stopped = true;
+      clearInterval(freshen);
       await close(server);
       data.close();
     },

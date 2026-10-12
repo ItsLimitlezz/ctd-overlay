@@ -9,6 +9,7 @@
 //   - synchronously: it must return the settings, not a promise.
 // A vm context alone is not a security boundary; the worker and the JSON-only interface are what
 // keep this safe enough for code the owner chose to install (07 §7.1).
+import vm from 'node:vm';
 import { Worker } from 'node:worker_threads';
 
 export class MigrateError extends Error {
@@ -19,21 +20,62 @@ export class MigrateError extends Error {
 }
 
 const LIMITS = { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8, codeRangeSizeMb: 8, stackSizeMb: 2 };
+// The settings migrate.js returns, as JSON: more than an overlay may save is refused before it is
+// parsed (the platform then refuses anything over SAVED_BYTES anyway).
+export const MAX_RESULT_CHARS = 64 * 1024;
 
-// migrate.js as a classic script: one `export function migrate` or `export default function` is
-// rewritten to a plain declaration (vm runs scripts, not modules); `function migrate` and a
-// CommonJS-style `module.exports` work as they are.
+// migrate.js as a classic script (vm runs scripts, not modules). Source that compiles as it is runs
+// as it is: `function migrate`, or CommonJS-style `module.exports`. Otherwise each line that starts
+// with `export function migrate(` or `export default function [name](` becomes a plain declaration
+// (a named default is then bound to migrate too). Text inside comments and strings is only touched
+// when the source doesn't compile without it.
 export function classicMigrate(code) {
-  return String(code)
-    .replace(/^\s*export\s+default\s+function\s*(?:migrate\s*)?\(/m, 'function migrate(')
-    .replace(/^\s*export\s+function\s+migrate\s*\(/m, 'function migrate(');
+  const src = String(code);
+  if (compiles(src)) return src;
+  const names = [];
+  const out = src
+    .replace(/^([ \t]*)export[ \t]+default[ \t]+function[ \t]*([A-Za-z_$][\w$]*)?[ \t]*\(/gm, (_, indent, name) => {
+      if (name && name !== 'migrate') names.push(name);
+      return `${indent}function ${name || 'migrate'}(`;
+    })
+    .replace(/^([ \t]*)export[ \t]+function[ \t]+migrate[ \t]*\(/gm, '$1function migrate(');
+  return names.length ? `${out}\n;var migrate = ${names[names.length - 1]};\n` : out;
+}
+
+// Why migrate.js can't run, or undefined: { code: 'migrate-import' | 'migrate-syntax', message }.
+// Only the parser decides: a word in a comment or a string is not an import.
+export function migrateProblem(code) {
+  const src = String(code);
+  const error = compileError(src);
+  if (error && /import statement outside a module|Cannot use 'import\.meta'/.test(error)) {
+    return { code: 'migrate-import', message: 'migrate.js can\'t import anything; it runs with no I/O.' };
+  }
+  const rewritten = compileError(classicMigrate(src));
+  if (!rewritten) return undefined;
+  const hint = /^[ \t]*export\b/m.test(src)
+    ? ' It runs as a classic script: define function migrate(fromVersion, settings), or begin a line with `export function migrate(` or `export default function`.'
+    : '';
+  return { code: 'migrate-syntax', message: `migrate.js doesn't compile: ${rewritten}.${hint}` };
+}
+
+function compiles(src) {
+  return compileError(src) === undefined;
+}
+
+function compileError(src) {
+  try {
+    new vm.Script(src, { filename: 'migrate.js' }); // eslint-disable-line no-new
+    return undefined;
+  } catch (err) {
+    return err.message;
+  }
 }
 
 // Runs inside the worker.
 const RUNNER = `
 const { parentPort, workerData } = require('node:worker_threads');
 const vm = require('node:vm');
-const { code, fromVersion, settingsJson, timeoutMs } = workerData;
+const { code, fromVersion, settingsJson, timeoutMs, maxChars } = workerData;
 try {
   const context = vm.createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext('var module = { exports: {} }; var exports = module.exports;', context);
@@ -46,6 +88,7 @@ try {
     '  if (out && typeof out.then === "function") throw new Error("migrate must return the settings, not a promise");' +
     '  return JSON.stringify(out);' +
     '})()', context, { filename: 'migrate.js', timeout: timeoutMs });
+  if (typeof json === 'string' && json.length > maxChars) throw new Error('it returned more settings than an overlay can save');
   parentPort.postMessage({ ok: true, json: typeof json === 'string' ? json : null });
 } catch (err) {
   parentPort.postMessage({ ok: false, message: String(err && err.message || err).slice(0, 500) });
@@ -57,7 +100,7 @@ export function runMigrate(code, fromVersion, settings, { timeoutMs = 1000 } = {
   return new Promise((resolve, reject) => {
     const worker = new Worker(RUNNER, {
       eval: true,
-      workerData: { code: classicMigrate(code), fromVersion: String(fromVersion), settingsJson: JSON.stringify(settings ?? {}), timeoutMs },
+      workerData: { code: classicMigrate(code), fromVersion: String(fromVersion), settingsJson: JSON.stringify(settings ?? {}), timeoutMs, maxChars: MAX_RESULT_CHARS },
       resourceLimits: LIMITS,
       env: {}, // nothing from the platform's environment, even to the runner
       stdout: true,
@@ -77,6 +120,7 @@ export function runMigrate(code, fromVersion, settings, { timeoutMs = 1000 } = {
       if (!msg.ok) return finish(reject, new MigrateError(`migrate.js failed: ${msg.message}`));
       let out;
       try {
+        if (typeof msg.json === 'string' && msg.json.length > MAX_RESULT_CHARS) throw new Error('too large');
         out = msg.json === null ? undefined : JSON.parse(msg.json);
       } catch {
         out = undefined;

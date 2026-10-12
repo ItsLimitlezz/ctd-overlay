@@ -15,7 +15,7 @@
 // (04 §4.10). Installs and uninstalls are crash-safe: work happens in a staging directory renamed
 // into place in one step, removals rename aside first, and startup sweeps whatever a crash left.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomicWriteFileSync, renameRetrying } from '../fsutil.js';
@@ -42,7 +42,11 @@ export class TemplateError extends Error {
 // templates' ids are the platform's own, so no package can publish a version of them.
 export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, readOnly = false, reserve = [BUILTIN_DIR] }) {
   const byKey = new Map(); // `${id}@${version}` → template
-  const reserved = new Set(); // ids that ship with the platform
+  // Ids that are the platform's own: bundled from a reserved root, or retained from one by an
+  // earlier platform version (a later one may no longer ship it; the id stays the platform's).
+  const reserved = new Set();
+  const shipped = new Set(); // `${id}@${version}` this platform ships: never uninstalled
+  const installedListeners = new Set();
   const root = dataDir ? path.join(dataDir, 'templates') : null;
 
   if (root && !readOnly) {
@@ -56,6 +60,7 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
       if (!lstatSync(sub).isDirectory() || !existsSync(path.join(sub, 'template.json'))) continue;
       try {
         const t = register(loadBundled(sub, log));
+        shipped.add(`${t.id}@${t.version}`);
         if (reserve.some((r) => path.resolve(r) === path.resolve(dir))) reserved.add(t.id);
       } catch (err) {
         log.error('skipping a template that could not be loaded', { dir: sub, err: err.message, findings: err.findings });
@@ -68,9 +73,11 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
       for (const build of readdirSync(path.join(root, id)).sort()) {
         if (!BUILD_DIR.test(build)) continue;
         try {
-          register(loadInstalled(path.join(root, id, build), log));
+          const t = loadInstalled(path.join(root, id, build), log);
+          if (t.receipt.source?.kind === 'bundled') reserved.add(t.id);
+          register(t);
         } catch (err) {
-          log.error('skipping an installed template that could not be loaded', { dir: path.join(root, id, build), err: err.message });
+          log.error('skipping an installed template that could not be loaded', { dir: path.join(root, id, build), err: err.message, findings: err.findings });
         }
       }
     }
@@ -109,12 +116,17 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     }
     try {
       const pkg = packageFromZip(source);
-      const result = validatePackage(pkg);
-      if (result.errors.length) throw new TemplateError(`The package has ${result.errors.length} problem${result.errors.length === 1 ? '' : 's'}; nothing was installed.`, 'invalid', [...result.errors, ...result.warnings]);
-      const { id, version } = result.manifest;
+      const refuse = (result) => new TemplateError(`The package has ${result.errors.length} problem${result.errors.length === 1 ? '' : 's'}; nothing was installed.`, 'invalid', [...result.errors, ...result.warnings]);
+      const early = validatePackage(pkg); // fails fast, before anything is written
+      if (early.errors.length) throw refuse(early);
       const staging = path.join(root, `.staging-${randomBytes(6).toString('hex')}`);
       try {
         const files = extract(pkg, path.join(staging, 'package'));
+        // What was written is what gets installed, so that is what gets validated: the archive
+        // could have changed since it was first read.
+        const result = validatePackage(packageFromDir(path.join(staging, 'package')));
+        if (result.errors.length) throw refuse(result);
+        const { id, version } = result.manifest;
         const build = buildFromFiles(files);
         const existing = byKey.get(`${id}@${version}`);
         if (existing && existing.build === build) return { template: existing, warnings: result.warnings, noop: true };
@@ -134,11 +146,12 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
         };
         atomicWriteFileSync(path.join(staging, RECEIPT), `${JSON.stringify(receipt, null, 2)}\n`);
         const target = path.join(root, id, build);
-        mkdirSync(path.join(root, id), { recursive: true });
-        if (existsSync(target)) trash(root, target); // an orphan a crash left; its receipt never registered
-        renameRetrying(staging, target);
+        placeIn(root, id, staging, target);
         const template = register(loadInstalled(target, log, receipt));
         log.info('template installed', { template: `${id}@${version}`, build, actor, source: label });
+        for (const fn of installedListeners) {
+          try { fn(template); } catch (err) { log.error('a listener for installed templates failed', { err: err.message }); }
+        }
         return { template, warnings: result.warnings, noop: false };
       } finally {
         if (existsSync(staging)) rmSync(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
@@ -153,7 +166,8 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
   function uninstall(id, version, { pinnedBy = () => [], actor = 'cli' } = {}) {
     const targets = [...byKey.values()].filter((t) => t.id === id && (version === undefined || t.version === version));
     if (!targets.length) throw new TemplateError(`${version ? `${id}@${version}` : id} is not installed.`, 'not-found');
-    const bundled = targets.filter((t) => t.source === 'bundled');
+    // A retained copy of a version the platform still ships is the platform's too.
+    const bundled = targets.filter((t) => t.source === 'bundled' || shipped.has(`${t.id}@${t.version}`));
     if (bundled.length) throw new TemplateError(`${bundled[0].id}@${bundled[0].version} ships with the platform and can't be uninstalled.`, 'bundled');
     for (const t of targets) {
       const slugs = pinnedBy(t.id, t.version);
@@ -178,9 +192,7 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
       const receipt = { id, version, build: buildFromFiles(files), installedAt: new Date().toISOString(), source: { kind: 'bundled', name: path.basename(t.dir) }, actor: 'platform', files };
       atomicWriteFileSync(path.join(staging, RECEIPT), `${JSON.stringify(receipt, null, 2)}\n`);
       const target = path.join(root, id, receipt.build);
-      mkdirSync(path.join(root, id), { recursive: true });
-      if (existsSync(target)) trash(root, target);
-      renameRetrying(staging, target);
+      placeIn(root, id, staging, target);
       return register(loadInstalled(target, log, receipt));
     } finally {
       if (existsSync(staging)) rmSync(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
@@ -192,6 +204,13 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     list() { return [...byKey.values()]; },
     // Every version of an id, newest first.
     versions(id) { return [...byKey.values()].filter((t) => t.id === id).sort((a, b) => compareVersions(b.version, a.version)); },
+    // Whether a template came with the platform (bundled, or a retained copy of a bundled one).
+    fromPlatform(t) { return t.source === 'bundled' || t.receipt?.source?.kind === 'bundled' || shipped.has(`${t.id}@${t.version}`); },
+    // fn(template) after each install that added a version; returns an unsubscribe function.
+    onInstalled(fn) {
+      installedListeners.add(fn);
+      return () => installedListeners.delete(fn);
+    },
     install,
     uninstall,
     retain,
@@ -228,8 +247,9 @@ function loadBundled(dir, log) {
 }
 
 // An installed version. Its receipt is trusted when every file is still there with the size it
-// had, so startup doesn't rehash up to 100 MiB per version on a small machine; anything else is
-// rehashed, and if the content changed it gets a new build (clients reload) and a warning.
+// had, so startup doesn't rehash up to 100 MiB per version on a small machine. Anything else was
+// changed after install: it is validated again (a version that no longer passes isn't loaded, and
+// its overlays answer 503) and rehashed, so changed content gets a new build (clients reload).
 function loadInstalled(dir, log, known) {
   const receipt = known || JSON.parse(readFileSync(path.join(dir, RECEIPT), 'utf8'));
   const pkgDir = path.join(dir, 'package');
@@ -239,16 +259,27 @@ function loadInstalled(dir, log, known) {
   }
   let build = receipt.build;
   let names = receipt.files.map((f) => f.path);
-  const intact = receipt.files.every((f) => {
+  let intact = true;
+  for (const f of receipt.files) {
+    let st;
     try {
-      const st = lstatSync(path.join(pkgDir, ...f.path.split('/')));
-      return st.isFile() && st.size === f.size;
+      st = lstatSync(path.join(pkgDir, ...f.path.split('/')));
     } catch {
-      return false;
+      // A file is gone (a power cut mid-install, a hand edit): a partial template would render
+      // broken on air, so this version isn't served at all (its overlays answer 503).
+      throw new TemplateError(`"${f.path}" is missing from the installed files; install the package again`, 'incomplete');
     }
-  });
+    if (!st.isFile() || st.size !== f.size) intact = false;
+  }
   if (!intact) {
     const pkg = packageFromDir(pkgDir);
+    const result = validatePackage(pkg);
+    if (result.errors.length) {
+      throw new TemplateError(`its files changed since it was installed and no longer pass: ${result.errors.map((e) => e.message).join(' ')}`, 'invalid', result.errors);
+    }
+    if (result.manifest.id !== receipt.id || result.manifest.version !== receipt.version) {
+      throw new TemplateError(`its template.json says ${result.manifest.id}@${result.manifest.version} but it was installed as ${receipt.id}@${receipt.version}`, 'mismatch');
+    }
     build = buildOf(pkg).build;
     names = pkg.names;
     log.warn('an installed template\'s files changed since it was installed; serving them under a new build', { template: `${receipt.id}@${receipt.version}`, installed: receipt.build, now: build });
@@ -275,21 +306,64 @@ function template(manifest, dir, build, names, source, receipt) {
   };
 }
 
-// Writes each file of a package under `to`, exclusively and with fixed modes (the archive's
-// permission bits are ignored). Returns [{ path, size, sha256 }].
+// Writes each file of a package under `to`, exclusively, with fixed modes (the archive's
+// permission bits are ignored) and synced to disk, then syncs every directory it made, deepest
+// first: after a power cut the version is either complete or not there. Returns
+// [{ path, size, sha256 }]. A filesystem's refusal (a name too long for it, a full disk) is a
+// TemplateError that says so, never a stack trace.
 function extract(pkg, to) {
   mkdirSync(to, { recursive: true });
   const base = path.resolve(to) + path.sep;
+  const dirs = new Set([path.resolve(to)]);
   const files = [];
   for (const name of pkg.names) {
     const target = path.resolve(to, ...name.split('/'));
     if (!target.startsWith(base)) throw new TemplateError(`"${name}" would land outside the template's folder.`, 'unsafe-path');
-    mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
     const data = pkg.read(name);
-    writeFileSync(target, data, { flag: 'wx', mode: 0o644 });
+    try {
+      for (let d = path.dirname(target); d.length > base.length - 1 && !dirs.has(d); d = path.dirname(d)) dirs.add(d);
+      mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
+      const fd = openSync(target, 'wx', 0o644);
+      try {
+        writeSync(fd, data);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    } catch (err) {
+      throw new TemplateError(`"${name}" could not be written (${err.code || err.message}); nothing was installed.`, 'write-failed');
+    }
     files.push({ path: name, size: data.length, sha256: createHash('sha256').update(data).digest('hex') });
   }
+  for (const d of [...dirs].sort((a, b) => b.length - a.length)) syncDir(d);
+  syncDir(path.dirname(path.resolve(to))); // the staging directory holds package/ and the receipt
   return files;
+}
+
+// Moves a finished staging directory to <root>/<id>/<build> in one rename, durably.
+function placeIn(root, id, staging, target) {
+  const idDir = path.join(root, id);
+  if (!existsSync(idDir)) {
+    mkdirSync(idDir, { recursive: true });
+    syncDir(root);
+  }
+  if (existsSync(target)) trash(root, target); // an orphan a crash left; its receipt never registered
+  renameRetrying(staging, target);
+  syncDir(idDir);
+}
+
+// Makes a directory's entries durable. POSIX only: Windows can't open a directory to sync it.
+function syncDir(dir) {
+  if (process.platform === 'win32') return;
+  let fd;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    // Some filesystems refuse to sync a directory; the files themselves are synced.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function archiveHash(source) {
