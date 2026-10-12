@@ -337,8 +337,9 @@ test('an installed version whose files changed and no longer pass is skipped; on
   openData(config, { log }).close();
   const platform = await start(t, config, { log });
   assert.equal(platform.templates.get(V1.id, V1.version), undefined);
-  assert.equal((await fetch(`${platform.url}/o/changed`)).status, 503);
-  assert.equal((await fetch(`${platform.url}/o/fine`)).status, 200);
+  const keyed = (slug, p = '') => `${platform.url}/o/${slug}${p}?key=${platform.overlays.key(slug)}`;
+  assert.equal((await fetch(keyed('changed'))).status, 503);
+  assert.equal((await fetch(keyed('fine'))).status, 200);
 });
 
 test('an installed template that loads but can\'t be used takes only its own overlays off air', async (t) => {
@@ -358,9 +359,10 @@ test('an installed template that loads but can\'t be used takes only its own ove
 
   const platform = await start(t, config, { log });
   assert.equal(platform.templates.get(V1.id, V1.version)?.build, template.build, 'loaded from its receipt');
-  assert.equal((await fetch(`${platform.url}/o/edited`)).status, 503);
-  assert.equal((await fetch(`${platform.url}/o/edited/snapshot`)).status, 503);
-  assert.equal((await fetch(`${platform.url}/o/fine`)).status, 200);
+  const keyed = (slug, p = '') => `${platform.url}/o/${slug}${p}?key=${platform.overlays.key(slug)}`;
+  assert.equal((await fetch(keyed('edited'))).status, 503);
+  assert.equal((await fetch(keyed('edited', '/snapshot'))).status, 503);
+  assert.equal((await fetch(keyed('fine'))).status, 200);
   assert.ok(entries.some((e) => /can't be used as installed/.test(e.msg) && e.context.overlay === edited.id));
 });
 

@@ -7,8 +7,9 @@
 //   GET /o/<slug>/t/<build>/<file> the pinned template's files, immutable
 //   GET /sdk/v1/sk.js              the runtime SDK
 //
-// Overlay keys arrive with step 12. Until then the server only listens on loopback, and the
-// overlay endpoints need no key (07 §7.6 allows "no key required" in local mode).
+// The page, snapshot, poll, stream and log need the overlay's key (?key=, 07 §7.6) unless the
+// overlay is marked "no key required" (local and lan modes). Template files and the SDK don't:
+// an OBS source loads them as plain URLs, and they hold nothing live.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -67,8 +68,14 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
   const streamsByClient = new Map();
   const capped = new Set(); // clients we've told to poll, so the log says it once
 
-  const find = (res, slug) => {
+  // The overlay a request names, if it carries the overlay's key (07 §7.6), or undefined once a
+  // problem has been sent. A wrong key and an unknown slug answer alike, so a guess learns nothing.
+  const find = (res, slug, url) => {
     const found = overlays.resolve(slug);
+    if (found && !overlays.admits(found.doc, url?.searchParams.get('key') ?? undefined)) {
+      sendProblem(res, 401, 'Overlay key needed', `This overlay's URL needs its key (?key=…). Copy the URL again (skp overlay url ${slug}, or the admin UI) into the OBS browser source.`, { headers: OVERLAY_HEADERS, type: 'https://skp.dev/errors/overlay-key' });
+      return undefined;
+    }
     if (!found) {
       sendProblem(res, 404, 'No such overlay', `No overlay has the slug "${slug}". Check the URL in the OBS browser source.`, { headers: OVERLAY_HEADERS });
       return undefined;
@@ -81,7 +88,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
   };
 
   function page({ res, params, url }) {
-    const o = find(res, params.slug);
+    const o = find(res, params.slug, url);
     if (!o) return;
     const { manifest, build } = o.template;
     const { id, width, height } = pickCanvas(manifest, url.searchParams.get('canvas'));
@@ -113,13 +120,13 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
 
   // The build rides on every snapshot and poll, so a page whose template was upgraded reloads
   // itself and the URL in OBS never changes (01 §1.4).
-  function snapshot({ res, params }) {
-    const o = find(res, params.slug);
+  function snapshot({ res, params, url }) {
+    const o = find(res, params.slug, url);
     if (o) sendJson(res, 200, { ...o.channel.snapshot(), build: o.template.build }, OVERLAY_HEADERS);
   }
 
   function poll({ res, params, url }) {
-    const o = find(res, params.slug);
+    const o = find(res, params.slug, url);
     if (!o) return;
     const result = o.channel.since(url.searchParams.get('cursor'));
     if (result.gone) return gone(res);
@@ -127,7 +134,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
   }
 
   function stream({ req, res, params, url }) {
-    const o = find(res, params.slug);
+    const o = find(res, params.slug, url);
     if (!o) return;
     const cursor = req.headers['last-event-id'] || url.searchParams.get('cursor');
     const backlog = o.channel.since(cursor);
@@ -224,8 +231,8 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
   // Allowing it exposes nothing: the answer is a bare 204, or a problem about the request itself.
   const templateLog = log.child('template');
   const buckets = new Map(); // slug → { tokens, at, template, dropped, reportedAt, timer }
-  async function logEntry({ req, res, params }) {
-    const o = find(res, params.slug);
+  async function logEntry({ req, res, params, url }) {
+    const o = find(res, params.slug, url);
     if (!o) return;
     let body;
     try {
