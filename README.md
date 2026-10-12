@@ -73,6 +73,24 @@ the same names as flags (`--port 5000`), or `config.json` in the config folder.
 npm test
 ```
 
+### Accounts
+
+There is no default password. On first start the platform prints a **setup code** in its log
+(valid for an hour; a restart makes a new one). Make the owner account with it:
+
+```bash
+npm run skp -- setup --code ABCD-EFGH-IJKL --username juan
+```
+
+It asks for a password (12 characters or more; a few words make a good one). Then add the people
+who run the show: `skp user add ana --role operator` (operators run scenes, cues and the lineup
+but never see credentials; `admin` also installs templates and reads the audit log; `viewer`
+only looks). A Stream Deck or a bot gets an API token: `skp token create --name "Stream Deck"
+--scopes overlays:control`, shown once. `skp audit` shows who did what. These commands work on
+the platform's own machine without signing in: the platform writes a local token to its config
+folder for them, which is also how the owner resets a forgotten password
+(`skp user password juan`).
+
 ## Templates
 
 A template is a folder with a `template.json` ([04](docs/standard/04-templates.md)); a package is
