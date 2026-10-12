@@ -174,7 +174,10 @@ async function waitForDevTools(profile, child, stderr, spawnError) {
     if (spawnError()) throw new Error(`could not start ${browserPath}: ${spawnError().message}`);
     if (child.exitCode !== null) throw new Error(`the browser exited (${child.exitCode}): ${stderr()}`);
     if (existsSync(file)) {
-      const [port, wsPath] = readFileSync(file, 'utf8').split('\n');
+      let text = '';
+      // On Windows the file can be locked for a moment while the browser writes it: try again.
+      try { text = readFileSync(file, 'utf8'); } catch (err) { if (!['EBUSY', 'EPERM', 'EACCES', 'ENOENT'].includes(err.code)) throw err; }
+      const [port, wsPath] = text.split('\n');
       if (port && wsPath) return `ws://127.0.0.1:${port.trim()}${wsPath.trim()}`;
     }
     await new Promise((r) => setTimeout(r, 50));

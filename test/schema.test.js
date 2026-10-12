@@ -43,6 +43,24 @@ test('strings: length in code points, unicode patterns, formats', () => {
   assert.deepEqual(messages({ type: 'string', format: 'color' }, 7), ['/ must be a string']);
 });
 
+test('a pattern check can be handed to a match function: true, false, or null when it couldn\'t check in time', () => {
+  const calls = [];
+  const match = (pattern, value) => {
+    calls.push(value);
+    return value === 'slow' ? null : value === 'yes';
+  };
+  const run = (schema, value, opts = {}) => validate(schema, value, { match, ...opts }).map((e) => `${e.path} ${e.message}`);
+  assert.deepEqual(run({ pattern: '^yes$' }, 'yes'), []);
+  assert.deepEqual(run({ pattern: '^yes$' }, 'no'), ['/ must match ^yes$']);
+  assert.deepEqual(run({ pattern: '^yes$' }, 'slow'), ['/ couldn\'t be checked against ^yes$ in time']);
+  assert.deepEqual(calls, ['yes', 'no', 'slow']);
+  // A pattern never runs on a value over either length limit, and a value over both is one error.
+  calls.length = 0;
+  assert.deepEqual(run({ pattern: '^yes$', maxLength: 2 }, 'long'), ['/ must be at most 2 characters']);
+  assert.deepEqual(run({ pattern: '^yes$', maxLength: 10 }, 'x'.repeat(20), { maxStringLength: 5 }), ['/ must be at most 5 characters']);
+  assert.deepEqual(calls, []);
+});
+
 test('multipleOf is exact for large quotients and allows decimal rounding', () => {
   assert.deepEqual(messages({ multipleOf: 2 }, 2000000000001), ['/ must be a multiple of 2']);
   assert.deepEqual(messages({ multipleOf: 1 }, 1234567890123.5), ['/ must be a multiple of 1']);

@@ -157,8 +157,8 @@ Supported: `string`, `number`, `integer`, `boolean`, `enum`, `array` of primitiv
   offset); `uri` is an absolute `https` URL (an overlay's CSP loads nothing else, §4.8). A
   `media` field holds an uploaded file (`/media/<fileId>/<name>`) or an `https` URL.
 - No setting value is longer than 4096 characters, whatever `maxLength` says. A `pattern` is at
-  most 200 characters; it is checked with a deadline, and a value it can't be checked against
-  in time is refused. Shapes known to backtrack badly (a repeated group that itself repeats or
+  most 200 characters; it is checked with a deadline in CPU time (a busy machine waiting doesn't
+  count), and a value it can't be checked against in time is refused. Shapes known to backtrack badly (a repeated group that itself repeats or
   alternates, backreferences, lookarounds) are flagged at install.
 - Sizes, as UTF-8 JSON: the values an operator saves are at most 24 KiB, and the defaults
   alone at most 6 KiB, so an overlay's resolved settings fit one envelope beside their previous
