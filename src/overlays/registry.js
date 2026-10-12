@@ -204,6 +204,18 @@ export function createOverlays({ store, bus, templates, log }) {
 
     list() { return [...all()]; },
 
+    // Slugs of the overlays whose settings point to a media URL, now or in the version an upgrade
+    // kept for revert (a removed file would leave either broken).
+    mediaUsers(url) {
+      const needle = JSON.stringify(url);
+      const slugs = [];
+      for (const doc of all()) {
+        const used = [doc.data.settings, doc.data.previous?.settings].some((s) => s && JSON.stringify(s).includes(needle));
+        if (used) slugs.push(doc.data.slug);
+      }
+      return slugs;
+    },
+
     // Slugs of the overlays that use id@version (uninstall is refused while there are any).
     pinnedBy(id, version) {
       const slugs = [];

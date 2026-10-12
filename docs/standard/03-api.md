@@ -121,7 +121,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 ### Media, webhooks, system
 | Method · Path | Purpose |
 |---|---|
-| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads; transcoded when ffmpeg is present |
+| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads (raw body, `?name=`), identified by content and transcoded when ffmpeg is present (10 §10.2); a delete is refused while an overlay's settings point to the file |
 | `GET/POST /webhooks` · `DELETE /webhooks/{id}` · `GET /webhooks/{id}/deliveries` | Outbound webhooks (06 §6.10) |
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
@@ -135,7 +135,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `GET /o/{slug}/snapshot` · `/stream` · `/poll` | required | Live data (01 §1.5) |
 | `POST /o/{slug}/log` | required | `SK.log` and runtime errors for the template log: `{ "entries": [{ "level", "msg", "context"? }] }`, at most 20 per request and 64 KiB, 30 entries a minute per overlay; answers `204` |
 | `GET /o/{slug}/t/{build}/*` | no | The pinned template version's files (04 §4.5) |
-| `GET /media/{fileId}/{name}` | no | Uploaded media that settings or `media.play` point to (07 §7.6) |
+| `GET /media/{fileId}/{name}` | no | Uploaded media that settings or `media.play` point to (07 §7.6); answers byte ranges, for video seeking |
 | `GET /sdk/v1/sk.js` · `/sdk/v1/mock.js` | no | The runtime SDK, and its sample data for `?mock=1` (08 §8.5) |
 
 These responses send `Referrer-Policy: no-referrer`. Template files and media never change at a

@@ -10,13 +10,14 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–6 of the plan. The server keeps its data in SQLite, routes live data through
+**Status:** steps 1–7 of the plan. The server keeps its data in SQLite, routes live data through
 the bus, and serves overlays to OBS browser sources over Server-Sent Events with a polling
 fallback. Every overlay page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)):
 the server clock, state and events, scenes and transitions, element lifecycle on deadlines,
 actions, alerts, chat and music helpers, and a mock show (`?mock=1`). Templates install from
-`.skp` packages, with validation, settings and upgrades (below). The only bundled template so
-far is a diagnostic one; step 7 (media) is next.
+`.skp` packages, with validation, settings and upgrades, and media uploads are converted for
+OBS (below). The only bundled template so far is a diagnostic one; step 8 (the TAKEOVER
+template) is next.
 
 ## Try it in OBS
 
@@ -71,3 +72,16 @@ its template; its OBS URL never changes. The plan lists every setting that chang
 upgrade that drops anything the overlay uses needs `--yes`. `overlay revert <slug>` goes back to
 the version and settings it had before. Each change is recorded in `operations.log` in the data
 folder.
+
+## Media
+
+Clips, images, sounds and fonts for templates (a poster setting, a stinger, a DJ logo):
+
+```bash
+npm run skp -- media add path/to/IMG_0042.MOV
+```
+
+It prints the file's URL (`/media/<id>/IMG_0042.mp4`) to paste into a setting. With
+[ffmpeg](https://ffmpeg.org) installed (or `SKP_FFMPEG` pointing to it), phone video is converted
+to H.264 MP4, which OBS's browser plays, and HEIC photos to JPEG. `media list` and
+`media remove <id>` do what they say.
