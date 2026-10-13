@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SIM_HOLD_MS } from '../src/overlays/simulate.js';
-import { DIAG, TESTBED, TESTBED_DIR, packTemplate, startWithOverlay } from './helpers.js';
+import { DIAG, TESTBED, TESTBED_DIR, packTemplate, signedIn, startWithOverlay } from './helpers.js';
 
 // A platform with two testbed overlays (both would take any event) and a diagnostic one (which
 // consumes only custom.*), and every envelope each one's channel sends.
@@ -21,7 +21,7 @@ async function setup(t, { install, settings = {}, options } = {}) {
   platform.bus.subscribeAll((env) => global.push(env));
   const post = (ref, body, headers = {}) => fetch(`${platform.url}/api/v1/overlays/${ref}/simulate`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: signedIn(platform, { 'content-type': 'application/json', ...headers }),
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   const send = async (ref, body) => {
@@ -126,7 +126,7 @@ test('the overlay is found by slug or id; anything else is refused with a reason
   }
 });
 
-test('only JSON from a program on this machine is accepted: no form posts, no web pages (not even the platform\'s own)', async (t) => {
+test('only JSON from the platform\'s own pages or programs is accepted: no form posts, no other sites, no sandboxed pages', async (t) => {
   const { platform, post, got } = await setup(t);
   const form = await post('bed', 'kind=follow', { 'content-type': 'application/x-www-form-urlencoded' });
   assert.equal(form.status, 415);
@@ -137,13 +137,21 @@ test('only JSON from a program on this machine is accepted: no form posts, no we
   const elsewhere = await post('bed', { kind: 'follow' }, { origin: 'https://evil.example' });
   assert.equal(elsewhere.status, 403);
   await elsewhere.arrayBuffer();
+  const sandboxed = await post('bed', { kind: 'follow' }, { origin: 'null' });
+  assert.equal(sandboxed.status, 403, 'an overlay page (a template\'s script) has origin "null"');
+  await sandboxed.arrayBuffer();
   const own = await post('bed', { kind: 'follow' }, { origin: platform.url });
-  assert.equal(own.status, 403, 'a template\'s script runs on the platform\'s own origin');
+  assert.equal(own.status, 200, 'the admin UI\'s pages, signed in');
   await own.arrayBuffer();
   const program = await post('bed', { kind: 'follow' });
   assert.equal(program.status, 200);
   await program.arrayBuffer();
-  assert.equal(got.bed.length, 1);
+  assert.equal(got.bed.length, 2);
+  // Signed in, or nothing: simulating takes overlays:control.
+  const anonymous = await fetch(`${platform.url}/api/v1/overlays/bed/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"kind":"follow"}' });
+  assert.equal(anonymous.status, 401);
+  assert.equal((await anonymous.json()).type, 'https://skp.dev/errors/unauthenticated');
+  assert.equal(got.bed.length, 2);
   // No CORS grant: a browser on another site can't even send the JSON.
   const preflight = await fetch(`${platform.url}/api/v1/overlays/bed/simulate`, {
     method: 'OPTIONS',
@@ -159,7 +167,7 @@ test('a page that reaches the platform under another name (DNS rebinding) is ref
   const { port } = new URL(platform.url);
   const raw = (host, origin) => new Promise((resolve, reject) => {
     const body = JSON.stringify({ kind: 'raid' });
-    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/v1/overlays/bed/simulate', headers: { host, ...(origin ? { origin } : {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/v1/overlays/bed/simulate', headers: signedIn(platform, { host, ...(origin ? { origin } : {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }) }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode));
     });
@@ -169,8 +177,7 @@ test('a page that reaches the platform under another name (DNS rebinding) is ref
   assert.equal(await raw(`attacker.example:${port}`, `http://attacker.example:${port}`), 403, 'Host and Origin agree, and both are someone else');
   assert.equal(await raw(`attacker.example:${port}`), 403, 'no Origin at all');
   assert.equal(await raw(`127.0.0.1:${port}`, `http://attacker.example:${port}`), 403);
-  assert.equal(await raw(`localhost:${port}`, `http://localhost:${port}`), 403, 'a page, even at the platform\'s own name');
-  assert.equal(await raw(`localhost:${port}`), 200, 'the platform\'s own names');
+  assert.equal(await raw(`localhost:${port}`, `http://localhost:${port}`), 200, 'the platform\'s own names and origin');
   assert.equal(await raw(`127.0.0.1:${port}`), 200);
   assert.deepEqual(got.bed.map((e) => e.type), ['alert.raid', 'alert.raid']);
 });

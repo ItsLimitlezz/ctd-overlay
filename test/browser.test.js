@@ -16,6 +16,33 @@ test('the diagnostic overlay loads under the CSP, styles via <base>, and streams
   assert.deepEqual(page.problems, []);
 });
 
+test('a template\'s script can\'t reach the API, even in a browser signed in as the owner: the page has an origin of its own', { skip: browserSkip }, async (t) => {
+  const { platform, base } = await startWithOverlay(t, { platform: { scrypt: { N: 1024 } } });
+  const made = await fetch(`${platform.url}/api/v1/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: platform.auth.setupCode, username: 'juan', password: 'correct horse battery staple' }) });
+  assert.equal(made.status, 201);
+  const session = made.headers.get('set-cookie').split(';')[0].split('=')[1];
+  const browser = await launchBrowser(t);
+  const page = await browser.open(base);
+  await page.send('Network.enable', {});
+  await page.send('Network.setCookie', { name: 'skp_session', value: session, url: platform.url });
+  await page.waitFor('window.SK && SK.transport.mode === "stream"', 10000);
+  const tried = await page.eval(`(async () => {
+    const out = { origin: self.origin };
+    const attempt = async (key, url, init) => {
+      try { out[key] = (await fetch(url, { credentials: 'include', ...init })).status; } catch { out[key] = 'blocked'; }
+    };
+    await attempt('session', '/api/v1/auth/session');
+    await attempt('shows', '/api/v1/shows', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"x"}' });
+    await attempt('simulate', '/api/v1/overlays/diag-1/simulate', { method: 'POST', body: '{"kind":"follow"}' });
+    return out;
+  })()`);
+  assert.deepEqual(tried, { origin: 'null', session: 'blocked', shows: 'blocked', simulate: 'blocked' });
+  assert.deepEqual(platform.shows.list(), []);
+  // The same cookie from the platform's own origin (the admin UI) does work.
+  const own = await fetch(`${platform.url}/api/v1/auth/session`, { headers: { cookie: `skp_session=${session}`, origin: platform.url } });
+  assert.equal(own.status, 200);
+});
+
 test('the CSP really blocks inline scripts and third-party fetches in an overlay', { skip: browserSkip }, async (t) => {
   const { base } = await startWithOverlay(t);
   const browser = await launchBrowser(t);

@@ -3,13 +3,13 @@
 // with its clock set ahead, through both daylight-saving nights.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { newId } from '../src/ids.js';
 import { GRACE_MS, RECONNECT_MS } from '../src/shows/timeline.js';
-import { defer, FIXTURE_TEMPLATES, memoryLogger, tempDir, TESTBED } from './helpers.js';
+import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -76,7 +76,7 @@ async function setup(t, { dataRoot = tempDir(t), clock, overlays = true } = {}) 
   const local = (slug) => platform.overlays.resolve(slug).channel.snapshot().state;
   const api = (method, url, body) => fetch(`${platform.url}/api/v1${url}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: signedIn(platform, body === undefined ? {} : { 'content-type': 'application/json' }),
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then(async (res) => ({ status: res.status, type: res.headers.get('content-type'), body: await res.json().catch(() => null) }));
   const timeline = platform.timeline;
@@ -151,7 +151,7 @@ test('a restart: what fell due while the platform was down fires at startup with
 
 test('operator overrides: fire now, skip, re-arm, edit and delete, each recorded', async (t) => {
   const clock = fakeClock(T0);
-  const { platform, timeline, watch, got, cue, config } = await setup(t, { clock });
+  const { platform, timeline, watch, got, cue } = await setup(t, { clock });
   const show = platform.shows.create(SHOW);
   watch('main-h');
   const title = { type: 'overlay.action', name: 'titleCard', args: { name: 'X' } };
@@ -182,11 +182,12 @@ test('operator overrides: fire now, skip, re-arm, edit and delete, each recorded
   assert.deepEqual(timeline.remove(show.id, three.id), { id: three.id });
   assert.throws(() => timeline.remove(show.id, three.id), { code: 'not-found', status: 404 });
   assert.throws(() => timeline.override(show.id, one.id, 'explode'), { code: 'invalid' });
-  // Each override is in the operations log (until the audit log, step 11).
-  const ops = readFileSync(path.join(config.dataDir, 'operations.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(ops.map((o) => [o.op, o.cue]), [['cue.fire', one.id], ['cue.rearm', one.id], ['cue.skip', two.id], ['cue.rearm', two.id]]);
+  // Each override is in the audit log (07 §7.12), newest first.
+  const ops = platform.audit.list({ action: 'cue' }).items.reverse();
+  assert.deepEqual(ops.map((o) => [o.action, o.target]), [['cue.fire', one.id], ['cue.rearm', one.id], ['cue.skip', two.id], ['cue.rearm', two.id]]);
   assert.equal(ops[0].actor, 'local');
-  assert.equal(ops[0].show, show.id);
+  assert.deepEqual(ops[0].details, { show: show.id, type: 'overlay.action' });
+  assert.equal(ops[0].at, iso(T0), 'on the platform\'s clock');
 });
 
 test('what a cue must be: refusals say what to fix', async (t) => {

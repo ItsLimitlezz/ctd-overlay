@@ -348,6 +348,11 @@ export function overlayCsp(manifest = {}) {
   }
   const more = [...extra].map((o) => ` ${o}`).join('');
   return [
+    // The page runs with an origin of its own, never the platform's: a template's script can't
+    // use the operator's session or the API, even in a browser signed in to the admin UI (07 §7.1).
+    // Its requests to the overlay's own endpoints are CORS (they allow any origin), as in the
+    // admin UI's sandboxed preview.
+    'sandbox allow-scripts',
     "default-src 'none'",
     "script-src 'self'",
     `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com${more}`,

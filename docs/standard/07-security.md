@@ -61,14 +61,25 @@ the `Origin` header, when present, **MUST** match the platform's origin. Token-a
 requests are exempt.
 
 **Login protection.** 10 failed attempts per account or per IP within 15 minutes triggers an
-exponential delay (1 s → 2 s → … → 15 min). Error messages never reveal whether the account
-exists. Failed and successful logins go to the audit log.
+exponential delay (1 s → 2 s → … → 15 min). The count is a streak: each failure within 15
+minutes of the last one counts, so the delay can reach its cap (a sliding 15-minute window would
+empty before it did); 15 quiet minutes, or a success for the account, start it over. The same
+protection covers setup codes. Error messages never reveal whether the account exists, and an
+unknown name costs one hash too. Failed and successful logins go to the audit log.
+
+**The command line.** On the platform's own machine, `skp` drives the running platform with a
+local token (03 §3.3) the platform writes at each start into the config directory (`0600`),
+beside the master key: whoever can read one can read the other. It acts as the owner, is accepted
+only from a loopback address, and is removed when the platform stops. It is how the owner resets
+a forgotten password (`skp user password <name>`).
 
 ## 7.4 Two-factor authentication
 
 TOTP (RFC 6238, SHA-1, 6 digits, 30 s, ±1 step) with 10 single-use recovery codes stored hashed.
+A code is accepted once (a later step only), and enrolling or turning it off takes the password.
 In `public` mode 2FA **SHOULD** be required for owner and admin roles and the UI nags until it
-is enabled. WebAuthn passkeys **MAY** be supported in addition.
+is enabled. WebAuthn passkeys **MAY** be supported in addition. The TOTP secret is a secret at
+rest (§7.7).
 
 ## 7.5 Roles and API tokens
 
@@ -81,7 +92,9 @@ is enabled. WebAuthn passkeys **MAY** be supported in addition.
 | Manage users, exposure, backups, plugins | ✓ | | | |
 | View dashboard & previews | ✓ | ✓ | ✓ | ✓ |
 
-Operators are who runs the show on the night; they cannot see or change credentials.
+Operators are who runs the show on the night; they cannot see or change credentials. The audit
+log (§7.12) is for owners and admins (`audit:read`). There is one owner, made at setup; the
+owner gives the other roles.
 
 **API tokens** — `skp_pat_` + 32 random bytes (base62). Shown once at creation; stored as
 SHA-256. Each has scopes (03 §3.3), an optional expiry, an optional IP allow-list, and a
@@ -177,8 +190,10 @@ Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS.
 
 Append-only record of: logins (success and failure), session revocations, user and role
 changes, token creation and revocation, connection changes, template installs, overlay key
-rotations, exposure changes, backups and restores. Each entry: time, actor, IP, action, target.
-Retained 90 days by default. Never contains secrets.
+rotations, exposure changes, backups and restores; also overlay upgrades, cue overrides, media
+changes and the platform's own template updates. Each entry: time, actor, IP, action, target.
+Retained 90 days by default (`SKP_AUDIT_DAYS`). Never contains secrets. Changes made from the
+command line are recorded as `cli:<user>`.
 
 ## 7.13 Backups
 

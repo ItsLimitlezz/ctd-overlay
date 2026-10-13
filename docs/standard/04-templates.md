@@ -291,6 +291,7 @@ platform **MUST** serve overlay pages with:
 
 ```
 Content-Security-Policy:
+  sandbox allow-scripts;
   default-src 'none';
   script-src 'self';
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
@@ -302,6 +303,13 @@ Content-Security-Policy:
   base-uri 'self';
   form-action 'none'
 ```
+
+`sandbox allow-scripts` gives the page an origin of its own (`null`), never the platform's, in
+OBS as in the admin UI's preview: a template's script can't use the operator's session or the
+API, even in a browser signed in to the admin UI, and the API refuses its requests (their
+`Origin` is not the platform's). Its requests to the overlay's own endpoints are cross-origin,
+which those allow (`Access-Control-Allow-Origin: *`). A sandboxed page has no storage
+(`localStorage` throws): a template keeps what it needs in state.
 
 `connect-src 'self'` is what makes "templates never connect" enforceable: a template cannot
 fetch from a third party even if it tries. `base-uri 'self'` allows the `<base>` the runtime

@@ -13,7 +13,7 @@ import { packageFromDir, packageFromZip } from '../src/templates/package.js';
 import { validateTemplate } from '../src/templates/registry.js';
 import { describeSource, fetchPackage, isPrivateAddress, parseSource } from '../src/templates/sources.js';
 import { bufferSource } from '../src/templates/zip.js';
-import { defer, DIAG_DIR, memoryLogger, packTemplate, tempDir } from './helpers.js';
+import { auditOf, defer, DIAG_DIR, memoryLogger, packTemplate, tempDir } from './helpers.js';
 
 const ID = 'dev.skp.sample';
 const SETTINGS = {
@@ -126,9 +126,8 @@ function data(t, config, fetch, sourceLimits) {
   return { ...d, entries };
 }
 
-const ops = (config) => (existsSync(path.join(config.dataDir, 'operations.log'))
-  ? readFileSync(path.join(config.dataDir, 'operations.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
-  : []);
+// The audit log's entries, oldest first, as { op: "template update", actor, ...details }.
+const ops = (config) => auditOf(config).map((a) => ({ op: a.action.replace(/\./g, ' '), actor: a.actor, ...a.details }));
 const downloadsLeft = (config) => readdirSync(path.join(config.dataDir, 'templates')).filter((n) => n.startsWith('.download-'));
 
 test('a source is a GitHub repository (owner/name, a tag, a github.com URL) or an https URL, never http', () => {
@@ -250,7 +249,7 @@ test('following a repository: new releases install, overlays move when nothing b
   assert.equal(r.installed.version, '1.1.1');
   assert.deepEqual([r.upgraded, r.waiting], [[], []]);
 
-  // Every install and upgrade it made is in operations.log, as the updater's.
+  // Every install and upgrade it made is in the audit log, as the updater's.
   const log = ops(config);
   assert.deepEqual(log.filter((o) => o.op === 'template update').map((o) => o.template), ['1.0.0', '1.1.0', '1.2.0', '2.0.0', '1.1.1'].map((v) => `${ID}@${v}`));
   assert.deepEqual(log.filter((o) => o.op === 'overlay upgrade').map((o) => `${o.overlay} ${o.to} ${o.actor}`), ['main 1.1.0 updater', 'other 1.1.0 updater', 'other 1.2.0 updater']);

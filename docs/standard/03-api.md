@@ -50,7 +50,11 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 `overlays:read`, `overlays:write`, `overlays:control` (take scenes, fire actions),
 `templates:read`, `templates:write`, `connections:read`, `connections:write`,
 `timeline:read`, `timeline:write`, `events:read` (SSE), `events:publish`, `state:write`,
-`media:write`, `users:admin`, `system:admin`.
+`media:write`, `audit:read`, `users:admin`, `system:admin`.
+
+The command line on the platform's own machine signs in with a **local token** (`skp_cli_…`)
+that the platform writes at each start to its config directory, readable by its own user only.
+It acts as the owner and is accepted only from a loopback address.
 
 ## 3.4 Resources
 
@@ -60,6 +64,8 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `GET /setup` · `POST /setup` | First-run: create the owner (07 §7.2). Disabled once an owner exists. |
 | `POST /auth/login` · `POST /auth/logout` | Session start/end |
 | `GET /auth/session` | Current user, role, CSRF token |
+| `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | Your active sessions (device, IP, last seen), and revoking one |
+| `POST /auth/password` | `{ current, password }`: ends your other sessions |
 | `POST /auth/totp/enroll` · `POST /auth/totp/verify` · `DELETE /auth/totp` | Two-factor |
 | `GET/POST /users` · `PATCH/DELETE /users/{id}` | Accounts and roles |
 | `GET/POST /tokens` · `DELETE /tokens/{id}` | API tokens (secret shown once) |
@@ -126,7 +132,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
 | `POST /system/backup` · `POST /system/restore` | Export/import (10 §10.7) |
-| `GET /system/audit` | Audit log (owner/admin) |
+| `GET /system/audit` | Audit log, newest first (`audit:read`: owner and admin) |
 
 ### Overlay-facing
 | Path | Overlay key | Purpose |

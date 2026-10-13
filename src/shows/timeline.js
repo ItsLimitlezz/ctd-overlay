@@ -260,7 +260,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       result = view(save(doc.id, next));
     } else throw new ShowError('The override is fire, skip or rearm.', 'invalid');
     log.info(`cue ${op === 'fire' ? 'fired by hand' : op === 'skip' ? 'skipped' : 're-armed'}`, { show: show.id, cue: doc.id, actor });
-    record(`cue.${op}`, { actor, cue: doc.id, show: show.id, type: doc.data.action.type });
+    record(`cue.${op}`, { actor, target: doc.id, show: show.id, type: doc.data.action.type });
     return result;
   }
 

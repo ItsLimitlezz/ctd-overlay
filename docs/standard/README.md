@@ -124,6 +124,18 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** From building sign-in (plan step 11):
+
+1. Overlay pages are served with `sandbox allow-scripts`: a template's script has an origin of
+   its own and can't use the operator's session or the API. *(04 §4.8, 07 §7.1)*
+2. A new scope, `audit:read` (owner and admin). The command line signs in on its own machine
+   with a local token written to the config directory. *(03 §3.3, 07 §7.3)*
+3. Login protection counts a streak of failures, so its delay can reach the 15-minute cap;
+   setup codes have the same protection. A TOTP code works once. *(07 §7.3, §7.4)*
+4. `GET/DELETE /auth/sessions`, `POST /auth/password`; the audit log also records overlay
+   upgrades, cue overrides, media changes and template updates, and `SKP_AUDIT_DAYS` sets how
+   long it keeps them. *(03 §3.4, 07 §7.12, 10 §10.5)*
+
 **2026-10-12.** From building the timeline (plan step 10):
 
 1. A cue may be set at a time of the show (`"01:00"`). It belongs to the show's night and

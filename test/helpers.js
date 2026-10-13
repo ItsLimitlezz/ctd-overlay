@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createLogger } from '../src/log.js';
+import { openStore } from '../src/store/index.js';
 import { packageFromDir } from '../src/templates/package.js';
 import { writeZip } from '../src/templates/zip.js';
 
@@ -36,6 +37,27 @@ export function memoryLogger(level = 'debug') {
   const entries = [];
   const log = createLogger({ level, write: (line) => entries.push(JSON.parse(line)) });
   return { log, entries };
+}
+
+// The headers that sign a test in as the command line does: the platform's local token.
+export const signedIn = (platform, headers = {}) => ({ authorization: `Bearer ${platform.auth.localToken}`, ...headers });
+
+// The audit log of a data directory no process holds (the platform stopped, a CLI command done),
+// oldest first.
+export function auditOf(config) {
+  const store = openStore({ dataDir: config.dataDir, backend: config.store });
+  try {
+    const out = [];
+    for (let after = ''; ;) {
+      const page = store.list('audit', { after, limit: 1000 });
+      out.push(...page.map((d) => d.data));
+      if (page.length < 1000) break;
+      after = page[page.length - 1].id;
+    }
+    return out.reverse();
+  } finally {
+    store.close();
+  }
 }
 
 export const DIAG = { id: 'dev.skp.diagnostic', version: '1.0.0' };

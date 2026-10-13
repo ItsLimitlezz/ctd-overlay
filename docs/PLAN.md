@@ -150,6 +150,16 @@ option that keeps a live show running with nobody touching it.
 ### Milestone 3: safe to expose, and an admin UI
 11. **Auth.** Setup code, owner, serialized scrypt, sessions, CSRF, login throttling, roles, API
     tokens, TOTP, audit log (07 §7.2–7.5, §7.12).
+    Done in `src/auth/`. Every `/api/v1` route needs a session (cookie and CSRF), an API token or
+    the command line's local token, with the route's scope; setup and login are open. The audit
+    log is a store collection and replaces `operations.log`; changes from the command line are
+    `cli:<user>`. Overlay pages are now sandboxed (`sandbox allow-scripts`), so a template's
+    script can't use a signed-in browser's session; this is what lets the API accept the
+    platform's own origin again (step 9 refused every page). `skp setup`, `skp user …`,
+    `skp token …` and `skp audit`. Carried forward to step 12: the TOTP secret is stored as it
+    is until secrets at rest are encrypted; cookies get `Secure` and `__Host-` with TLS; the IP
+    for throttling and the audit log is the socket's until trusted proxies exist. Step 13 adds
+    the API rate limits (03 §3.5) beyond login.
 12. **Exposure.** Overlay keys, AES-256-GCM secrets at rest with the master key, `local`/`lan`/
     `public` modes with TLS or trusted proxy, HTTP hardening, input validation (07 §7.6–7.11).
     The server may bind beyond localhost from here on.
