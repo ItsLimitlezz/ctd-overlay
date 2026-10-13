@@ -73,6 +73,15 @@ the same names as flags (`--port 5000`), or `config.json` in the config folder.
 npm test
 ```
 
+### Overlay URLs and reaching it from elsewhere
+
+Each overlay's URL carries its key: `npm run skp -- overlay url <slug>` prints it for OBS.
+`overlay rotate-key <slug>` makes a new one (the old URL stops working). By default the platform
+listens on this machine only. `SKP_EXPOSURE=lan` serves the local network (OBS on another PC, a
+phone); `SKP_EXPOSURE=public` also serves the internet over HTTPS, with `SKP_PUBLIC_URL` and
+either `SKP_TLS_CERT`/`SKP_TLS_KEY` or a reverse proxy in `SKP_TRUST_PROXY`. The master key in the
+config folder decrypts the secrets in the data folder: back it up separately.
+
 ### Accounts
 
 There is no default password. On first start the platform prints a **setup code** in its log

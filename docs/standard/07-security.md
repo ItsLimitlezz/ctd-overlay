@@ -149,6 +149,11 @@ the proxy's address, with `X-Forwarded-Proto: https`). Recommended: a reverse pr
 Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS.
 `X-Forwarded-*` headers **MUST** be ignored unless they come from a configured trusted proxy.
 
+In `public` mode, a client on the local network may still use plain HTTP (OBS on the LAN needs
+no certificate); anyone else gets HTTPS only. API requests must be addressed to one of the
+platform's names: loopback, its addresses and host name, `SKP_HOSTS` and `SKP_PUBLIC_URL`'s host.
+The command line's local token is refused on a request that came through a proxy.
+
 ## 7.9 Inbound webhooks
 
 - **Kick:** verify the signature with Kick's published public key, require a fresh timestamp,

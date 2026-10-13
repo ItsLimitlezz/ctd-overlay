@@ -58,7 +58,7 @@ const meta = async (url) => {
   return JSON.parse(/<meta name="skp" content="([^"]*)">/.exec(html)[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 };
 
-const snapshot = async (base) => (await fetch(`${base}/snapshot`)).json();
+const snapshot = async (base, key) => (await fetch(`${base}/snapshot${key ? `?key=${key}` : ''}`)).json();
 
 test('an overlay sees its resolved settings: saved values, then defaults, in the snapshot and the page alike', async (t) => {
   const { base, platform, overlay } = await setup(t);
@@ -166,7 +166,7 @@ test('a bound setting follows its state key live, as the overlay sees it, and a 
   const template = { id: ID, version: '1.0.0' };
   platform.overlays.create({ slug: 'live', template, settings: {}, connections: ['conn_a'] });
   platform.overlays.create({ slug: 'saved', template, settings: { headliner: 'Saved' }, connections: ['conn_a'] });
-  const settingsOf = async (slug) => (await snapshot(`${platform.url}/o/${slug}`)).state['overlay.settings'];
+  const settingsOf = async (slug) => (await snapshot(`${platform.url}/o/${slug}`, platform.overlays.key(slug))).state['overlay.settings'];
   assert.deepEqual(await settingsOf('live'), { headliner: 'TBA' });
 
   // No other call: the overlays bound to the key are resolved again as it changes.
@@ -245,7 +245,9 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   assert.equal(plan.major, false);
   assert.deepEqual(plan.changes.map((c) => `${c.change} ${c.path}`), ['invalid /size', 'removed /old', 'default /accent', 'added /fresh']);
   const { previous, ...data } = platform.store.get('overlays', overlay.id).data;
-  assert.deepEqual(data, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
+  const { key, keyRequired, ...stored } = data;
+  assert.deepEqual(stored, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
+  assert.match(key, /^enc:v1:/, 'the key, encrypted, and unchanged by the upgrade');
   assert.deepEqual({ ...previous, at: undefined }, { template: { id: ID, version: '1.0.0' }, settings: { size: 7, old: 'x' }, at: undefined });
   const snap = await (await fetch(`${base}/snapshot`)).json();
   assert.notEqual(snap.build, build);

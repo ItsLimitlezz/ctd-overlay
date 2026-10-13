@@ -17,6 +17,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { newId } from '../ids.js';
+import { isEncrypted } from '../secrets.js';
 import { BusyError, createHasher, passwordProblem } from './passwords.js';
 import { ASSIGNABLE, SCOPES, scopesOf } from './roles.js';
 import { createThrottle } from './throttle.js';
@@ -76,9 +77,12 @@ export function parseCookies(header) {
   return out;
 }
 
-// secureCookies: over HTTPS (step 12) the cookie is Secure with the __Host- prefix.
-export function createAuth({ store, audit, log, now = Date.now, hasher = createHasher(), configDir, secureCookies = false }) {
-  const cookieName = secureCookies ? '__Host-skp_session' : 'skp_session';
+// Over HTTPS the session cookie is Secure with the __Host- prefix (07 §7.3); secrets encrypts the
+// TOTP secret at rest (07 §7.7).
+export function createAuth({ store, audit, secrets, log, now = Date.now, hasher = createHasher(), configDir }) {
+  const cookieName = (secure) => (secure ? '__Host-skp_session' : 'skp_session');
+  const seal = (secret, userId) => (secrets ? secrets.encrypt(secret, `totp:${userId}`) : secret);
+  const unseal = (stored, userId) => (secrets && isEncrypted(stored) ? secrets.decrypt(stored, `totp:${userId}`) : stored);
   const throttle = createThrottle({ now });
   const sessionsByHash = new Map(); // SHA-256 → session id
   const tokensByHash = new Map(); // SHA-256 → token id
@@ -139,10 +143,10 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
   const busy = (err) => (err instanceof BusyError ? new AuthError(err.message, 'busy', 429, { retryAfterS: err.retryAfterS }) : err);
 
   // ---- sessions ----------------------------------------------------------------------------
-  function cookie(token, keep) {
-    return `${cookieName}=${token}; HttpOnly; SameSite=Lax; Path=/${keep ? `; Max-Age=${KEEP_MS / 1000}` : ''}${secureCookies ? '; Secure' : ''}`;
+  function cookie(token, keep, secure) {
+    return `${cookieName(secure)}=${token}; HttpOnly; SameSite=Lax; Path=/${keep ? `; Max-Age=${KEEP_MS / 1000}` : ''}${secure ? '; Secure' : ''}`;
   }
-  const clearCookie = () => `${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureCookies ? '; Secure' : ''}`;
+  const clearCookie = (secure) => `${cookieName(secure)}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
 
   function dropSession(id) {
     const doc = store.get('sessions', id);
@@ -157,7 +161,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
 
   // A new session for the user (a sign-in, or after a change that ended their others): the
   // cookie's value is shown once, here, and kept as its hash.
-  function startSession(user, { keep = false, ip, ua } = {}) {
+  function startSession(user, { keep = false, ip, ua, https = false } = {}) {
     for (const s of all('sessions')) if (expired(s.data)) dropSession(s.id);
     const mine = sessionsOf(user.id).sort((a, b) => a.data.createdAt - b.data.createdAt);
     while (mine.length >= MAX_SESSIONS) dropSession(mine.shift().id);
@@ -166,7 +170,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     const data = { userId: user.id, hash: sha256(token), csrf: randomBytes(32).toString('base64url'), createdAt: t, lastSeenAt: t, expiresAt: t + (keep ? KEEP_MS : SESSION_MS), keep: !!keep, ...(ip ? { ip: String(ip) } : {}), ...(ua ? { ua: String(ua).slice(0, 200) } : {}) };
     const doc = store.put('sessions', newId('ses'), data, { ifRev: 0 });
     sessionsByHash.set(data.hash, doc.id);
-    return { id: doc.id, csrf: data.csrf, expiresAt: new Date(data.expiresAt).toISOString(), cookie: cookie(token, keep) };
+    return { id: doc.id, csrf: data.csrf, expiresAt: new Date(data.expiresAt).toISOString(), cookie: cookie(token, keep, https) };
   }
   const signedIn = (user, session) => ({ user: userView(user), csrf: session.csrf, expiresAt: session.expiresAt, cookie: session.cookie });
 
@@ -181,7 +185,8 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
       if (m[1].startsWith('skp_cli_')) return local(m[1], req);
       return apiToken(m[1], req);
     }
-    const value = parseCookies(req.headers.cookie)[cookieName];
+    const jar = parseCookies(req.headers.cookie);
+    const value = jar[cookieName(true)] ?? jar[cookieName(false)];
     return value ? session(value) : {};
   }
 
@@ -211,7 +216,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     if (d.ips?.length) {
       const allow = new BlockList();
       for (const entry of d.ips) addAddress(allow, entry);
-      const addr = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+      const addr = String(req.client?.ip ?? req.socket?.remoteAddress ?? '').replace(/^::ffff:/, '');
       if (!isIP(addr) || !allow.check(addr, isIP(addr) === 6 ? 'ipv6' : 'ipv4')) return { error: 'That API token can\'t be used from this address.' };
     }
     const user = store.get('users', d.userId);
@@ -224,7 +229,8 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
 
   function local(value, req) {
     if (!localToken || !safeEqual(value, localToken)) return { error: 'The command line\'s local token doesn\'t match: is the platform running with this config directory?' };
-    if (!isLoopback(req.socket?.remoteAddress)) return { error: 'The local token works only from this machine.' };
+    // From this machine, and not through a proxy that is (a local reverse proxy forwards others).
+    if (!isLoopback(req.socket?.remoteAddress) || req.client?.proxied || req.headers['x-forwarded-for']) return { error: 'The local token works only from this machine.' };
     return { principal: { kind: 'local', role: 'owner', scopes: new Set(SCOPES), label: 'local' } };
   }
 
@@ -235,7 +241,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
   }
   const normalizeCode = (c) => String(c).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-  async function createOwner({ code, username, password } = {}, { ip, ua, keep } = {}) {
+  async function createOwner({ code, username, password } = {}, { ip, ua, keep, https } = {}) {
     if (ownerDoc()) throw new AuthError('The owner account exists already: sign in instead.', 'setup-done', 409);
     const wait = throttle.wait(`setup:${ip}`);
     if (wait) throw new AuthError(`Too many wrong setup codes. Try again in ${Math.ceil(wait / 1000)} s.`, 'throttled', 429, { retryAfterS: Math.ceil(wait / 1000) });
@@ -258,11 +264,11 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     const user = store.put('users', newId('usr'), { username: name, role: 'owner', passwordHash, createdAt: t, lastLoginAt: t }, { ifRev: 0 });
     audit.record({ action: 'setup', actor: name, ip, target: user.id });
     log.info('owner account created', { username: name });
-    return signedIn(user, startSession(user, { keep, ip, ua }));
+    return signedIn(user, startSession(user, { keep, ip, ua, https }));
   }
 
   // ---- signing in (07 §7.3, §7.4) ----------------------------------------------------------
-  async function login({ username, password, code, keep } = {}, { ip, ua } = {}) {
+  async function login({ username, password, code, keep } = {}, { ip, ua, https } = {}) {
     const name = typeof username === 'string' ? username.trim().toLowerCase() : '';
     const keys = [`account:${name}`, `ip:${ip}`];
     const wait = throttle.wait(...keys);
@@ -283,7 +289,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     let user = doc;
     if (user.data.totp) {
       if (code === undefined || code === null || code === '') throw new AuthError('Enter the six-digit code from your authenticator app, or a recovery code.', 'totp-required', 401);
-      const step = verifyTotp(user.data.totp.secret, String(code), now(), { lastStep: user.data.totp.lastStep ?? -1 });
+      const step = verifyTotp(unseal(user.data.totp.secret, user.id), String(code), now(), { lastStep: user.data.totp.lastStep ?? -1 });
       if (step !== undefined) user = store.put('users', user.id, { ...user.data, totp: { ...user.data.totp, lastStep: step } });
       else {
         const used = sha256(normalizeCode(code));
@@ -301,15 +307,15 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     if (rehash) next.passwordHash = await hash(password);
     user = store.put('users', user.id, next);
     audit.record({ action: 'login', actor: name, ip, keep: !!keep });
-    return signedIn(user, startSession(user, { keep, ip, ua }));
+    return signedIn(user, startSession(user, { keep, ip, ua, https }));
   }
 
-  function logout(who, { ip } = {}) {
+  function logout(who, { ip, https } = {}) {
     if (who.kind === 'session') {
       dropSession(who.sessionId);
       audit.record({ action: 'session.end', actor: who.label, ip, target: who.sessionId });
     }
-    return { cookie: clearCookie() };
+    return { cookie: clearCookie(https) };
   }
 
   // What GET /auth/session answers.
@@ -329,14 +335,14 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     return userDoc(who.user.id);
   }
 
-  async function changePassword(who, { current, password } = {}, { ip, ua } = {}) {
+  async function changePassword(who, { current, password } = {}, { ip, ua, https } = {}) {
     const doc = self(who);
     if (!(await verify(current, doc.data.passwordHash)).ok) throw new AuthError('The current password is wrong.', 'bad-credentials', 403);
     checkPassword(password, doc.data.username);
     const saved = store.put('users', doc.id, { ...doc.data, passwordHash: await hash(password) });
     endSessions(doc.id);
     audit.record({ action: 'password.change', actor: who.label, ip, target: doc.id });
-    return signedIn(saved, startSession(saved, { ip, ua, keep: false }));
+    return signedIn(saved, startSession(saved, { ip, ua, https, keep: false }));
   }
 
   // ---- two-factor (07 §7.4) ----------------------------------------------------------------
@@ -345,15 +351,15 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     if (!(await verify(password, doc.data.passwordHash)).ok) throw new AuthError('The password is wrong.', 'bad-credentials', 403);
     if (doc.data.totp) throw new AuthError('Two-factor is on already; turn it off first to set up another device.', 'totp-on', 409);
     const secret = newSecret();
-    store.put('users', doc.id, { ...doc.data, totpPending: { secret, at: now() } });
+    store.put('users', doc.id, { ...doc.data, totpPending: { secret: seal(secret, doc.id), at: now() } });
     return { secret, uri: otpauthUri(secret, doc.data.username) };
   }
 
-  function totpVerify(who, { code } = {}, { ip, ua } = {}) {
+  function totpVerify(who, { code } = {}, { ip, ua, https } = {}) {
     const doc = self(who);
     const pending = doc.data.totpPending;
     if (!pending || now() - pending.at > ENROLL_MS) throw new AuthError('Start again: enroll, then enter a code within ten minutes.', 'no-enrollment', 409);
-    const step = verifyTotp(pending.secret, String(code ?? ''), now());
+    const step = verifyTotp(unseal(pending.secret, doc.id), String(code ?? ''), now());
     if (step === undefined) throw new AuthError('That code is wrong. Check the time on your phone, and enter the code it shows now.', 'bad-code', 422);
     const recoveryCodes = Array.from({ length: RECOVERY_CODES }, () => {
       const c = randomBytes(8).toString('hex').toUpperCase().slice(0, 12);
@@ -364,10 +370,10 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     const saved = store.put('users', doc.id, next);
     endSessions(doc.id);
     audit.record({ action: 'totp.enable', actor: who.label, ip, target: doc.id });
-    return { ...signedIn(saved, startSession(saved, { ip, ua })), recoveryCodes };
+    return { ...signedIn(saved, startSession(saved, { ip, ua, https })), recoveryCodes };
   }
 
-  async function totpDisable(who, { password } = {}, { ip, ua } = {}) {
+  async function totpDisable(who, { password } = {}, { ip, ua, https } = {}) {
     const doc = self(who);
     if (!(await verify(password, doc.data.passwordHash)).ok) throw new AuthError('The password is wrong.', 'bad-credentials', 403);
     const next = { ...doc.data };
@@ -377,7 +383,7 @@ export function createAuth({ store, audit, log, now = Date.now, hasher = createH
     const saved = store.put('users', doc.id, next);
     endSessions(doc.id);
     audit.record({ action: 'totp.disable', actor: who.label, ip, target: doc.id });
-    return signedIn(saved, startSession(saved, { ip, ua }));
+    return signedIn(saved, startSession(saved, { ip, ua, https }));
   }
 
   // ---- users (owner) -----------------------------------------------------------------------

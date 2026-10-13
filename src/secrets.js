@@ -93,6 +93,55 @@ export function loadMasterKey(config, { log, create = true } = {}) {
 
 export const isEncrypted = (value) => typeof value === 'string' && value.startsWith(PREFIX);
 
+// Every encrypted value in the store, with its associated data: overlay keys, TOTP secrets.
+function* encryptedFields(store) {
+  for (const [collection, fields] of [['overlays', [['key', (id) => id]]], ['users', [['totp.secret', (id) => `totp:${id}`], ['totpPending.secret', (id) => `totp:${id}`]]]]) {
+    for (let after = ''; ;) {
+      const page = store.list(collection, { after, limit: 1000 });
+      for (const doc of page) for (const [field, aad] of fields) yield { collection, doc, field, aad: aad(doc.id) };
+      if (page.length < 1000) break;
+      after = page[page.length - 1].id;
+    }
+  }
+}
+const getPath = (o, p) => p.split('.').reduce((v, k) => v?.[k], o);
+function setPath(o, p, value) {
+  const keys = p.split('.');
+  const copy = { ...o };
+  let at = copy;
+  for (const k of keys.slice(0, -1)) at = at[k] = { ...at[k] };
+  at[keys.at(-1)] = value;
+  return copy;
+}
+
+// `skp key rotate` (07 §7.7), with the platform stopped: a new master key, every secret
+// re-encrypted with it in one transaction, then the new key in place and the old one kept as
+// master.key.<id>.retired (delete it once backups made with it are gone). Refused when the key
+// comes from SKP_MASTER_KEY: the environment can't be rewritten from here.
+export function rotateMasterKey(config, store, { log } = {}) {
+  const current = loadMasterKey(config, { log, create: false });
+  if (current.source === 'SKP_MASTER_KEY') throw new SecretsError('The master key comes from SKP_MASTER_KEY; rotate it there: decrypting needs both keys, so use a key file (SKP_MASTER_KEY_FILE) to rotate.');
+  const next = randomBytes(32);
+  const nextFile = `${current.file}.next`;
+  writeKeyFile(nextFile, next);
+  const oldSecrets = createSecrets({ key: current.key, ring: current.ring });
+  const newSecrets = createSecrets({ key: next });
+  let count = 0;
+  const fields = [...encryptedFields(store)]; // read before: inside a transaction only tx reads
+  store.transaction((tx) => {
+    for (const { collection, doc, field, aad } of fields) {
+      const value = getPath(tx.get(collection, doc.id)?.data, field);
+      if (!isEncrypted(value)) continue;
+      const cur = tx.get(collection, doc.id);
+      tx.put(collection, doc.id, setPath(cur.data, field, newSecrets.encrypt(oldSecrets.decrypt(value, aad), aad)));
+      count++;
+    }
+  });
+  renameSync(current.file, `${current.file}.${current.kid}.retired`);
+  renameSync(nextFile, current.file);
+  return { from: current.kid, to: keyId(next), reencrypted: count, retired: `${current.file}.${current.kid}.retired` };
+}
+
 // encrypt(plain, aad) and decrypt(text, aad) with the current key (and the ring, to decrypt).
 export function createSecrets({ key, ring = new Map([[keyId(key), key]]) }) {
   const kid = keyId(key);

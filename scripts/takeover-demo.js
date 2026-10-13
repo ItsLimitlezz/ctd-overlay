@@ -57,8 +57,9 @@ const drift = setInterval(() => { if (viewers !== undefined) platform.bus.setSta
 
 console.log('\nTAKEOVER overlays (browser sources):\n');
 for (const slug of ['takeover', 'event']) {
-  console.log(`  ${platform.url}/o/${slug}`);
-  console.log(`  ${platform.url}/o/${slug}?canvas=v   (1080 x 1920)`);
+  const [h, v] = platform.overlays.urls(slug, platform.url);
+  console.log(`  ${h.url}`);
+  if (v) console.log(`  ${v.url}   (1080 x 1920)`);
 }
 console.log('\nCommands: starting program brb lineup outro bg intro headliner line pov auto · title np opening onat · next · rec · viewers · Ctrl+C to stop\n');
 

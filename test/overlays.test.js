@@ -332,11 +332,13 @@ test('overlays survive a restart, with the same slug and settings', async (t) =>
   const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'd'), SKP_CONFIG_DIR: path.join(root, 'c') } });
   const first = await startPlatform(config, { log: memoryLogger().log });
   first.overlays.create({ slug: 'friday-main', template: DIAG, settings: { accent: 'gold' } });
+  const key = first.overlays.key('friday-main');
   await first.stop();
   const second = await startPlatform(config, { log: memoryLogger().log });
   defer(t, () => second.stop());
-  const snap = await (await fetch(`${second.url}/o/friday-main/snapshot`)).json();
+  const snap = await (await fetch(`${second.url}/o/friday-main/snapshot?key=${key}`)).json();
   assert.deepEqual(snap.state['overlay.settings'], { accent: 'gold' });
+  assert.equal(second.overlays.key('friday-main'), key, 'and the same key: the URL in OBS still works');
 });
 
 test('slugs must be valid and unique; the template must be installed', async (t) => {

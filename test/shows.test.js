@@ -659,7 +659,7 @@ test('a sandboxed page (an overlay, a template\'s script) can\'t drive a show; t
   assert.equal((await fromPage({ origin: 'null' })).status, 403, 'an overlay page has an origin of its own');
   assert.equal((await api('GET', '/shows', undefined, { origin: 'null' })).status, 403, 'reading too');
   assert.equal((await fromPage({ origin: platform.url })).status, 200);
-  const res = await fetch(`${platform.url}/o/main-h`);
+  const res = await fetch(`${platform.url}/o/main-h?key=${platform.overlays.key('main-h')}`);
   assert.match(res.headers.get('content-security-policy'), /^sandbox allow-scripts; /, 'overlay pages are served sandboxed');
   await res.arrayBuffer();
 });
