@@ -26,6 +26,9 @@ const SETTINGS = {
   logLevel: ['SKP_LOG_LEVEL', 'log-level', true],
   store: ['SKP_STORE', 'store', true],
   timezone: ['TZ', 'timezone', true],
+  githubToken: ['SKP_GITHUB_TOKEN', null, false], // a secret: for template sources in private repos
+  templateCheckMinutes: ['SKP_TEMPLATE_CHECK_MINUTES', 'template-check-minutes', true],
+  allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
 };
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -96,18 +99,40 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
   const store = oneOf(get('store'), STORES, 'sqlite');
   const ffmpeg = str(get('ffmpeg')) ?? 'ffmpeg';
   const timezone = parseTimezone(get('timezone'), warnings);
+  const githubToken = str(get('githubToken'));
+  const templateCheckMinutes = parseMinutes(get('templateCheckMinutes'), 60);
+  const allowPrivateDownloads = parseBool(get('allowPrivateDownloads'), false);
 
   return Object.freeze({
     port, host, exposure, dataDir, configDir,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
-    ffmpeg, logLevel, store, timezone, warnings: Object.freeze(warnings),
+    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, warnings: Object.freeze(warnings),
   });
 }
 
 // What's safe to print at startup.
 export function describeConfig(config) {
-  const { masterKey, warnings, ...rest } = config;
-  return { ...rest, masterKey: masterKey ? 'set' : 'not set' };
+  const { masterKey, githubToken, warnings, ...rest } = config;
+  return { ...rest, masterKey: masterKey ? 'set' : 'not set', githubToken: githubToken ? 'set' : 'not set' };
+}
+
+function parseBool(picked, fallback) {
+  const v = str(picked);
+  if (v === undefined) return fallback;
+  if (/^(true|1|yes)$/i.test(v)) return true;
+  if (/^(false|0|no)$/i.test(v)) return false;
+  throw new ConfigError(`${picked.source} must be true or false (got "${v}").`);
+}
+
+// How often template sources are checked: whole minutes, 0 (never on its own) to a week.
+function parseMinutes(picked, fallback) {
+  const v = str(picked);
+  if (v === undefined) return fallback;
+  if (!/^\d+$/.test(v) || Number(v) > 10080) {
+    throw new ConfigError(`${picked.source} must be a number of minutes from 0 (never) to 10080 (a week) (got "${v}").`);
+  }
+  if (Number(v) > 0 && Number(v) < 5) throw new ConfigError(`${picked.source} must be 0 or at least 5 minutes: GitHub allows 60 unauthenticated requests an hour (got "${v}").`);
+  return Number(v);
 }
 
 export function defaultDirs(platform, env, home, p = platform === 'win32' ? path.win32 : path.posix) {

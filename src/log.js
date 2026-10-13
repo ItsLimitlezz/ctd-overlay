@@ -11,6 +11,7 @@ const SECRET_STRINGS = [
   [/\b(skp_(?:pat|ovl)_)[A-Za-z0-9]+/g, '$1[redacted]'],
   [/([?&](?:key|token|access_token|refresh_token|code|client_secret)=)[^&#\s"']+/gi, '$1[redacted]'],
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]'],
+  [/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/g, '$1[redacted]'], // GitHub tokens (template sources)
 ];
 
 export const REDACTED = '[redacted]';

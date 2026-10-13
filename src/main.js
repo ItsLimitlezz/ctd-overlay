@@ -25,7 +25,7 @@ if (isCommand(argv)) {
 // A command has a word (`template list`), or a flag only commands take (--help, --json …), in any
 // order with the server's own flags, which all take a value (`--data-dir D template list`).
 function isCommand(args) {
-  const commandFlags = new Set(['--help', '-h', '--json', '--dry-run', '--yes', '--run-migrate', '-o', '--out', '--to', '--name']);
+  const commandFlags = new Set(['--help', '-h', '--json', '--dry-run', '--yes', '--run-migrate', '-o', '--out', '--to', '--name', '--auto-upgrade', '--template']);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (!a.startsWith('-') || commandFlags.has(a.split('=')[0])) return true;

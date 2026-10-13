@@ -10,6 +10,7 @@ import { close, createHttpServer, listen } from './http/server.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
 import { mediaRoutes } from './media/routes.js';
+import { recordOperation } from './oplog.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
@@ -17,6 +18,7 @@ import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
 import { BUILTIN_DIR, createTemplateRegistry } from './templates/registry.js';
+import { createTemplateSources } from './templates/sources.js';
 
 // code: 'locked' when another process holds the data directory, else 'startup'.
 export class StartupError extends Error {
@@ -28,10 +30,10 @@ export class StartupError extends Error {
 }
 
 // Everything but HTTP, for the platform and for CLI commands that change the data directory:
-// { lock, store, bus, templates, overlays, media, close() }. Holds the data-directory lock until
-// close(). ffmpeg and media: test hooks ([executable, ...args] in place of config.ffmpeg; options
-// for the media library).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {} }) {
+// { lock, store, bus, templates, overlays, media, sources, close() }. Holds the data-directory
+// lock until close(). ffmpeg, media and fetch: test hooks ([executable, ...args] in place of
+// config.ffmpeg; options for the media library; the fetch template sources use).
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -55,10 +57,15 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
+    const sources = createTemplateSources({
+      store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
+      record: (op, details) => recordOperation(config.dataDir, op, { ...details, actor: 'updater' }),
+    });
     return {
-      lock, store, bus, templates, overlays, media,
+      lock, store, bus, templates, overlays, media, sources,
       close() {
         clearInterval(freshen);
+        sources.stop();
         media.close();
         bus.close();
         store.close();
@@ -75,17 +82,18 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 }
 
 // Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat,
-// options.templateDirs adds directories of templates beside the built-in ones,
-// options.ffmpeg replaces the configured ffmpeg, options.media goes to the media library, and
+// options.templateDirs adds directories of templates beside the built-in ones, options.ffmpeg
+// replaces the configured ffmpeg, options.media goes to the media library, options.fetch and
+// options.sourceLimits are what template sources fetch with and their limits, and
 // options.simulateHoldMs shortens how long simulated state lasts.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, simulateHoldMs } = {}) {
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
-  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions });
-  const { store, bus, templates, overlays, media } = data;
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup });
+  const { store, bus, templates, overlays, media, sources } = data;
   const server = createHttpServer({
     log: log.child('http'),
     crash,
@@ -115,6 +123,10 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
 
   // Whether phone video can be converted, in the log from the start (not only at the first upload).
   media.ffmpeg();
+  // New releases of followed templates, checked by the platform itself (04 §4.13).
+  sources.start(config.templateCheckMinutes);
+  const followed = sources.list().length;
+  if (followed) log.info('checking template sources for new releases', { sources: followed, everyMinutes: config.templateCheckMinutes || 'never' });
 
   let stopped = false;
   return {
@@ -124,6 +136,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     templates,
     overlays,
     media,
+    sources,
     crash,
     server,
     port: address.port,
@@ -132,6 +145,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       if (stopped) return;
       stopped = true;
       await close(server);
+      // A template check in progress is abandoned before the store closes.
+      await sources.stop();
       // Conversions are stopped, and what they leave is cleared before the store closes.
       await media.close();
       data.close();

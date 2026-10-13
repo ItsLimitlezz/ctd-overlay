@@ -114,8 +114,10 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     return t.source === 'bundled' || t.receipt?.source?.kind === 'bundled' || shipped.get(`${t.id}@${t.version}`)?.build === t.build;
   }
 
-  // Installs a package: a file path, or { buffer } (tests). Returns { template, warnings, noop }.
-  function install(input, { actor = 'cli', name } = {}) {
+  // Installs a package: a file path, or a Buffer (tests). Returns { template, warnings, noop }.
+  // origin: where it came from, for the receipt ({ kind: 'github', repo, tag } or { kind: 'url',
+  // url }); a file by default.
+  function install(input, { actor = 'cli', name, origin } = {}) {
     if (!root || readOnly) throw new TemplateError('This registry can\'t install: it has no data directory, or another process holds it.', 'read-only');
     let fd;
     let source;
@@ -154,7 +156,8 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
           id, version, build,
           packageSha256: archiveHash(source),
           installedAt: new Date().toISOString(),
-          source: { kind: 'package', name: label },
+          // Never 'bundled': a download is never the platform's own.
+          source: { name: label, ...origin, kind: origin?.kind === 'github' || origin?.kind === 'url' ? origin.kind : 'package' },
           actor,
           files,
         };
@@ -233,6 +236,8 @@ export function createTemplateRegistry({ dirs = [BUILTIN_DIR], dataDir, log, rea
     install,
     uninstall,
     retain,
+    // Where downloads wait to be installed (swept at the next start if one is interrupted).
+    get downloadDir() { return root && !readOnly ? root : null; },
   };
 }
 
@@ -399,10 +404,11 @@ function trash(root, dir) {
   rmSync(aside, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
-// What a crash left: staging directories never renamed into place, trash never deleted.
+// What a crash left: staging directories never renamed into place, trash never deleted, packages
+// half downloaded from a template source.
 function sweep(root, log) {
   for (const name of readdirSync(root)) {
-    if (!name.startsWith('.staging-') && !name.startsWith('.trash-')) continue;
+    if (!name.startsWith('.staging-') && !name.startsWith('.trash-') && !name.startsWith('.download-')) continue;
     try {
       rmSync(path.join(root, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
       log.info('removed what an interrupted install or uninstall left', { dir: name });

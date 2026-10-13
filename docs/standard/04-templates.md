@@ -31,7 +31,8 @@ vikkstar-event/
   protection).
 - `template.json` sits at the archive's root, or inside one top-level folder (as drawn above),
   which is not part of the package's paths. Desktop clutter (`__MACOSX/`, `.DS_Store`, `._*`,
-  `Thumbs.db`, `desktop.ini`) is ignored.
+  `Thumbs.db`, `desktop.ini`) and version-control directories (`.git/`, `.svn/`, `.hg/`) are
+  ignored.
 - Everything the template loads at runtime **MUST** be inside the package, except the images
   the data itself points to (avatars, emotes, album art) and fonts from allowed hosts (§4.8).
 
@@ -397,3 +398,37 @@ SK.ready(() => {
 });
 ```
 That is the entire integration with Twitch, Kick and YouTube viewer counts.
+
+## 4.13 Template sources
+
+A template can be updated remotely: the operator follows a **source**, and the platform installs
+each new release by itself.
+
+- A source is a GitHub repository (`owner/name`, optionally pinned to one release tag) or an
+  `https` URL that always serves the current package. Anything but `https` is refused, on every
+  redirect hop too, and so is any hop to a private, loopback or link-local address unless the
+  owner allows them (07 §7.11; `SKP_ALLOW_PRIVATE_DOWNLOADS`, 10 §10.5).
+- From a GitHub release the platform takes the attached `.skp`, else an attached `.zip`, else
+  the release's source zip (which works when `template.json` is at the repository's root). A
+  private repository needs a token with read access (`SKP_GITHUB_TOKEN`, 10 §10.5); it **MUST**
+  be sent to the GitHub API only, never to the hosts downloads are redirected to.
+- The platform checks each source on an interval (default hourly), using `ETag`s (or a URL's
+  `Last-Modified`) so an unchanged release costs one small request. Downloads have the package
+  limits of §4.1 and a time limit. A release that fails validation is not installed: the error
+  is shown on the source, with the validation warnings of any release that does install, and a
+  release that failed for good is not downloaded again until the source publishes another.
+- A source installs one template id, and a template has one source: the first release fixes
+  the id, a later release with another id is refused, and a first release is refused when its
+  id ships with the platform, comes from another source, or is already installed from elsewhere
+  (a file, a URL), unless the operator names that id when following the source. So a repository
+  can't take over another template's overlays.
+- A new version is installed beside the others (§4.10). Overlays on an older version of it
+  that this source installed **MAY** be moved to it automatically, but only when the upgrade
+  needs no confirmation under §4.10: the same major version, nothing the operator set or a show
+  may name dropped, and no `migrate.js` to run for an installed package (which runs only when
+  the operator allows it). The others wait for the operator, who is told. Only a version that is
+  new to the source moves overlays, so the same package again never undoes a `revert`, and a
+  release older than the newest installed version never moves an overlay back. Automatic
+  upgrades are recorded like the operator's, and `revert` undoes them.
+- Following a source is trusting it: its releases are code that runs in OBS and in the admin UI's
+  previews (§4.8).

@@ -15,7 +15,8 @@
 //     the limits before anything is inflated, so a bomb can't allocate more than the limit;
 //   - a CRC-32 that doesn't match.
 // Backslashes are read as separators (Windows PowerShell 5.1's Compress-Archive writes them), and
-// macOS and Windows desktop clutter (__MACOSX/, .DS_Store, Thumbs.db, desktop.ini) is skipped.
+// macOS and Windows desktop clutter (__MACOSX/, .DS_Store, Thumbs.db, desktop.ini) and
+// version-control directories (.git/, .svn/, .hg/) are skipped.
 import { readSync } from 'node:fs';
 import zlib from 'node:zlib';
 
@@ -42,7 +43,7 @@ const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;
 const SIG_END = 0x06054b50;
 const SIG_ZIP64_LOCATOR = 0x07064b50;
-export const JUNK = /(^|\/)(__MACOSX\/|\.DS_Store$|\._[^/]*$|Thumbs\.db$|desktop\.ini$)/i;
+export const JUNK = /(^|\/)(__MACOSX\/|\.git\/|\.svn\/|\.hg\/|\.DS_Store$|\._[^/]*$|Thumbs\.db$|desktop\.ini$)/i;
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\.|$)/i;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 

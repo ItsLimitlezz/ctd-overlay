@@ -88,12 +88,44 @@ npm run skp -- template pack path/to/template-folder -o my-template.skp
 npm run skp -- template install my-template.skp
 ```
 
+`install` also takes a `.zip` of the template folder, an https URL to a package, or a GitHub
+repository (`owner/name`, or `owner/name@v1.2.0` for one release), whose latest release it
+installs.
+
 `template list` and `template uninstall <id>[@<version>]` do what they say, and
 `overlay upgrade <slug> --to <version> [--dry-run] [--yes]` moves an overlay to a newer version of
 its template; its OBS URL never changes. The plan lists every setting that changes, and an
 upgrade that drops anything the overlay uses needs `--yes`. `overlay revert <slug>` goes back to
 the version and settings it had before. Each change is recorded in `operations.log` in the data
 folder.
+
+### Updating templates remotely
+
+Follow a template's repository, and its new releases install by themselves:
+
+```bash
+npm run skp -- template follow your-name/your-template
+```
+
+The running platform checks every hour (`SKP_TEMPLATE_CHECK_MINUTES`). A new release is installed
+next to the old version, and overlays move to it on their own when that can't break anything:
+the same major version, with no setting, scene or action they use removed, and no `migrate.js`
+to run. A breaking release is installed too, but its overlays stay where they are until you run
+the `overlay upgrade` the log names. If you `overlay revert` one, it stays reverted until the
+source brings a newer version. `template sources` shows what each source last installed,
+`template update` checks now, and `template unfollow` stops (installed versions stay). For a
+private repository, set `SKP_GITHUB_TOKEN` to a token that can read it.
+
+A source can't take over a template you installed some other way (from a file, or another
+repository): following it says so. To hand such a template over to the repository on purpose,
+follow it with `--template <id>`. Downloads only go to public addresses; to fetch from a server
+on your own network, set `SKP_ALLOW_PRIVATE_DOWNLOADS=true`.
+
+To publish a release: bump `version` in `template.json`, then make a GitHub release and attach
+the package from `npm run skp -- template pack .`. With `template.json` at the repository's root
+you can skip the attachment, and the release's own source zip is used.
+[docs/template-releases.md](docs/template-releases.md) has a workflow that attaches the package
+for you.
 
 ## Media
 

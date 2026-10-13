@@ -124,6 +124,20 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** Template sources (plan step 8b, at the operator's request):
+
+1. New §4.13: a template can be followed from a GitHub repository's releases or an https URL;
+   new releases install by themselves (https only, package limits, validated), a source keeps to
+   one template id, and overlays move automatically only when §4.10 would need no confirmation.
+   *(04 §4.13, 10 §10.5: `SKP_TEMPLATE_CHECK_MINUTES`, `SKP_GITHUB_TOKEN`)*
+2. Version-control directories (`.git/`, `.svn/`, `.hg/`) are ignored in a package, like desktop
+   clutter, so a template can be packed from its repository. *(04 §4.1)*
+3. A template has one source: a first release whose id ships with the platform, comes from
+   another source or is installed otherwise is refused unless the operator names it; only a
+   version new to the source moves overlays (a revert stands), never past a `migrate.js`; a
+   release that failed for good isn't downloaded again; downloads stay off private addresses
+   unless the owner allows them (`SKP_ALLOW_PRIVATE_DOWNLOADS`). *(04 §4.13, 07 §7.11, 10 §10.5)*
+
 **2026-10-12.** From porting the TAKEOVER template (plan step 8):
 
 1. A show publishes `show.date` and `show.goLiveAt` beside `show.lineup`, so a countdown never
