@@ -30,7 +30,24 @@ broadcast advances with every browser closed and survives a restart mid-show.
 - `lineup` is published as `show.lineup` state to member overlays, each slot with `startAt`: the
   instant its `time` resolves to (§9.2), in epoch ms. `time` stays as a display label. The show
   also publishes `show.date` (its `date`) and `show.goLiveAt` (the instant `goLive` resolves to),
-  so a countdown never re-interprets wall-clock strings.
+  so a countdown never re-interprets wall-clock strings. This is each member overlay's own state:
+  two shows never see each other's.
+- **REC.** `show.recStartedAt` is set by the server when the show first goes on air (it takes a
+  scene whose core is `program`, or a scene whose core is `auto` is on air at `goLiveAt`, which
+  anchors it at `goLiveAt`) and cleared when it takes a scene whose core is `starting`; the
+  operator can also start or reset it. Go-live counts while it is less than 12 hours ago: a
+  platform that was down at go-live, or a go-live moved into the past, anchors REC at `goLiveAt`
+  as soon as it can, and a go-live from an earlier date anchors nothing.
+- A show is **live** while REC runs, for **12 hours** at most: a show "on air" longer than that
+  was left so. What must not happen on air waits for a live show to end, such as an automatic
+  template upgrade (04 §4.13), which reloads its pages.
+- **Scenes by core.** A take, a timed scene's `then` and a button name a scene by its id or by
+  its core (04 §4.2). Each member gets the name its own template knows: the same id, else the
+  core, so a horizontal and a vertical feed from different templates change together.
+- **Who's on** (`show.currentSlot`) is a lineup position the server keeps on the same act through
+  a lineup edit, and clears if the act is removed.
+- What a show publishes must fit an envelope (02 §2.9): a lineup over 24 KiB as published is
+  refused when saved, and a slot's `logo` is at most 500 characters.
 
 ## 9.2 The time rule
 
@@ -84,7 +101,9 @@ Action types:
 - **Durable before visible:** a cue's `fired` status is written to storage *before* its effect
   is published, so a crash can't fire it twice.
 - **Timed scenes return server-side:** a scene with `durationMs` + `then` (04 §4.2) schedules
-  its return as part of the take, independent of any client.
+  its return as part of the take, independent of any client. The return is stored with the
+  show, so a restart mid-scene still returns (at once, if it fell due while the platform was
+  down), and any other take cancels it.
 - Operator overrides — fire now, skip, re-arm — are always available and audited.
 - Editing the lineup regenerates generated cues (§9.5) while preserving the `fired` / `skipped`
   status of cues that still exist, so an edit mid-show doesn't re-fire what already happened.

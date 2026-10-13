@@ -191,6 +191,13 @@ export function createOverlays({ store, bus, templates, log }) {
       return pin && templates.get(pin.id, pin.version)?.build;
     },
 
+    // Resolves an overlay's settings again after a key its bound settings read changed on its own
+    // channel (a show's show.headliner, 04 §4.3): bus-wide changes are followed already.
+    refreshBound(id) {
+      const doc = store.get('overlays', id);
+      if (doc && boundKeys(templates.get(doc.data.template.id, doc.data.template.version)?.manifest || {}).length) open(doc);
+    },
+
     // { doc, template, channel, settings } for a slug, or undefined. template is undefined when
     // it isn't installed or can't be used.
     resolve(slug) {

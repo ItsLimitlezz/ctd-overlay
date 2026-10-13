@@ -14,6 +14,8 @@ import { recordOperation } from './oplog.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
+import { createShows } from './shows/registry.js';
+import { showRoutes } from './shows/routes.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
@@ -57,15 +59,18 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
+    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows') });
     const sources = createTemplateSources({
       store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
+      onAir: (overlayId) => shows.onAir(overlayId),
       record: (op, details) => recordOperation(config.dataDir, op, { ...details, actor: 'updater' }),
     });
     return {
-      lock, store, bus, templates, overlays, media, sources,
+      lock, store, bus, templates, overlays, media, shows, sources,
       close() {
         clearInterval(freshen);
         sources.stop();
+        shows.stop();
         media.close();
         bus.close();
         store.close();
@@ -93,13 +98,15 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
   const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup });
-  const { store, bus, templates, overlays, media, sources } = data;
+  const { store, bus, templates, overlays, media, shows, sources } = data;
+  const hosts = () => ownHosts(server, config.host);
   const server = createHttpServer({
     log: log.child('http'),
     crash,
     routes: [
       ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
-      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts: () => ownHosts(server), holdMs: simulateHoldMs }),
+      ...showRoutes({ shows, hosts, log: log.child('shows') }),
+      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts, holdMs: simulateHoldMs }),
       ...mediaRoutes({ media }),
       ...routes,
     ],
@@ -136,6 +143,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     templates,
     overlays,
     media,
+    shows,
     sources,
     crash,
     server,
@@ -156,9 +164,18 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
 
 // The names this platform answers to on this machine, as host:port (until LAN and public modes
 // add theirs, step 12): what a request that changes something must be addressed to.
-function ownHosts(server) {
+// The configured host is one of them (SKP_HOST=127.0.0.2, say), and on port 80 each name also
+// without the port, as browsers and fetch send it.
+export function ownHosts(server, configuredHost) {
   const port = server.address()?.port;
-  return port ? [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`] : [];
+  if (!port) return [];
+  const names = ['127.0.0.1', 'localhost', '[::1]'];
+  if (configuredHost) {
+    const h = String(configuredHost).toLowerCase();
+    const name = h.includes(':') ? `[${h}]` : h;
+    if (!names.includes(name)) names.push(name);
+  }
+  return [...names.map((n) => `${n}:${port}`), ...(port === 80 ? names : [])];
 }
 
 function ensureDir(dir, label, envName, mode) {

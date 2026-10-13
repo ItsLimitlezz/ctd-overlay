@@ -7,9 +7,13 @@
 // changed what from the command line until the audit log arrives (step 14). validate and pack
 // never touch the data directory.
 //
-// Exit codes: 0 done, 1 refused or invalid, 64 usage, 75 the data directory is in use, 77 wrong
-// user (root on a data directory another user owns), 78 config.
-import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// The show commands (show …, overlay take / fire) are different: they drive the running platform
+// through its local API (src/shows/routes.js), so a show can be run while it is on air.
+//
+// Exit codes: 0 done, 1 refused or invalid, 64 usage, 69 the platform isn't running (for the
+// commands that drive it), 75 the data directory is in use, 77 wrong user (root on a data
+// directory another user owns), 78 config.
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { openData, StartupError } from './app.js';
@@ -50,10 +54,26 @@ export const USAGE = `Usage: skp <command> [options]
   media list                              uploaded files and their URLs
   media remove <id>                       delete one (refused while an overlay uses it)
 
-Options: --json (machine-readable output), and the server's own --data-dir, --config-dir and
---store to find the data directory (the same environment variables work too).`;
+These drive the running platform (start it first):
+  show list                               shows, their members, scene and whether they're live
+  show create --name <n> --overlays <a,b> --date <YYYY-MM-DD> --timezone <zone>
+        [--go-live HH:MM] [--day-boundary HH:MM] [--lineup <file.json>]   (or --from <show.json>)
+  show edit <show> [any of the above]     change a show (a lineup edit shows at once)
+  show delete <show>
+  show take <show> <scene> [--transition fade|cut]   take a scene on every member
+  show fire <show> <action> [--args <json>]          trigger an action on every member
+  show slot <show> <position|name|none>   who's on now
+  show rec <show> start|reset             the REC timer (it starts by itself at the first take
+                                          of the live scene, or at go-live under "auto")
+  overlay take <slug> <scene> [--transition ...]     an overlay outside a show
+  overlay fire <slug> <action> [--args <json>]
 
-const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level'];
+Options: --json (machine-readable output), and the server's own --data-dir, --config-dir,
+--store and --port to find the data directory and the platform (the same environment variables
+work too).`;
+
+const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level', 'port'];
+const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boundary', 'lineup', 'transition', 'args'];
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
 // fetch and lookup: test hooks for what template sources download with and resolve names with.
@@ -68,7 +88,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       options: {
         json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
         to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
-        ...Object.fromEntries(CONFIG_FLAGS.map((f) => [f, { type: 'string' }])),
+        ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
     });
   } catch (err) {
@@ -94,6 +114,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook });
     return Object.assign(data, { record: (details) => recordOperation(cfg.dataDir, purpose, details) });
   };
+  // The running platform's local API: the parsed answer, or a PlatformError.
+  const platform = (method, apiPath, body) => callPlatform(config(), method, apiPath, body, fetchHook || globalThis.fetch);
 
   try {
     const command = `${noun ?? ''} ${verb ?? ''}`.trim();
@@ -376,6 +398,82 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         }
       }
 
+      case 'show list': {
+        if (rest.length) return usage('show list takes no arguments');
+        const list = await platform('GET', '/shows');
+        if (opts.json) json(list);
+        else {
+          for (const s of list) {
+            out(`${s.name}  (${s.id})  ${s.live ? 'LIVE  ' : ''}scene ${s.scene || '-'}  ${s.date}${s.goLive ? ` go-live ${s.goLive}` : ''} ${s.timezone}  overlays: ${s.members.join(', ') || 'none'}`);
+          }
+          if (!list.length) out('No shows yet: skp show create --name … (skp help).');
+        }
+        return 0;
+      }
+
+      case 'show create': {
+        if (rest.length) return usage('show create takes options only: --name, --overlays, --date, --timezone … (skp help)');
+        const s = await platform('POST', '/shows', showInput(opts));
+        if (opts.json) json(s);
+        else out(`created ${s.name} (${s.id}) with ${s.members.join(', ') || 'no overlays yet'}`);
+        return 0;
+      }
+
+      case 'show edit': {
+        if (rest.length !== 1) return usage('show edit takes <show> and the options to change');
+        const s = await platform('PATCH', `/shows/${encodeURIComponent(rest[0])}`, showInput(opts));
+        if (opts.json) json(s);
+        else out(`updated ${s.name}${s.lineup.some((x) => x.clockGap || x.clockOverlap) ? ' (a lineup time falls in a clock change: skp show list --json shows the instant it resolved to)' : ''}`);
+        return 0;
+      }
+
+      case 'show delete': {
+        if (rest.length !== 1) return usage('show delete takes <show>');
+        const s = await platform('DELETE', `/shows/${encodeURIComponent(rest[0])}`);
+        if (opts.json) json(s);
+        else out(`deleted ${s.name}; its overlays keep their URLs and go back to their own scenes`);
+        return 0;
+      }
+
+      case 'show take':
+      case 'overlay take': {
+        if (rest.length !== 2) return usage(`${command} takes <${noun === 'show' ? 'show' : 'slug'}> <scene>`);
+        const s = await platform('PUT', `/${noun === 'show' ? 'shows' : 'overlays'}/${encodeURIComponent(rest[0])}/scene`, { scene: rest[1], ...(opts.transition ? { transition: opts.transition } : {}) });
+        if (opts.json) json(s);
+        else out(`${s.name || s.overlay}: ${s.scene}`);
+        return 0;
+      }
+
+      case 'show fire':
+      case 'overlay fire': {
+        if (rest.length !== 2) return usage(`${command} takes <${noun === 'show' ? 'show' : 'slug'}> <action>`);
+        let actionArgs = {};
+        if (opts.args !== undefined) {
+          try { actionArgs = JSON.parse(opts.args); } catch { return usage('--args must be JSON, e.g. --args \'{"name":"VIKKSTAR"}\''); }
+        }
+        const s = await platform('POST', `/${noun === 'show' ? 'shows' : 'overlays'}/${encodeURIComponent(rest[0])}/${noun === 'show' ? 'triggers' : 'actions'}/${encodeURIComponent(rest[1])}`, { args: actionArgs });
+        if (opts.json) json(s);
+        else out(`${s.action} on ${s.overlays.join(', ')}`);
+        return 0;
+      }
+
+      case 'show slot': {
+        if (rest.length !== 2) return usage('show slot takes <show> <position|name|none>');
+        const slot = rest[1] === 'none' ? null : /^\d+$/.test(rest[1]) ? Number(rest[1]) : rest[1];
+        const s = await platform('PUT', `/shows/${encodeURIComponent(rest[0])}/slot`, { slot });
+        if (opts.json) json(s);
+        else out(s.currentSlot === undefined ? `${s.name}: nobody picked (who's on follows the clock)` : `${s.name}: ${s.lineup[s.currentSlot].name} is on`);
+        return 0;
+      }
+
+      case 'show rec': {
+        if (rest.length !== 2 || !['start', 'reset'].includes(rest[1])) return usage('show rec takes <show> start|reset');
+        const s = await platform('POST', `/shows/${encodeURIComponent(rest[0])}/rec`, { action: rest[1] });
+        if (opts.json) json(s);
+        else out(s.live ? `${s.name}: REC from ${new Date(s.recStartedAt).toLocaleTimeString()}` : `${s.name}: REC reset`);
+        return 0;
+      }
+
       default:
         return usage(noun ? `unknown command "${command}"` : '');
     }
@@ -390,6 +488,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     if (err instanceof ConfigError) return refuse('config', `configuration error: ${err.message}`, 78);
     if (err instanceof WrongUserError) return refuse('wrong-user', err.message, 77);
     if (err instanceof StartupError && err.code === 'locked') return refuse('locked', err.message, 75);
+    if (err instanceof PlatformError) return refuse(err.code, err.message, err.exit);
     if (err instanceof TemplateError && err.findings.length) {
       if (opts.json) json({ error: err.code, message: err.message, ...findingsJson({ errors: err.findings.filter((f) => f.level === 'error'), warnings: err.findings.filter((f) => f.level === 'warning') }) });
       else {
@@ -412,6 +511,56 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 }
 
 class WrongUserError extends Error {}
+
+// A command that drives the running platform was refused, or the platform isn't there (exit 69).
+class PlatformError extends Error {
+  constructor(message, code, exit = 1) {
+    super(message);
+    this.name = 'PlatformError';
+    this.code = code;
+    this.exit = exit;
+  }
+}
+
+// One request to the running platform's local API (http://<host>:<port>/api/v1…, the same
+// configuration the platform reads): its JSON answer, or a PlatformError with the platform's
+// reason.
+async function callPlatform(cfg, method, apiPath, body, fetchFn) {
+  const base = `http://${cfg.host.includes(':') ? `[${cfg.host}]` : cfg.host}:${cfg.port}`;
+  let res;
+  try {
+    res = await fetchFn(`${base}/api/v1${apiPath}`, {
+      method,
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.name}). Start it first (npm start): show commands drive it.`, 'not-running', 69);
+  }
+  const value = await res.json().catch(() => null);
+  if (!res.ok) throw new PlatformError(value?.detail || `The platform answered ${res.status}.`, (value?.type || '').split('/').pop() || `http-${res.status}`);
+  return value;
+}
+
+// A show from the command line's options: --from a JSON file, then the flags over it.
+function showInput(opts) {
+  const readJson = (file, what) => {
+    let text;
+    try { text = readFileSync(file, 'utf8').replace(/^﻿/, ''); } catch (err) { throw new PlatformError(`can't read ${what} ${file} (${err.code || err.message})`, 'bad-file'); }
+    try { return JSON.parse(text); } catch (err) { throw new PlatformError(`${file} isn't JSON: ${err.message}`, 'bad-file'); }
+  };
+  const input = opts.from !== undefined ? readJson(opts.from, 'the show file') : {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new PlatformError(`${opts.from} must hold a JSON object (a show).`, 'bad-file');
+  if (opts.name !== undefined) input.name = opts.name;
+  if (opts.overlays !== undefined) input.overlays = opts.overlays.split(',').map((s) => s.trim()).filter(Boolean);
+  if (opts.date !== undefined) input.date = opts.date;
+  if (opts.timezone !== undefined) input.timezone = opts.timezone;
+  if (opts['go-live'] !== undefined) input.goLive = opts['go-live'] === 'none' ? null : opts['go-live'];
+  if (opts['day-boundary'] !== undefined) input.dayBoundary = opts['day-boundary'];
+  if (opts.lineup !== undefined) input.lineup = readJson(opts.lineup, 'the lineup file');
+  return input;
+}
 
 // Root writing into a data directory another user owns would leave files the platform, running as
 // that user, can't change or remove (POSIX; Windows has no such split).

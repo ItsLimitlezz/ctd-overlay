@@ -10,14 +10,17 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–8 of the plan. The server keeps its data in SQLite, routes live data through
-the bus, and serves overlays to OBS browser sources over Server-Sent Events with a polling
-fallback. Every overlay page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)):
-the server clock, state and events, scenes and transitions, element lifecycle on deadlines,
-actions, alerts, chat and music helpers, and a mock show (`?mock=1`). Templates install from
-`.skp` packages, with validation, settings and upgrades, and media uploads are converted for
-OBS (below). Bundled: the D/PRTMNT TAKEOVER show package, a viewer-count widget and a
-diagnostic template. Next is step 9: shows that run themselves.
+**Status:** steps 1–9 of the plan, plus 8b (template updates from GitHub releases). The server
+keeps its data in SQLite, routes live data through the bus, and serves overlays to OBS browser
+sources over Server-Sent Events with a polling fallback. Every overlay page gets the runtime SDK
+(`SK`, [04 §4.4](docs/standard/04-templates.md)): the server clock, state and events, scenes and
+transitions, element lifecycle on deadlines, actions, alerts, chat and music helpers, and a mock
+show (`?mock=1`). Templates install from `.skp` or `.zip` packages, URLs or GitHub releases, with
+validation, settings and upgrades, and can follow a repository for updates; media uploads are
+converted for OBS. Shows put overlays together: one take changes every member, triggers land on
+the same frame, timed scenes return on the server, and REC starts by itself. Bundled: the
+D/PRTMNT TAKEOVER show package, a viewer-count widget and a diagnostic template. Next is step 10:
+the timeline, so a show runs from its schedule.
 
 ## Try it in OBS
 
@@ -126,6 +129,35 @@ the package from `npm run skp -- template pack .`. With `template.json` at the r
 you can skip the attachment, and the release's own source zip is used.
 [docs/template-releases.md](docs/template-releases.md) has a workflow that attaches the package
 for you.
+
+## Shows
+
+A show is the overlays you put on air together: a horizontal and a vertical feed, say. One take
+changes every member's scene at once, and a trigger lands on all of them on the same frame. The
+show carries the night: its date, timezone, go-live time and lineup. Times are written as on the
+poster (`01:00` after midnight belongs to the same night, until the show's day boundary,
+`12:00` by default), and the server turns them into instants, clock changes included.
+
+These commands drive the running platform, so start it first (`npm start`, or `npm run demo`,
+which already has a show; add `--port 4950` for the demo's port):
+
+```bash
+npm run skp -- show create --name "Saturday TAKEOVER" --overlays main-h,main-v --date 2026-10-17 --timezone America/Toronto --go-live 22:30 --lineup lineup.json
+```
+
+`lineup.json` is a list of slots: `[{ "time": "22:30", "name": "Manzone" }, { "time": "01:00",
+"name": "VIKKSTAR", "headliner": true, "logo": "/media/…/vik.png" }]`. Then, during the show:
+
+```bash
+npm run skp -- show take "Saturday TAKEOVER" brb
+```
+
+`show fire <show> titleCard` triggers an action, `show slot <show> VIKKSTAR` says who's on, and
+`show list` shows each show's scene and whether it's live. REC starts by itself at the first
+take of the live scene (or at go-live while `auto` is on air) and resets when you take
+`starting`; `show rec <show> start|reset` does it by hand. While a show is live, automatic
+template updates wait for it to end. An overlay that isn't in a show has its own scene:
+`overlay take <slug> <scene>`.
 
 ## Media
 

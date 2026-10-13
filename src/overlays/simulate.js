@@ -11,15 +11,11 @@
 //
 // The answer says what was sent and whether the overlay takes it (its template consumes it).
 //
-// Until auth arrives (steps 11–13) the server only listens on this machine. A web page in the
-// operator's browser could still post here, so only JSON is accepted (a cross-origin JSON post
-// needs a CORS preflight, which this server never grants), and the request must be addressed to
-// this platform by one of its own names (hosts(): 127.0.0.1, localhost or [::1] with its port),
-// from one of its own origins if it names one. That is checked against those fixed names, never
-// against the Host the request brought: a DNS-rebinding page sends a Host and an Origin that
-// match each other.
+// Until auth arrives (steps 11–13) it is guarded like every control route (http/local.js): the
+// platform's own names only, JSON only.
 import { BusError } from '../bus/index.js';
-import { readBody, sendJson, sendProblem } from '../http/server.js';
+import { jsonBody, refusedHere } from '../http/local.js';
+import { sendJson, sendProblem } from '../http/server.js';
 import { newId } from '../ids.js';
 
 const BODY_LIMIT = 16 * 1024;
@@ -101,21 +97,9 @@ function track(o) {
 // lasts (tests shorten it).
 export function simulateRoutes({ overlays, bus, log, hosts, holdMs = SIM_HOLD_MS }) {
   async function simulate({ req, res, params }) {
-    const own = hosts();
-    const origin = req.headers.origin;
-    if (!own.includes(String(req.headers.host || '').toLowerCase()) || (origin !== undefined && !own.some((h) => origin === `http://${h}`))) {
-      return sendProblem(res, 403, 'Forbidden', 'Simulation can only be requested from this platform\'s own pages, at its own address.');
-    }
-    if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
-      return sendProblem(res, 415, 'Unsupported media type', 'Send a JSON body with Content-Type: application/json, e.g. { "kind": "follow" }.');
-    }
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, BODY_LIMIT));
-    } catch (err) {
-      if (err.status) return sendProblem(res, err.status, 'Body too large', err.message, { headers: err.headers });
-      return sendProblem(res, 400, 'Bad request', 'The body is not valid JSON.');
-    }
+    if (refusedHere(req, res, hosts)) return undefined;
+    const body = await jsonBody(req, res, BODY_LIMIT);
+    if (body === undefined) return undefined;
     // By slug or by id.
     const found = overlays.resolve(params.ref) || overlays.resolve(overlays.list().find((d) => d.id === params.ref)?.data.slug);
     if (!found) return sendProblem(res, 404, 'Not found', `There is no overlay "${params.ref}".`);
