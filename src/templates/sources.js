@@ -28,6 +28,7 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { newId } from '../ids.js';
+import { isPrivateAddress } from '../net.js';
 import { compareVersions, TemplateError, validateTemplate } from './registry.js';
 import { ZipError } from './zip.js';
 
@@ -84,19 +85,8 @@ export function describeSource(source) {
 }
 
 // Addresses a download must never reach unless the owner allows it (07 §7.11): this machine,
-// the local network, link-local (cloud metadata) and other non-public ranges.
-export function isPrivateAddress(ip) {
-  const v4 = (s) => {
-    const [a, b] = s.split('.').map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
-      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
-  };
-  if (isIP(ip) === 4) return v4(ip);
-  const v6 = String(ip).toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (mapped) return v4(mapped[1]);
-  return v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith('ff') || v6.startsWith('64:ff9b:');
-}
+// the local network, link-local (cloud metadata) and other non-public ranges (net.js).
+export { isPrivateAddress };
 
 // A host a download may go to: its addresses, looked up, are all public, unless the owner allowed
 // private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). The lookup and the request resolve separately, so a

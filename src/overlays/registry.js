@@ -6,6 +6,12 @@
 //
 // The overlays API (create/update from the admin UI) arrives with step 13; until then overlays
 // are created in code (the diagnostic script, tests) and upgraded with the CLI.
+//
+// Each overlay has a key (07 §7.6): skp_ovl_ + 24 random bytes, the capability its OBS URL
+// carries (?key=). It is stored encrypted, not hashed, so its URL can be shown again. It is
+// needed for the overlay's page, snapshot, stream, poll and log; in local and lan modes the owner
+// may mark an overlay "no key required". Rotating it breaks the URL in OBS.
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newId } from '../ids.js';
@@ -24,12 +30,27 @@ export class OverlayError extends Error {
   }
 }
 
-export function createOverlays({ store, bus, templates, log }) {
+const B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+function base62(bytes, length) {
+  let n = BigInt(`0x${bytes.toString('hex')}`);
+  let s = '';
+  while (n > 0n) {
+    s = B62[Number(n % 62n)] + s;
+    n /= 62n;
+  }
+  return s.padStart(length, '0');
+}
+export const newOverlayKey = () => `skp_ovl_${base62(randomBytes(24), 33)}`;
+
+// secrets: encrypts overlay keys at rest (secrets.js); without it (some tests), overlays have no
+// key and need none. exposure: in public mode every overlay needs its key.
+export function createOverlays({ store, bus, templates, log, secrets, exposure = 'local' }) {
   const bySlug = new Map(); // slug → id
   const resolved = new Map(); // id → the settings the overlay sees
   const pins = new Map(); // id → { id, version } of its template, for lookups that skip the store
   const broken = new Set(); // ids whose template is installed but can't be used as it is
   const bindings = new Map(); // state key → ids of overlays with a setting bound to it
+  const keys = new Map(); // id → its key, decrypted once
 
   // One overlay's channel and settings. A template that can't be used (missing, or a manifest
   // later rules refuse) takes only its own overlays off air (503), never the platform's startup.
@@ -99,9 +120,30 @@ export function createOverlays({ store, bus, templates, log }) {
     for (const doc of all()) if (doc.data.template.id === id && doc.data.template.version === version) open(doc);
   }
 
+  // The overlay's key, decrypted (and cached); one is made for an overlay that has none (made
+  // before keys existed).
+  function keyOf(doc) {
+    if (!secrets) return undefined;
+    if (keys.has(doc.id)) return keys.get(doc.id);
+    let key;
+    if (doc.data.key) {
+      try { key = secrets.decrypt(doc.data.key, doc.id); } catch (err) {
+        log.error('an overlay\'s key can\'t be decrypted (another master key?); rotate it to make a new one', { overlay: doc.data.slug, err: err.message });
+        return undefined;
+      }
+    } else {
+      key = newOverlayKey();
+      store.put('overlays', doc.id, { ...doc.data, key: secrets.encrypt(key, doc.id) });
+    }
+    keys.set(doc.id, key);
+    return key;
+  }
+  const keyRequired = (doc) => exposure === 'public' || doc.data.keyRequired !== false;
+
   // At startup, a bundled version an overlay pins is kept in the data directory (retain), so a
-  // platform update that drops or changes it can't change the overlay.
+  // platform update that drops or changes it can't change the overlay. Every overlay has a key.
   for (const doc of all()) {
+    keyOf(doc);
     const pin = doc.data.template;
     try {
       if (templates.get(pin.id, pin.version)?.source === 'bundled') templates.retain(pin.id, pin.version);
@@ -154,9 +196,61 @@ export function createOverlays({ store, bus, templates, log }) {
       checkSettings(t, settings);
       templates.retain(t.id, t.version); // a bundled version stays even if a platform update drops it
       const id = newId('ovl');
-      const doc = store.put('overlays', id, { slug, template: { id: t.id, version: t.version }, settings, connections }, { ifRev: 0 });
+      const key = secrets ? newOverlayKey() : undefined;
+      const doc = store.put('overlays', id, { slug, template: { id: t.id, version: t.version }, settings, connections, ...(key ? { key: secrets.encrypt(key, id) } : {}) }, { ifRev: 0 });
+      if (key) keys.set(id, key);
       open(doc);
       return doc;
+    },
+
+    // Whether a request for this overlay's page or data may be answered: it carries the key, or
+    // the overlay doesn't need one.
+    admits(doc, given) {
+      if (!secrets || !keyRequired(doc)) return true;
+      const key = keyOf(doc);
+      if (!key || typeof given !== 'string' || given.length !== key.length) return false;
+      return timingSafeEqual(Buffer.from(given), Buffer.from(key));
+    },
+    keyRequired,
+
+    // The overlay's key (for its URL), or undefined without secrets.
+    key(ref) {
+      return keyOf(byIdOrSlug(ref));
+    },
+
+    // A new key: the old URL stops working, in OBS too (07 §7.6).
+    rotateKey(ref) {
+      if (!secrets) throw new OverlayError('Overlay keys need the master key.', 'no-secrets');
+      const doc = byIdOrSlug(ref);
+      const key = newOverlayKey();
+      store.put('overlays', doc.id, { ...doc.data, key: secrets.encrypt(key, doc.id) });
+      keys.set(doc.id, key);
+      return key;
+    },
+
+    // "No key required" (local and lan modes only, 07 §7.6).
+    setKeyRequired(ref, required) {
+      const doc = byIdOrSlug(ref);
+      if (required === false && exposure === 'public') throw new OverlayError('In public mode every overlay needs its key.', 'public-needs-key');
+      const next = { ...doc.data };
+      if (required === false) next.keyRequired = false;
+      else delete next.keyRequired;
+      return store.put('overlays', doc.id, next);
+    },
+
+    // The overlay's URLs for OBS, one per canvas (01 §1.4): base is the platform's address.
+    urls(ref, base) {
+      const doc = byIdOrSlug(ref);
+      const t = templates.get(doc.data.template.id, doc.data.template.version);
+      const key = keyRequired(doc) ? keyOf(doc) : undefined;
+      const canvases = t?.manifest.canvases || [{ id: 'default' }];
+      return canvases.map((c, i) => {
+        const q = new URLSearchParams();
+        if (key) q.set('key', key);
+        if (i > 0 || !c.default) q.set('canvas', c.id);
+        const qs = q.toString();
+        return { canvas: c.id, ...(c.width ? { width: c.width, height: c.height } : {}), url: `${base}/o/${doc.data.slug}${qs ? `?${qs}` : ''}` };
+      });
     },
 
     // Replaces the overlay's settings (only the values the operator set). ifRev: the revision the

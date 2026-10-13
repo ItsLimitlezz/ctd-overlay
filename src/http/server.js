@@ -2,12 +2,22 @@
 // URLs get 400, a handler that throws or rejects gets 500, and the error goes to the log and
 // crash.log. Responses never carry stack traces (03 §3.2).
 import http from 'node:http';
+import https from 'node:https';
+import { clientOf } from '../net.js';
 
 const BASE_HEADERS = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'same-origin',
   'cache-control': 'no-store',
 };
+// The admin UI and the API (07 §7.10); overlay pages, template files, media and the SDK set their
+// own (04 §4.8).
+const ADMIN_HEADERS = {
+  'content-security-policy': "default-src 'self'; frame-ancestors 'none'; object-src 'none'; frame-src 'self'",
+  'cross-origin-opener-policy': 'same-origin',
+};
+const HSTS = 'max-age=31536000';
+const overlayFacing = (rawUrl) => /^\/(o|sdk|media)\//.test(rawUrl || '');
 
 // Routes: { method, path: '/a/:param/b', handler({ req, res, params, url }), close() }. A final `*`
 // segment matches one or more remaining segments, joined with "/" in params['*']. The optional
@@ -75,16 +85,31 @@ const favicon = ({ res }) => {
   res.end();
 };
 
-export function createHttpServer({ log, crash, routes = [] }) {
+// tls: { cert, key } (PEM) to serve HTTPS. trustProxy: the addresses whose X-Forwarded-* are
+// believed (net.js clientOf, set on each request as req.client). admit(req): a problem
+// { status, title, detail } for a client this platform doesn't serve (lan and public modes), or
+// nothing.
+export function createHttpServer({ log, crash, routes = [], tls, trustProxy = [], admit }) {
   const router = createRouter([
     { method: 'GET', path: '/healthz', handler: healthz },
     { method: 'GET', path: '/favicon.ico', handler: favicon },
     ...routes,
   ]);
 
-  const server = http.createServer((req, res) => {
+  const onRequest = (req, res) => {
+    req.client = clientOf(req, trustProxy);
+    if (req.client.https) res.setHeader('strict-transport-security', HSTS);
+    if (!overlayFacing(req.url)) for (const [k, v] of Object.entries(ADMIN_HEADERS)) res.setHeader(k, v);
+    const refused = admit?.(req);
+    if (refused) {
+      if (req.url !== '/healthz') {
+        sendProblem(res, refused.status, refused.title, refused.detail, { headers: corsFor(req.url) });
+        return;
+      }
+    }
     handle(req, res, router).catch((err) => fail(err, req, res));
-  });
+  };
+  const server = tls ? https.createServer({ cert: tls.cert, key: tls.key }, onRequest) : http.createServer(onRequest);
 
   function fail(err, req, res) {
     log.error('request failed', { method: req.method, url: req.url, err });
@@ -127,7 +152,7 @@ export function createHttpServer({ log, crash, routes = [] }) {
 // previews. Even their errors carry Access-Control-Allow-Origin, so a preview can tell an error
 // from an outage. The admin API does not (07 §7.10).
 function corsFor(rawUrl) {
-  return /^\/(o|sdk|media)\//.test(rawUrl || '') ? { 'access-control-allow-origin': '*' } : {};
+  return overlayFacing(rawUrl) ? { 'access-control-allow-origin': '*' } : {};
 }
 
 async function handle(req, res, router) {

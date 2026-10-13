@@ -124,6 +124,15 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** From making it safe to expose (plan step 12):
+
+1. `SKP_HOSTS`: more names the platform answers to in `lan`/`public` mode. In `public` mode,
+   the local network may still use plain HTTP. *(07 §7.8, 10 §10.5)*
+2. Overlay keys are needed by default in every mode; `GET /overlays/{id}/url`,
+   `POST /overlays/{id}/key/rotate` and `PATCH /overlays/{id} { keyRequired }` (local and lan
+   only). *(03 §3.4, 07 §7.6)*
+3. `skp key rotate` keeps the old key as `master.key.<id>.retired`. *(07 §7.7)*
+
 **2026-10-12.** From building sign-in (plan step 11):
 
 1. Overlay pages are served with `sandbox allow-scripts`: a template's script has an origin of

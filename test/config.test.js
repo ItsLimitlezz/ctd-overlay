@@ -66,18 +66,27 @@ test('the config directory may not sit inside the data directory, or the reverse
   assert.throws(() => load({ env: { SKP_CONFIG_DIR: root, SKP_DATA_DIR: root } }), /must be separate/);
 });
 
-test('lan and public exposure are refused until step 12, naming where the value came from', (t) => {
+test('exposure (07 §7.8): lan listens everywhere; public needs TLS (its own or a proxy\'s) and its public URL', (t) => {
   const { configDir, dataDir } = dirs(t, { exposure: 'public' });
   const base = { SKP_CONFIG_DIR: configDir, SKP_DATA_DIR: dataDir };
-  assert.throws(() => load({ env: base }), (e) => e instanceof ConfigError && /config\.json "exposure" is "public"/.test(e.message));
-  assert.throws(() => load({ env: { ...base, SKP_EXPOSURE: 'lan' } }), /SKP_EXPOSURE is "lan".*step 12/);
+  assert.throws(() => load({ env: base }), (e) => e instanceof ConfigError && /SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT\/KEY or SKP_TRUST_PROXY/.test(e.message));
+  assert.throws(() => load({ env: { ...base, SKP_TRUST_PROXY: '10.0.0.2' } }), /requires SKP_PUBLIC_URL/);
+  const pub = load({ env: { ...base, SKP_TRUST_PROXY: '10.0.0.2', SKP_PUBLIC_URL: 'https://overlays.example.com' } });
+  assert.deepEqual([pub.exposure, pub.host, pub.publicUrl, pub.trustProxy], ['public', '0.0.0.0', 'https://overlays.example.com', ['10.0.0.2']]);
+  const tls = load({ env: { ...base, SKP_TLS_CERT: 'cert.pem', SKP_TLS_KEY: 'key.pem', SKP_PUBLIC_URL: 'https://overlays.example.com' } });
+  assert.equal(path.basename(tls.tlsCert), 'cert.pem');
+  const lan = load({ env: { ...base, SKP_EXPOSURE: 'lan', SKP_HOSTS: 'NAS.home.arpa, 192.168.1.20:4848' } });
+  assert.deepEqual([lan.exposure, lan.host, lan.hosts], ['lan', '0.0.0.0', ['nas.home.arpa', '192.168.1.20:4848']]);
+  assert.equal(load({ env: { ...base, SKP_EXPOSURE: 'lan', SKP_HOST: '::' } }).host, '::');
+  assert.throws(() => load({ env: { ...base, SKP_EXPOSURE: 'lan', SKP_HOSTS: 'not a host!' } }), /SKP_HOSTS must list host names/);
 });
 
 test('only loopback hosts are accepted while exposure is local', (t) => {
   const { configDir, dataDir } = dirs(t);
   const base = { SKP_CONFIG_DIR: configDir, SKP_DATA_DIR: dataDir };
   for (const host of ['127.0.0.1', '127.0.0.2', '::1', 'localhost']) assert.equal(load({ env: { ...base, SKP_HOST: host } }).host, host);
-  for (const host of ['0.0.0.0', '192.168.1.20', '::']) assert.throws(() => load({ env: { ...base, SKP_HOST: host } }), /expose the server/);
+  for (const host of ['0.0.0.0', '192.168.1.20', '::']) assert.throws(() => load({ env: { ...base, SKP_HOST: host } }), /expose the server.*SKP_EXPOSURE=lan/);
+  assert.equal(load({ env: base }).host, '127.0.0.1', 'local by default, on loopback');
 });
 
 test('bad values stop startup with a message that names the setting', (t) => {
@@ -92,7 +101,7 @@ test('bad values stop startup with a message that names the setting', (t) => {
     [{ SKP_PUBLIC_URL: 'https://x.example/overlays' }, /origin only/],
     [{ SKP_TRUST_PROXY: '10.0.0.1, proxy.lan' }, /IP addresses/],
     [{ SKP_MASTER_KEY: 'c2hvcnQ=' }, /32 bytes in base64/],
-    [{ SKP_TLS_CERT: 'cert.pem' }, /step 12/],
+    [{ SKP_TLS_CERT: 'cert.pem' }, /both SKP_TLS_CERT and SKP_TLS_KEY/],
   ];
   for (const [env, re] of cases) assert.throws(() => load({ env: { ...base, ...env } }), re, JSON.stringify(env));
 });

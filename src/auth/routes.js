@@ -39,7 +39,7 @@ export function createGuard({ auth, hosts }) {
     if (refusedHere(req, res, hosts)) return undefined;
     const result = auth.authenticate(req);
     if (result.error) {
-      sendProblem(res, 401, TITLES[401], result.error, { type: problemType('unauthenticated'), headers: { 'www-authenticate': 'Bearer', ...(result.clear ? { 'set-cookie': auth.clearCookie() } : {}) } });
+      sendProblem(res, 401, TITLES[401], result.error, { type: problemType('unauthenticated'), headers: { 'www-authenticate': 'Bearer', ...(result.clear ? { 'set-cookie': auth.clearCookie(Boolean(req.client?.https)) } : {}) } });
       return undefined;
     }
     const who = result.principal;
@@ -80,7 +80,7 @@ export function authRoutes({ auth, audit, guard, hosts, log }) {
       const body = method === 'GET' ? {} : await jsonBody(req, res, BODY_LIMIT);
       if (body === undefined) return;
       if (!body || typeof body !== 'object' || Array.isArray(body)) return sendProblem(res, 400, 'Bad request', 'The body must be a JSON object.');
-      const ctx = { ip: req.socket.remoteAddress, ua: req.headers['user-agent'], actor: who?.label, keep: body.keep === true };
+      const ctx = { ip: req.client?.ip ?? req.socket.remoteAddress, https: Boolean(req.client?.https), ua: req.headers['user-agent'], actor: who?.label, keep: body.keep === true };
       try {
         const [status, value] = await run({ who, params, body, ctx, url });
         // A sign-in's cookie goes in its header, never the body.
@@ -107,7 +107,7 @@ export function authRoutes({ auth, audit, guard, hosts, log }) {
     route('GET', '/api/v1/auth/sessions', {}, ({ who }) => [200, auth.sessions.list(who)]),
     route('DELETE', '/api/v1/auth/sessions/:id', {}, ({ who, params, ctx }) => {
       const out = auth.sessions.revoke(who, params.id, ctx);
-      return [200, out.current ? { ...out, cookie: auth.clearCookie() } : out];
+      return [200, out.current ? { ...out, cookie: auth.clearCookie(ctx.https) } : out];
     }),
     route('POST', '/api/v1/auth/password', {}, async ({ who, body, ctx }) => [200, await auth.changePassword(who, body, ctx)]),
     route('POST', '/api/v1/auth/totp/enroll', {}, async ({ who, body }) => [200, await auth.totp.enroll(who, body)]),

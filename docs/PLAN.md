@@ -163,6 +163,12 @@ option that keeps a live show running with nobody touching it.
 12. **Exposure.** Overlay keys, AES-256-GCM secrets at rest with the master key, `local`/`lan`/
     `public` modes with TLS or trusted proxy, HTTP hardening, input validation (07 §7.6–7.11).
     The server may bind beyond localhost from here on.
+    Done: `src/secrets.js` (master key, AES-256-GCM, `skp key rotate`), overlay keys in the
+    overlays registry (`skp overlay url|rotate-key|key`), `src/net.js` (trusted proxies, private
+    ranges), lan and public modes, built-in TLS and the 07 §7.10 headers in `src/http/server.js`.
+    The TOTP secret is now encrypted, and HTTPS gets `Secure` `__Host-` cookies. Carried to
+    step 13: rejecting unknown fields on every write (shows and cues still drop them); pinning a
+    template download's resolved address against DNS rebinding (step 8b).
 13. **API v1 conventions.** OpenAPI document, problem+json, ETag/`If-Match`, idempotency keys,
     rate limits, pagination (03).
 14. **Admin UI.** Live console first, built for a phone; then Overlays (sandboxed lite previews

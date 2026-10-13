@@ -14,7 +14,7 @@ import { readBody, sendProblem } from './server.js';
 export function refusedHere(req, res, hosts) {
   const own = hosts();
   const origin = req.headers.origin;
-  if (own.includes(String(req.headers.host || '').toLowerCase()) && (origin === undefined || own.some((h) => origin === `http://${h}`))) return false;
+  if (own.includes(String(req.headers.host || '').toLowerCase()) && (origin === undefined || own.some((h) => origin === `http://${h}` || origin === `https://${h}`))) return false;
   sendProblem(res, 403, 'Forbidden', 'This can only be requested from the platform\'s own pages or programs on this machine, at the platform\'s own address.');
   return true;
 }

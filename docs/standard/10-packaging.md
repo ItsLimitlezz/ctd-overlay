@@ -111,6 +111,7 @@ Precedence: **command-line flags > environment variables > `config.json` > defau
 | `SKP_GITHUB_TOKEN` | — | Read access to private template repositories (environment only; 04 §4.13) |
 | `SKP_ALLOW_PRIVATE_DOWNLOADS` | `false` | Let template downloads reach private and local addresses (07 §7.11) |
 | `SKP_AUDIT_DAYS` | `90` | How long the audit log keeps entries (07 §7.12), 1–3650 |
+| `SKP_HOSTS` | — | More names the platform answers to in `lan`/`public` mode (a NAS's DNS name), besides its addresses, host name and `SKP_PUBLIC_URL` |
 
 The platform **MUST** validate configuration at startup and exit with a specific message on
 any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_PROXY").

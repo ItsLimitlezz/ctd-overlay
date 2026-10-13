@@ -2,7 +2,7 @@
 // lock, crash log, store (with migrations), bus, templates, overlays, media and the HTTP server.
 // Returns a handle with stop(). Installs no process-wide handlers, so tests can run several
 // instances.
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createAudit } from './auth/audit.js';
 import { createAuth } from './auth/index.js';
@@ -14,9 +14,12 @@ import { close, createHttpServer, listen } from './http/server.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
 import { mediaRoutes } from './media/routes.js';
+import { isPrivateAddress, machineNames } from './net.js';
+import { overlayKeyRoutes } from './overlays/api.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
+import { createSecrets, loadMasterKey, SecretsError } from './secrets.js';
 import { createShows } from './shows/registry.js';
 import { createTimeline } from './shows/timeline.js';
 import { showRoutes } from './shows/routes.js';
@@ -58,13 +61,29 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
   let store;
   let bus;
   try {
+    // The master key, made in the config directory on the platform's first start (07 §7.7); a
+    // command line command reads it, or makes it, only when it needs it.
+    const keyFor = () => {
+      try {
+        return createSecrets(loadMasterKey(config, { log: log.child('secrets') }));
+      } catch (err) {
+        if (err instanceof SecretsError) throw new StartupError(err.message);
+        throw err;
+      }
+    };
+    let loaded = purpose === 'platform' ? keyFor() : undefined;
+    const secrets = {
+      encrypt: (plain, aad) => (loaded ??= keyFor()).encrypt(plain, aad),
+      decrypt: (text, aad) => (loaded ??= keyFor()).decrypt(text, aad),
+      get kid() { return (loaded ??= keyFor()).kid; },
+    };
     const storeLog = log.child('store');
     store = openStore({ dataDir: config.dataDir, backend: config.store, log: storeLog });
     migrate(store, migrations, { log: storeLog });
     bus = createBus({ log: log.child('bus') });
     const audit = createAudit({ store, now: clock.now, retentionDays: config.auditDays });
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
-    const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
+    const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
     const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock });
     const timeline = createTimeline({
@@ -77,7 +96,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
     return {
-      lock, store, bus, audit, templates, overlays, media, shows, timeline, sources,
+      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources,
       close() {
         clearInterval(freshen);
         sources.stop();
@@ -111,19 +130,36 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const pruned = crash.prune(30);
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
+  // Built-in TLS (07 §7.8): the certificate and key, read once at startup.
+  let tls;
+  if (config.tlsCert) {
+    try {
+      tls = { cert: readFileSync(config.tlsCert), key: readFileSync(config.tlsKey) };
+    } catch (err) {
+      throw new StartupError(`Can't read the TLS certificate or key (${err.path || ''}: ${err.code || err.message}). Check SKP_TLS_CERT and SKP_TLS_KEY.`);
+    }
+  }
+
   const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock });
-  const { store, bus, audit, templates, overlays, media, shows, timeline, sources } = data;
-  const hosts = () => ownHosts(server, config.host);
-  const auth = createAuth({ store, audit, log: log.child('auth'), now: clock.now, hasher: createHasher(scrypt ? { params: { r: 8, p: 1, ...scrypt } } : {}), configDir: config.configDir });
+  const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources } = data;
+  const network = config.exposure === 'local' ? [] : machineNames();
+  const hosts = () => ownHosts(server, config.host, { exposure: config.exposure, extra: [...network, ...config.hosts], publicUrl: config.publicUrl, tls: Boolean(tls) });
+  const auth = createAuth({ store, audit, secrets, log: log.child('auth'), now: clock.now, hasher: createHasher(scrypt ? { params: { r: 8, p: 1, ...scrypt } } : {}), configDir: config.configDir });
   const guard = createGuard({ auth, hosts });
   const server = createHttpServer({
     log: log.child('http'),
     crash,
+    tls,
+    trustProxy: config.trustProxy,
+    admit: admission(config),
     routes: [
       ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
       ...authRoutes({ auth, audit, guard, hosts, log: log.child('auth') }),
       ...showRoutes({ shows, timeline, guard, log: log.child('shows') }),
       ...simulateRoutes({ overlays, bus, log: log.child('simulate'), guard, holdMs: simulateHoldMs }),
+      // An overlay's URL is the public URL's, else the one the request came to (the guard checked
+      // it is one of the platform's own names).
+      ...overlayKeyRoutes({ overlays, guard, audit, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
       ...mediaRoutes({ media }),
       ...routes,
     ],
@@ -142,8 +178,11 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     throw err;
   }
 
-  const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
-  log.info('listening', { url: `http://${host}:${address.port}/`, exposure: config.exposure, store: store.kind, schemaVersion: store.schemaVersion });
+  // The address this process reaches itself at (0.0.0.0 and :: are any interface: loopback).
+  const bound = address.address === '0.0.0.0' ? '127.0.0.1' : address.address === '::' ? '::1' : address.address;
+  const host = bound.includes(':') ? `[${bound}]` : bound;
+  const scheme = tls ? 'https' : 'http';
+  log.info('listening', { url: `${scheme}://${host}:${address.port}/`, exposure: config.exposure, ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}), store: store.kind, schemaVersion: store.schemaVersion });
 
   // Whether phone video can be converted, in the log from the start (not only at the first upload).
   media.ffmpeg();
@@ -172,7 +211,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     crash,
     server,
     port: address.port,
-    url: `http://${host}:${address.port}`,
+    url: `${scheme}://${host}:${address.port}`,
     async stop() {
       if (stopped) return;
       stopped = true;
@@ -190,20 +229,49 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   };
 }
 
-// The names this platform answers to on this machine, as host:port (until LAN and public modes
-// add theirs, step 12): what a request that changes something must be addressed to.
-// The configured host is one of them (SKP_HOST=127.0.0.2, say), and on port 80 each name also
-// without the port, as browsers and fetch send it.
-export function ownHosts(server, configuredHost) {
+// The names this platform answers to, as host:port: what an API request must be addressed to
+// (http/local.js; a DNS-rebinding page uses another). On this machine: 127.0.0.1, localhost, [::1]
+// and the configured host (SKP_HOST=127.0.0.2, say). In lan and public modes also the machine's
+// addresses and host name (extra), SKP_HOSTS, and the public URL's host. On the default port (80,
+// or 443 with TLS) each name also without the port, as browsers and fetch send it.
+export function ownHosts(server, configuredHost, { exposure = 'local', extra = [], publicUrl, tls = false } = {}) {
   const port = server.address()?.port;
   if (!port) return [];
   const names = ['127.0.0.1', 'localhost', '[::1]'];
-  if (configuredHost) {
+  const add = (h) => { if (h && !names.includes(h)) names.push(h); };
+  if (configuredHost && configuredHost !== '0.0.0.0' && configuredHost !== '::') {
     const h = String(configuredHost).toLowerCase();
-    const name = h.includes(':') ? `[${h}]` : h;
-    if (!names.includes(name)) names.push(name);
+    add(h.includes(':') ? `[${h}]` : h);
   }
-  return [...names.map((n) => `${n}:${port}`), ...(port === 80 ? names : [])];
+  const withPort = [];
+  if (exposure !== 'local') {
+    for (const e of extra) {
+      if (/:\d+$/.test(e) && !e.endsWith(']')) withPort.push(e.toLowerCase());
+      else add(String(e).toLowerCase());
+    }
+  }
+  const hostPorts = names.map((n) => `${n}:${port}`);
+  const bare = port === (tls ? 443 : 80) ? names : [];
+  // The public URL as people reach it (through a proxy, on its own port or none).
+  const pub = publicUrl ? [new URL(publicUrl).host] : [];
+  return [...new Set([...hostPorts, ...bare, ...withPort, ...pub])];
+}
+
+// Which clients a mode serves (07 §7.8): lan, the local network only; public, anyone over HTTPS
+// (from the local network, plain HTTP too, so OBS on the LAN needs no certificate).
+function admission(config) {
+  if (config.exposure === 'local') return undefined;
+  return (req) => {
+    const { ip, https } = req.client;
+    const inside = isPrivateAddress(ip);
+    if (config.exposure === 'lan' && !inside) {
+      return { status: 403, title: 'Forbidden', detail: 'This platform serves its local network only (SKP_EXPOSURE=lan).' };
+    }
+    if (config.exposure === 'public' && !inside && !https) {
+      return { status: 403, title: 'HTTPS required', detail: `Use ${config.publicUrl || 'https://'}: from outside the local network this platform answers over HTTPS only.` };
+    }
+    return undefined;
+  };
 }
 
 function ensureDir(dir, label, envName, mode) {

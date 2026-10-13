@@ -83,10 +83,15 @@ export function packTemplate(dir, { manifest = {}, files = {}, remove = [], wrap
   return writeZip([...out].map(([name, data]) => ({ name: wrap ? `${wrap}/${name}` : name, data })));
 }
 
+// The URL with the overlay's key added (?key=… or &key=…).
+export const withKey = (url, key) => (key ? `${url}${url.includes('?') ? '&' : '?'}key=${key}` : url);
+
 // A running platform on a free port with one overlay (the diagnostic template unless another is
 // named), stopped when the test ends. Test fixture templates are always available; `install`
-// lists .skp packages (packTemplate) to install before the overlay is created.
-export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, template = DIAG, settings = { accent: '#16e0ff' }, install = [], platform: platformOptions = {} } = {}) {
+// lists .skp packages (packTemplate) to install before the overlay is created. The overlay is
+// marked "no key required" unless `keyed` (tests of the transport aren't about keys); `url` is
+// its page's URL either way, with the key when it needs one.
+export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, template = DIAG, settings = { accent: '#16e0ff' }, install = [], keyed = false, platform: platformOptions = {} } = {}) {
   const root = tempDir(t);
   const config = loadConfig({
     argv: ['--port', '0'],
@@ -96,7 +101,10 @@ export async function startWithOverlay(t, { slug = 'diag-1', heartbeatMs, templa
   const platform = await startPlatform(config, { log, heartbeatMs, templateDirs: [FIXTURE_TEMPLATES], ...platformOptions });
   defer(t, () => platform.stop());
   for (const pkg of install) platform.templates.install(pkg, { actor: 'test' });
-  const overlay = platform.overlays.create({ slug, template, settings });
+  let overlay = platform.overlays.create({ slug, template, settings });
+  if (!keyed) overlay = platform.overlays.setKeyRequired(slug, false);
   const build = platform.templates.get(template.id, template.version).build;
-  return { platform, overlay, build, entries, config, base: `${platform.url}/o/${slug}` };
+  const key = keyed ? platform.overlays.key(slug) : undefined;
+  const base = `${platform.url}/o/${slug}`;
+  return { platform, overlay, build, entries, config, base, key, url: withKey(base, key) };
 }

@@ -30,6 +30,7 @@ const SETTINGS = {
   templateCheckMinutes: ['SKP_TEMPLATE_CHECK_MINUTES', 'template-check-minutes', true],
   allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
   auditDays: ['SKP_AUDIT_DAYS', 'audit-days', true], // how long the audit log keeps entries (07 §7.12)
+  hosts: ['SKP_HOSTS', 'hosts', true], // more names the platform answers to in lan and public modes
 };
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -64,29 +65,28 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
       'Set SKP_CONFIG_DIR or SKP_DATA_DIR so they are siblings.');
   }
 
-  // exposure and binding
+  // exposure and binding (07 §7.8): local listens on this machine only; lan on every interface,
+  // serving the local network; public on every interface, over TLS (its own or a trusted proxy's).
   const exposure = oneOf(get('exposure'), EXPOSURES, 'local');
-  if (exposure !== 'local') {
-    throw new ConfigError(
-      `${get('exposure').source} is "${exposure}", which isn't available yet: login, overlay keys and TLS arrive in ` +
-      'step 12 of docs/PLAN.md, and until then the server only listens on this machine. Use "local".');
-  }
-  const host = str(get('host')) ?? '127.0.0.1';
-  if (!isLoopback(host)) {
+  const host = str(get('host')) ?? (exposure === 'local' ? '127.0.0.1' : '0.0.0.0');
+  if (exposure === 'local' && !isLoopback(host)) {
     throw new ConfigError(
       `${get('host').source} is "${host}", which would expose the server beyond this machine, but exposure is "local". ` +
-      'Use 127.0.0.1, ::1 or localhost.');
+      'Use 127.0.0.1, ::1 or localhost, or set SKP_EXPOSURE=lan.');
   }
   const port = parsePort(get('port'));
 
-  // TLS and proxies (used from step 12)
+  // TLS and proxies
   const tlsCert = str(get('tlsCert'));
   const tlsKey = str(get('tlsKey'));
-  if (tlsCert || tlsKey) {
-    throw new ConfigError('SKP_TLS_CERT / SKP_TLS_KEY are set, but built-in TLS arrives in step 12 of docs/PLAN.md. Unset them for now.');
-  }
+  if (Boolean(tlsCert) !== Boolean(tlsKey)) throw new ConfigError('Set both SKP_TLS_CERT and SKP_TLS_KEY (a certificate and its private key, PEM files), or neither.');
   const publicUrl = parsePublicUrl(get('publicUrl'));
   const trustProxy = parseTrustProxy(get('trustProxy'));
+  if (exposure === 'public') {
+    if (!tlsCert && !trustProxy.length) throw new ConfigError('SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_PROXY (the address of a reverse proxy that serves HTTPS).');
+    if (!publicUrl) throw new ConfigError('SKP_EXPOSURE=public requires SKP_PUBLIC_URL: the https:// address people and services reach this platform at.');
+  }
+  const hosts = parseHosts(get('hosts'));
 
   // secrets
   const masterKey = parseMasterKey(get('masterKey'));
@@ -107,6 +107,7 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
 
   return Object.freeze({
     port, host, exposure, dataDir, configDir,
+    tlsCert: tlsCert ? p.resolve(tlsCert) : undefined, tlsKey: tlsKey ? p.resolve(tlsKey) : undefined, hosts,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
     ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, auditDays, warnings: Object.freeze(warnings),
   });
@@ -245,6 +246,17 @@ function parseTrustProxy(picked) {
   const list = (Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim()).filter(Boolean);
   for (const addr of list) {
     if (!isIP(addr)) throw new ConfigError(`${picked.source} must list IP addresses separated by commas (got "${addr}").`);
+  }
+  return Object.freeze(list);
+}
+
+// Host names (and host:port) the platform also answers to: a NAS's DNS name, say.
+function parseHosts(picked) {
+  const v = picked.value;
+  if (v === undefined || v === null || v === '') return Object.freeze([]);
+  const list = (Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim().toLowerCase()).filter(Boolean);
+  for (const h of list) {
+    if (!/^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$/.test(h)) throw new ConfigError(`${picked.source} must list host names separated by commas, like nas.home.arpa or 192.168.1.20 (got "${h}").`);
   }
   return Object.freeze(list);
 }

@@ -4,10 +4,11 @@ import assert from 'node:assert/strict';
 import { browserSkip, launchBrowser } from './cdp.js';
 import { startWithOverlay } from './helpers.js';
 
-test('the diagnostic overlay loads under the CSP, styles via <base>, and streams', { skip: browserSkip }, async (t) => {
-  const { platform, base } = await startWithOverlay(t);
+test('the diagnostic overlay loads under the CSP, styles via <base>, and streams, with its key', { skip: browserSkip }, async (t) => {
+  const { platform, url } = await startWithOverlay(t, { keyed: true });
+  assert.match(url, /\?key=skp_ovl_/);
   const browser = await launchBrowser(t);
-  const page = await browser.open(base, { width: 1920, height: 1080 });
+  const page = await browser.open(url, { width: 1920, height: 1080 });
   await page.waitFor('window.SK && SK.transport.mode === "stream"', 10000);
   // template.css is a relative URL: it only applies if the injected <base> points at the template.
   assert.equal(await page.eval('getComputedStyle(document.querySelector(".diag")).borderTopColor'), 'rgb(22, 224, 255)');

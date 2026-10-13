@@ -35,7 +35,7 @@ const tick = setInterval(() => {
 }, 1000);
 
 console.log(`\nDiagnostic overlays (browser sources, 1920 x 1080):\n`);
-for (let i = 1; i <= count; i++) console.log(`  ${platform.url}/o/diag-${i}`);
+for (let i = 1; i <= count; i++) console.log(`  ${platform.overlays.urls(`diag-${i}`, platform.url)[0].url}`);
 console.log(`\nAll of them should load and keep counting. Four per browser show "stream" in green; the rest`);
 console.log(`show "poll" in amber, because over plain HTTP a browser keeps only six connections per host`);
 console.log(`and the server leaves two free for page loads and polls (01 §1.5). Ctrl+C to stop.\n`);

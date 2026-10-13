@@ -24,6 +24,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { createLogger } from './log.js';
 import { MediaError, mediaUrl } from './media/library.js';
 import { OverlayError } from './overlays/registry.js';
+import { rotateMasterKey, SecretsError } from './secrets.js';
 import { StoreVersionError } from './store/migrate.js';
 import { MigrateError } from './templates/migrate.js';
 import { packageFromDir, validatePackage } from './templates/package.js';
@@ -51,6 +52,7 @@ export const USAGE = `Usage: skp <command> [options]
         [--dry-run] [--yes]               show what would change / confirm it
         [--run-migrate]                   let an installed package's migrate.js run
   overlay revert <slug>                   go back to the version and settings before the last upgrade
+  key rotate                              a new master key; every secret re-encrypted with it
   media add <file> [--name <name>]        upload a clip, image, sound or font (phone video is
                                           converted for OBS when ffmpeg is available)
   media list                              uploaded files and their URLs
@@ -80,6 +82,9 @@ These drive the running platform (start it first):
   show plan delete <show> <plan>
   overlay take <slug> <scene> [--transition ...]     an overlay outside a show
   overlay fire <slug> <action> [--args <json>]
+  overlay url <slug>                      its URL for OBS, with its key (one per canvas)
+  overlay rotate-key <slug>               a new key: the old URL stops working, in OBS too
+  overlay key <slug> required|not-required   "no key required" (local and lan modes)
   setup --code <code> --username <name>   create the owner account with the setup code the
                                           platform printed in its log (asks for a password)
   user list                               accounts and roles
@@ -364,6 +369,43 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         } finally {
           data.close();
         }
+      }
+
+      case 'overlay url':
+      case 'overlay rotate-key': {
+        if (rest.length !== 1) return usage(`${command} takes <slug>`);
+        const r = verb === 'url'
+          ? await platform('GET', `/overlays/${encodeURIComponent(rest[0])}/url`)
+          : await platform('POST', `/overlays/${encodeURIComponent(rest[0])}/key/rotate`, {});
+        if (opts.json) json(r);
+        else {
+          for (const u of r.urls) out(r.urls.length > 1 ? `${u.canvas}: ${u.url}` : u.url);
+          if (r.note) stderr.write(`${r.note}\n`);
+        }
+        return 0;
+      }
+
+      case 'overlay key': {
+        if (rest.length !== 2 || !['required', 'not-required'].includes(rest[1])) return usage('overlay key takes <slug> required|not-required');
+        const r = await platform('PATCH', `/overlays/${encodeURIComponent(rest[0])}`, { keyRequired: rest[1] === 'required' });
+        if (opts.json) json(r);
+        else out(r.keyRequired ? `${r.overlay}: its URL needs its key` : `${r.overlay}: no key required (this machine's network can open it without one)`);
+        return 0;
+      }
+
+      case 'key rotate': {
+        if (rest.length) return usage('key rotate takes no arguments');
+        const cfg = config();
+        const data = openFor('key rotate', cfg);
+        try {
+          const r = rotateMasterKey(cfg, data.store, { log: logger() });
+          data.record({ from: r.from, to: r.to, reencrypted: r.reencrypted });
+          if (opts.json) json(r);
+          else out(`a new master key (${r.to}); ${r.reencrypted} secret${r.reencrypted === 1 ? '' : 's'} re-encrypted. The old key is in ${r.retired}: delete it once no backup needs it.`);
+        } finally {
+          data.close();
+        }
+        return 0;
       }
 
       case 'overlay revert': {
@@ -712,7 +754,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       }
       return 1;
     }
-    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof SourceError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
+    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof SourceError || err instanceof SecretsError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
       const message = err.code === 'ENOENT' ? `no such file: ${err.path}` : err.code === 'ENOTDIR' ? `not a directory: ${err.path}` : err.message;
       if (opts.json) json({ error: err.code || err.name, message });
       else stderr.write(`skp: ${message}\n`);
