@@ -36,6 +36,7 @@ const SCENE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const TRANSITION = /^[a-z][a-z0-9-]{0,39}$/;
 const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const LOGO = /^(\/media\/[A-Za-z0-9_-]+\/[^/\\?#%\s]+|https:\/\/\S+)$/;
+const SLOT_FIELDS = ['time', 'name', 'b2b', 'headliner', 'closer', 'logo'];
 const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.goLiveAt', 'show.recStartedAt'];
 
 // A template's scene by id, else by core (04 §4.2).
@@ -223,6 +224,9 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     };
     return lineup.map((s, i) => {
       if (!s || typeof s !== 'object' || Array.isArray(s)) bad(`slot ${i + 1} must be an object.`);
+      // What a slot is, and nothing else (07 §7.11: unknown fields are refused, not dropped).
+      const unknown = Object.keys(s).filter((k) => !SLOT_FIELDS.includes(k));
+      if (unknown.length) bad(`slot ${i + 1}: unknown field${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; a slot has ${SLOT_FIELDS.join(', ')}.`);
       if (!isTime(s.time)) bad(`slot ${i + 1}: "time" must be HH:MM.`);
       const name = str(s.name, 'name', 80);
       if (!name) bad(`slot ${i + 1}: "name" is required.`);

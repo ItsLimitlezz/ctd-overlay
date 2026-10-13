@@ -49,7 +49,7 @@ test('unknown paths get a 404 problem document', async (t) => {
   assert.equal(res.status, 404);
   assert.equal(res.headers.get('content-type'), 'application/problem+json');
   const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), ['detail', 'status', 'title', 'type']);
+  assert.deepEqual(Object.keys(body).sort(), ['detail', 'instance', 'status', 'title', 'type']);
   assert.equal(body.status, 404);
 });
 

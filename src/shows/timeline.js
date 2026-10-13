@@ -108,7 +108,9 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     const d = doc.data;
     return {
       id: doc.id,
+      rev: doc.rev,
       at: new Date(d.at).toISOString(),
+      order: d.order || 0,
       ...(d.time ? { time: d.time } : {}),
       ...(d.clock ? { [d.clock === 'gap' ? 'clockGap' : 'clockOverlap']: true } : {}),
       ...(d.label ? { label: d.label } : {}),
@@ -547,6 +549,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     try { activateAt = dayOf(d, shows.get(d.showId)).start; } catch { /* the show is gone */ }
     return {
       id: doc.id,
+      rev: doc.rev,
       date: d.date,
       ...d.changes,
       ...(d.overlaySettings ? { overlaySettings: d.overlaySettings } : {}),
@@ -715,6 +718,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
 
   return {
     list: listCues,
+    get: (showRef, cueId) => view(cueOf(showRef, cueId).doc),
     add,
     update,
     remove,

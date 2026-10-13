@@ -82,6 +82,12 @@ phone); `SKP_EXPOSURE=public` also serves the internet over HTTPS, with `SKP_PUB
 either `SKP_TLS_CERT`/`SKP_TLS_KEY` or a reverse proxy in `SKP_TRUST_PROXY`. The master key in the
 config folder decrypts the secrets in the data folder: back it up separately.
 
+### The API
+
+Everything the admin UI does goes through `/api/v1`, described at `/api/v1/openapi.json`.
+Sign in, or send an API token (`Authorization: Bearer skp_pat_…`); a Stream Deck button that
+must fire once sends `Idempotency-Key`.
+
 ### Accounts
 
 There is no default password. On first start the platform prints a **setup code** in its log

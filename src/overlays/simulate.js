@@ -13,7 +13,6 @@
 //
 // It needs overlays:control, like taking a scene (auth/routes.js), and a JSON body.
 import { BusError } from '../bus/index.js';
-import { jsonBody } from '../http/local.js';
 import { sendJson, sendProblem } from '../http/server.js';
 import { newId } from '../ids.js';
 
@@ -92,13 +91,9 @@ function track(o) {
   };
 }
 
-// guard(req, res, scope): who asks (auth/routes.js). holdMs: how long simulated state lasts
-// (tests shorten it).
-export function simulateRoutes({ overlays, bus, log, guard, holdMs = SIM_HOLD_MS }) {
-  async function simulate({ req, res, params }) {
-    if (!guard(req, res, 'overlays:control')) return undefined;
-    const body = await jsonBody(req, res, BODY_LIMIT);
-    if (body === undefined) return undefined;
+// api: the API's conventions (http/api.js). holdMs: how long simulated state lasts (tests shorten it).
+export function simulateRoutes({ api, overlays, bus, log, holdMs = SIM_HOLD_MS }) {
+  function simulate({ res, params, body }) {
     // By slug or by id.
     const found = overlays.resolve(params.ref) || overlays.resolve(overlays.list().find((d) => d.id === params.ref)?.data.slug);
     if (!found) return sendProblem(res, 404, 'Not found', `There is no overlay "${params.ref}".`);
@@ -137,5 +132,5 @@ export function simulateRoutes({ overlays, bus, log, guard, holdMs = SIM_HOLD_MS
     log.info('simulated', { overlay: found.doc.data.slug, kind: body.kind });
     return sendJson(res, 200, { overlay: found.doc.data.slug, sent });
   }
-  return [{ method: 'POST', path: '/api/v1/overlays/:ref/simulate', handler: simulate }];
+  return [api.route({ method: 'POST', path: '/api/v1/overlays/:ref/simulate', scope: 'overlays:control', command: true, tag: 'Overlays', summary: 'Send sample events or state to one overlay (08 §8.5)', body: { limit: BODY_LIMIT }, run: simulate })];
 }

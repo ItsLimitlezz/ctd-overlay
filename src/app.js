@@ -10,12 +10,15 @@ import { createHasher } from './auth/passwords.js';
 import { authRoutes, createGuard } from './auth/routes.js';
 import { createBus } from './bus/index.js';
 import { createCrashLog } from './crashlog.js';
+import { createApi } from './http/api.js';
 import { close, createHttpServer, listen } from './http/server.js';
+import { systemRoutes } from './http/system.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
+import { mediaApiRoutes } from './media/api.js';
 import { mediaRoutes } from './media/routes.js';
 import { isPrivateAddress, machineNames } from './net.js';
-import { overlayKeyRoutes } from './overlays/api.js';
+import { overlayApiRoutes } from './overlays/api.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
@@ -27,7 +30,9 @@ import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
 import { BUILTIN_DIR, createTemplateRegistry } from './templates/registry.js';
+import { templateRoutes } from './templates/api.js';
 import { createTemplateSources } from './templates/sources.js';
+import { VERSION } from './version.js';
 
 // code: 'locked' when another process holds the data directory, else 'startup'.
 export class StartupError extends Error {
@@ -122,9 +127,9 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // replaces the configured ffmpeg, options.media goes to the media library, options.fetch and
 // options.sourceLimits are what template sources fetch with and their limits,
 // options.simulateHoldMs shortens how long simulated state lasts, options.clock ({ now, timers })
-// is the clock shows, the timeline and sign-in run on, and options.scrypt lowers the password
-// hash's cost for tests ({ N }).
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt } = {}) {
+// is the clock shows, the timeline and sign-in run on, options.scrypt lowers the password hash's
+// cost for tests ({ N }), and options.rateLimit replaces the API's requests a minute.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
@@ -146,6 +151,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const hosts = () => ownHosts(server, config.host, { exposure: config.exposure, extra: [...network, ...config.hosts], publicUrl: config.publicUrl, tls: Boolean(tls) });
   const auth = createAuth({ store, audit, secrets, log: log.child('auth'), now: clock.now, hasher: createHasher(scrypt ? { params: { r: 8, p: 1, ...scrypt } } : {}), configDir: config.configDir });
   const guard = createGuard({ auth, hosts });
+  const api = createApi({ guard, hosts, store, log: log.child('api'), now: clock.now, ...(rateLimit ? { perMinute: rateLimit } : {}) });
   const server = createHttpServer({
     log: log.child('http'),
     crash,
@@ -154,13 +160,17 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     admit: admission(config),
     routes: [
       ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
-      ...authRoutes({ auth, audit, guard, hosts, log: log.child('auth') }),
-      ...showRoutes({ shows, timeline, guard, log: log.child('shows') }),
-      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), guard, holdMs: simulateHoldMs }),
+      ...mediaRoutes({ media }),
+      // The API (03): every route on its conventions (http/api.js).
+      ...authRoutes({ api, auth, audit }),
+      ...showRoutes({ api, shows, timeline }),
+      ...simulateRoutes({ api, overlays, bus, log: log.child('simulate'), holdMs: simulateHoldMs }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
-      ...overlayKeyRoutes({ overlays, guard, audit, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
-      ...mediaRoutes({ media }),
+      ...overlayApiRoutes({ api, overlays, templates, shows, audit, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
+      ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }),
+      ...mediaApiRoutes({ api, media, overlays, audit }),
+      ...systemRoutes({ api, bus, store, media, templates, overlays, shows, config, version: VERSION, heartbeatMs, now: clock.now }),
       ...routes,
     ],
   });

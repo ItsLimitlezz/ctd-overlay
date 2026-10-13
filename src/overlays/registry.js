@@ -265,6 +265,21 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       return next;
     },
 
+    // A new slug: the overlay's URL changes (01 §1.4), so OBS sources must be updated; its key,
+    // settings and channel stay.
+    rename(ref, slug, { ifRev } = {}) {
+      const doc = byIdOrSlug(ref);
+      if (typeof slug !== 'string' || !SLUG.test(slug)) {
+        throw new OverlayError(`"${slug}" isn't a valid slug: use lowercase letters, digits and dashes, starting with a letter or digit`, 'bad-slug');
+      }
+      if (slug === doc.data.slug) return doc;
+      if (bySlug.has(slug)) throw new OverlayError(`the slug "${slug}" is taken`, 'slug-taken');
+      const saved = store.put('overlays', doc.id, { ...doc.data, slug }, { ifRev: ifRev ?? doc.rev });
+      bySlug.delete(doc.data.slug);
+      bySlug.set(slug, doc.id);
+      return saved;
+    },
+
     remove(id) {
       const doc = store.get('overlays', id);
       if (!doc) return false;

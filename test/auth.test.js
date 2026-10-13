@@ -257,7 +257,7 @@ test('signing in: one answer for a wrong name or password, "keep me signed in" f
   assert.match(kept.setCookie, new RegExp(`; Max-Age=${KEEP_MS / 1000}$`));
   assert.equal(Date.parse(kept.body.expiresAt), clock.t + KEEP_MS);
   // Your sessions: this one and the setup's; revoke the other.
-  const list = (await b.call('GET', '/auth/sessions')).body;
+  const list = (await b.call('GET', '/auth/sessions')).body.items;
   assert.equal(list.length, 2);
   const mine = list.find((s) => s.current);
   assert.equal(mine.device, 'Phone Safari');
@@ -309,7 +309,9 @@ test('roles: an operator runs the show but sees no accounts; a viewer only looks
   const viewer = await userWith(ctx, 'viewer');
   const admin = await userWith(ctx, 'admin');
   assert.equal((await operator.call('PUT', '/shows/Night/scene', { scene: 'brb' })).status, 200);
-  assert.equal((await operator.call('PATCH', '/shows/Night', { goLive: '22:00' })).status, 200, 'the lineup and timeline too');
+  const night = await operator.call('GET', '/shows/Night');
+  assert.equal((await operator.call('PATCH', '/shows/Night', { goLive: '22:00' })).status, 428, 'a session sends If-Match (03 §3.1)');
+  assert.equal((await operator.call('PATCH', '/shows/Night', { goLive: '22:00' }, { 'if-match': `\"${night.body.id}-r${night.body.rev}\"` })).status, 200, 'the lineup and timeline too');
   const denied = await operator.call('GET', '/users');
   assert.deepEqual([denied.status, denied.body.type], [403, 'https://skp.dev/errors/forbidden']);
   assert.match(denied.body.detail, /users:admin.*operator/);
@@ -330,7 +332,7 @@ test('accounts: the owner adds, changes and removes users; each change signs tha
   assert.equal((await owner.call('POST', '/users', { username: 'ana', password: PASSWORD, role: 'viewer' })).status, 409);
   assert.equal((await owner.call('POST', '/users', { username: 'boss', password: PASSWORD, role: 'owner' })).status, 422, 'one owner');
   assert.equal((await owner.call('POST', '/users', { username: 'Bad Name', password: PASSWORD, role: 'viewer' })).status, 422);
-  const list = (await owner.call('GET', '/users')).body;
+  const list = (await owner.call('GET', '/users')).body.items;
   assert.deepEqual(list.map((u) => [u.username, u.role]), [['juan', 'owner'], ['ana', 'operator']]);
   assert.ok(list.every((u) => !('passwordHash' in u)));
   // A role change ends her sessions.
@@ -367,7 +369,7 @@ test('API tokens: skp_pat_ + 32 random bytes, shown once, kept as a hash; scopes
   assert.equal((await deck('GET', '/shows')).status, 200);
   assert.equal((await deck('POST', '/shows', { name: 'X', overlays: [], date: '2026-10-17', timezone: 'UTC' })).status, 403, 'timeline:write not granted');
   assert.equal((await deck('POST', '/tokens', { name: 'another' })).status, 403, 'a token can\'t make tokens');
-  const listed = (await owner.call('GET', '/tokens')).body;
+  const listed = (await owner.call('GET', '/tokens')).body.items;
   assert.equal(listed.length, 1);
   assert.equal(listed[0].token, undefined, 'never shown again');
   assert.equal(listed[0].lastUsedAt, new Date(clock.t).toISOString());

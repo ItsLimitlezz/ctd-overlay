@@ -151,6 +151,17 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
   const platform = (method, apiPath, body) => callPlatform(config(), method, apiPath, body, fetchHook || globalThis.fetch);
+  // A whole list, page by page (03 §3.1: { items, next }).
+  const everything = async (apiPath) => {
+    const items = [];
+    for (let cursor; ;) {
+      const sep = apiPath.includes('?') ? '&' : '?';
+      const page = await platform('GET', `${apiPath}${sep}limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      items.push(...page.items);
+      if (!page.next) return items;
+      cursor = page.next;
+    }
+  };
 
   try {
     const command = `${noun ?? ''} ${verb ?? ''}`.trim();
@@ -472,7 +483,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
       case 'show list': {
         if (rest.length) return usage('show list takes no arguments');
-        const list = await platform('GET', '/shows');
+        const list = await everything('/shows');
         if (opts.json) json(list);
         else {
           for (const s of list) {
@@ -550,7 +561,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('show build takes <show>');
         const body = {};
         if (opts.recipe !== undefined) body.recipe = opts.recipe === 'none' ? null : readJsonFile(opts.recipe, 'the recipe file');
-        const cues = await platform('POST', `/shows/${encodeURIComponent(rest[0])}/cues/build`, body);
+        const cues = (await platform('POST', `/shows/${encodeURIComponent(rest[0])}/cues/build`, body)).items;
         if (opts.json) json(cues);
         else {
           const made = cues.filter((c) => c.generated);
@@ -562,7 +573,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       case 'show cues': {
         if (rest.length !== 1) return usage('show cues takes <show>');
         const show = await platform('GET', `/shows/${encodeURIComponent(rest[0])}`);
-        const cues = await platform('GET', `/shows/${show.id}/cues`);
+        const cues = await everything(`/shows/${show.id}/cues`);
         if (opts.json) json(cues);
         else {
           for (const c of cues) out(cueLine(c, show.timezone));
@@ -593,7 +604,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
       case 'show plans': {
         if (rest.length !== 1) return usage('show plans takes <show>');
-        const plans = await platform('GET', `/shows/${encodeURIComponent(rest[0])}/plans`);
+        const plans = await everything(`/shows/${encodeURIComponent(rest[0])}/plans`);
         if (opts.json) json(plans);
         else {
           for (const p of plans) {
@@ -647,7 +658,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
       case 'user list': {
         if (rest.length) return usage('user list takes no arguments');
-        const users = await platform('GET', '/users');
+        const users = await everything('/users');
         if (opts.json) json(users);
         else for (const u of users) out(`${u.username.padEnd(20)} ${u.role.padEnd(9)} ${u.totp ? '2FA on ' : '2FA off'}  ${u.lastLoginAt ? `last signed in ${u.lastLoginAt}` : 'never signed in'}`);
         return 0;
@@ -686,7 +697,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
       case 'token list': {
         if (rest.length) return usage('token list takes no arguments');
-        const tokens = await platform('GET', `/tokens${opts.all ? '?all=true' : ''}`);
+        const tokens = await everything(`/tokens${opts.all ? '?all=true' : ''}`);
         if (opts.json) json(tokens);
         else {
           for (const k of tokens) out(`${k.id}  ${k.name}  (${k.user})  ${k.scopes.join(' ')}${k.expiresAt ? `  expires ${k.expiresAt}` : ''}${k.lastUsedAt ? `  last used ${k.lastUsedAt}` : '  never used'}`);

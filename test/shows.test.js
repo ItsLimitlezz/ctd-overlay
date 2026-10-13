@@ -310,8 +310,10 @@ test('what a show must be: refusals say what to fix', async (t) => {
   bad({ lineup: [{ time: '10pm', name: 'X' }] }, 'invalid', /time/);
   bad({ lineup: [{ time: '22:00', name: 'X', logo: 'javascript:alert(1)' }] }, 'invalid', /logo/);
   bad({ lineup: Array.from({ length: 101 }, () => ({ time: '22:00', name: 'X' })) }, 'invalid');
-  // Fields outside the shape are dropped, not stored.
-  const show = platform.shows.create({ ...SHOW, lineup: [{ time: '22:00', name: '  Trimmed  ', extra: 'x', headliner: 'yes' }], admin: true });
+  // A slot field outside the shape is refused (07 §7.11); a top-level one never reaches the store
+  // (the API refuses it before, http/api.js). Names are trimmed; flags are true or absent.
+  bad({ lineup: [{ time: '22:00', name: 'X', extra: 'x' }] }, 'invalid', /unknown field extra/);
+  const show = platform.shows.create({ ...SHOW, lineup: [{ time: '22:00', name: '  Trimmed  ', headliner: 'yes' }], admin: true });
   assert.deepEqual(show.lineup.map(({ startAt, ...s }) => s), [{ time: '22:00', name: 'Trimmed' }]);
   assert.equal(show.admin, undefined);
 });
@@ -322,7 +324,7 @@ test('the show API: signed in, JSON, problems with reasons', async (t) => {
   const created = await api('POST', '/shows', SHOW);
   assert.equal(created.status, 201);
   const id = created.body.id;
-  assert.equal((await api('GET', '/shows')).body.length, 1);
+  assert.equal((await api('GET', '/shows')).body.items.length, 1);
   assert.equal((await api('GET', `/shows/${encodeURIComponent('saturday takeover')}`)).body.id, id, 'by name too');
   watch('main-h');
   assert.equal((await api('PUT', `/shows/${id}/scene`, { scene: 'brb' })).status, 200);
@@ -358,7 +360,7 @@ test('the show API: signed in, JSON, problems with reasons', async (t) => {
   assert.equal(await raw('GET', `attacker.example:${port}`), 403);
   assert.equal(await raw('GET', `localhost:${port}`), 200);
   assert.equal((await api('DELETE', `/shows/${id}`)).status, 200);
-  assert.equal((await api('GET', '/shows')).body.length, 0);
+  assert.equal((await api('GET', '/shows')).body.items.length, 0);
 });
 
 async function cli(argv, env) {

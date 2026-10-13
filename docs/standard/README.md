@@ -124,6 +124,13 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-13.** From the API conventions (plan step 13):
+
+1. `GET /openapi.json`; `Idempotent-Replayed`; answers holding a secret are never replayed;
+   unknown fields are refused, lineup slots included. *(03 §3.1, §3.4, 07 §7.11)*
+2. Template previews and followed sources have routes. `GET /events` streams what the platform
+   publishes to everyone (show state is each overlay's own: read the show). *(03 §3.4)*
+
 **2026-10-12.** From making it safe to expose (plan step 12):
 
 1. `SKP_HOSTS`: more names the platform answers to in `lan`/`public` mode. In `public` mode,

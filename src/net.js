@@ -1,7 +1,9 @@
 // Addresses (07 §7.8, §7.11): who a request comes from, and which addresses are this machine or
 // its network.
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
+import { Readable } from 'node:stream';
 
 // "::ffff:192.168.1.5" is 192.168.1.5.
 export const normalizeIp = (addr) => String(addr || '').trim().replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i, '$1').replace(/^\[|\]$/g, '').toLowerCase();
@@ -42,6 +44,41 @@ export function clientOf(req, trustProxy = []) {
   }
   const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
   return { ip, https: proto ? proto === 'https' : tls, proxied: true };
+}
+
+// A fetch for downloads the platform makes on someone's behalf (07 §7.11): https only, and the
+// address it connects to is the one it checked, in the same lookup (a DNS-rebinding host can't
+// answer a public address to a check and a private one to the connection). lookup(host) resolves
+// to [{ address, family }]; allowPrivate is the owner's SKP_ALLOW_PRIVATE_DOWNLOADS; tls: more TLS
+// options (tests: a self-signed certificate).
+// The answer is a WHATWG Response, like fetch's; redirects are not followed (the caller checks
+// each hop).
+export function pinnedFetch({ lookup, allowPrivate = false, tls = {} } = {}) {
+  return (url, { headers = {}, signal } = {}) => new Promise((resolve, reject) => {
+    const target = new URL(url);
+    if (target.protocol !== 'https:') return reject(new TypeError(`only https downloads (${target.protocol})`));
+    const connectLookup = (hostname, options, callback) => {
+      lookup(hostname).then((addresses) => {
+        const list = addresses.filter((a) => allowPrivate || !isPrivateAddress(a.address));
+        if (!list.length) {
+          const err = new Error(`${hostname} resolves to a private or local address (${addresses[0]?.address ?? 'none'})`);
+          err.code = 'EPRIVATE';
+          return callback(err);
+        }
+        if (options?.all) return callback(null, list.map((a) => ({ address: a.address, family: a.family })));
+        return callback(null, list[0].address, list[0].family);
+      }, callback);
+    };
+    const req = httpsRequest(target, { ...tls, method: 'GET', headers, signal, lookup: connectLookup }, (res) => {
+      const headerList = [];
+      for (const [k, v] of Object.entries(res.headers)) headerList.push([k, Array.isArray(v) ? v.join(', ') : String(v)]);
+      const empty = [101, 204, 205, 304].includes(res.statusCode);
+      if (empty) res.resume();
+      resolve(new Response(empty ? null : Readable.toWeb(res), { status: res.statusCode, headers: headerList }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 // The names this machine answers to on its network, for the Host check in lan and public modes:

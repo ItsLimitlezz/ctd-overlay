@@ -72,7 +72,9 @@ export function sendText(res, status, text, headers = {}) {
 // and what to do (03 §3.2).
 export function sendProblem(res, status, title, detail, { type = 'about:blank', headers = {} } = {}) {
   res.writeHead(status, { ...BASE_HEADERS, 'content-type': 'application/problem+json', ...headers });
-  res.end(JSON.stringify({ type, title, status, detail }));
+  // instance: the path asked for, never its query (an overlay key rides there).
+  const instance = res.req?.url ? String(res.req.url).split('?')[0] : undefined;
+  res.end(JSON.stringify({ type, title, status, detail, ...(instance ? { instance } : {}) }));
 }
 
 // GET /healthz: 200 "ok", no version or detail, no authentication (10 §10.3).
@@ -199,6 +201,11 @@ const tooLarge = (message) => new BodyError(413, message, { connection: 'close' 
 // On overflow it only stops reading: destroying the request would also destroy the socket, and
 // the 413 would never arrive.
 export function readBody(req, limit) {
+  return readBytes(req, limit).then((b) => b.toString('utf8'));
+}
+
+// The same, as bytes (an upload).
+export function readBytes(req, limit) {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length']);
     if (declared > limit) {
@@ -218,7 +225,7 @@ export function readBody(req, limit) {
       }
       chunks.push(chunk);
     };
-    const onEnd = () => resolve(Buffer.concat(chunks).toString('utf8'));
+    const onEnd = () => resolve(Buffer.concat(chunks));
     req.on('data', onData);
     req.on('end', onEnd);
     req.on('error', reject);

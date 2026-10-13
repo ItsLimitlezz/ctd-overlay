@@ -15,7 +15,8 @@ admin API: anything the UI can do, an authorized client can do.
 | Names | `camelCase` fields; plural resource paths. |
 | Pagination | Cursor based: `?limit=50&cursor=…` → `{ "items": [], "next": "…" }`. Max limit 200. |
 | Concurrency | Mutable resources return `ETag`. Requests authenticated by session (the admin UI) **MUST** send `If-Match` on `PATCH` and `PUT`: without it the platform answers `428`, and with a stale tag `412`. Token-authenticated clients **SHOULD** send it and **MAY** omit it, accepting last-write-wins. Commands (taking a scene, firing actions, triggers and cue overrides, alert queue controls) take no `If-Match`. Two operators editing one overlay can't silently overwrite each other. |
-| Idempotency | `POST` accepts `Idempotency-Key`; a repeat within 24 h returns the original result. Required for anything a hardware button might fire twice. |
+| Idempotency | `POST` accepts `Idempotency-Key`; a repeat within 24 h returns the original result (with `Idempotent-Replayed: true`), and the same key on another request is a `422`. Required for anything a hardware button might fire twice. Answers that hold a secret (a session, a new token) are never kept for replay. |
+| Unknown fields | A write takes the fields its resource has; any other is refused (`422`, `unknown-field`), never silently dropped (07 §7.11). |
 
 ## 3.2 Errors
 
@@ -79,6 +80,8 @@ It acts as the owner and is accepted only from a loopback address.
 | `GET /templates/{id}/versions` | Installed versions |
 | `DELETE /templates/{id}` | Uninstall every installed version, or one with `?version=` (refused while an overlay pins it; templates that ship with the platform can't be uninstalled) |
 | `POST /templates/validate` | Lint a package without installing (04 §4.11) |
+| `GET /templates/{id}/versions/{version}/previews/{file}` | A preview image |
+| `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13) |
 
 ### Overlays
 | Method · Path | Purpose |
@@ -131,6 +134,7 @@ It acts as the owner and is accepted only from a loopback address.
 | `GET/POST /webhooks` · `DELETE /webhooks/{id}` · `GET /webhooks/{id}/deliveries` | Outbound webhooks (06 §6.10) |
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
+| `GET /openapi.json` | This API, described (OpenAPI 3.1, each operation's scope as `x-skp-scope`); no sign-in needed |
 | `POST /system/backup` · `POST /system/restore` | Export/import (10 §10.7) |
 | `GET /system/audit` | Audit log, newest first (`audit:read`: owner and admin) |
 

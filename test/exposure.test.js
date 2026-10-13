@@ -79,7 +79,7 @@ test('overlay keys: the page and its data need the key; files don\'t; rotate, an
   assert.equal((await o('/snapshot', fresh)).status, 200);
   assert.equal((await api('PATCH', '/overlays/main', { keyRequired: false })).body.keyRequired, false);
   assert.equal((await o('/snapshot', undefined)).status, 200);
-  assert.equal((await api('PATCH', '/overlays/main', { slug: 'x' })).status, 422);
+  assert.equal((await api('PATCH', '/overlays/main', { name: 'x' })).status, 422, 'an unknown field');
   assert.equal((await api('GET', '/overlays/nope/url')).status, 404);
   assert.deepEqual(platform.audit.list({ action: 'overlay' }).items.map((e) => e.action), ['overlay.key-required', 'overlay.key-rotate']);
   // Stored encrypted: the key itself is nowhere in the store.
