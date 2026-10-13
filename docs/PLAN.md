@@ -84,7 +84,15 @@ option that keeps a live show running with nobody touching it.
    template file URLs are public by design (07 §7.6), and if private templates ever matter,
    step 12 can key the build path per installation (an HMAC of the build with a server secret).
 7. **Media.** Uploads with size caps, ffmpeg transcode (H12), `/media/<fileId>/<name>`
-   (03 §3.4, 07 §7.11).
+   (03 §3.4, 07 §7.11). Through the CLI for now (`skp media add|list|remove`); the library takes
+   a stream, so `POST /media` is a thin route once auth exists (step 13). Deferred: stripping
+   location metadata from JPEGs kept as uploaded (it needs rewriting EXIF without losing the
+   orientation); for now only converted files lose their metadata. Carried forward to step 13,
+   which makes uploads remote: cap the uploads staged at once and the conversions queued (today
+   the CLI runs one at a time); make `remove` asynchronous, so deleting a large file never holds
+   the event loop; and have `DELETE /media` end the streams serving that file before it is
+   renamed aside (Windows can't remove an open file; today it is logged and swept at the next
+   start).
 8. **TAKEOVER template.** Port the v0 look with the fixes listed above: all core scenes plus The
    Line and POV, actions `titleCard`, `nowPlaying`, `chipOpening`, `chipOnAt`, Event Intro, DJ
    logos from lineup media. Add the viewer-count widget from 04 §4.12 and the Simulate endpoint.

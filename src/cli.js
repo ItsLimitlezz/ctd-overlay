@@ -16,6 +16,7 @@ import { parseArgs } from 'node:util';
 import { openData, StartupError } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createLogger } from './log.js';
+import { MediaError, mediaUrl } from './media/library.js';
 import { OverlayError } from './overlays/registry.js';
 import { StoreVersionError } from './store/migrate.js';
 import { MigrateError } from './templates/migrate.js';
@@ -34,6 +35,10 @@ export const USAGE = `Usage: skp <command> [options]
         [--dry-run] [--yes]               show what would change / confirm it
         [--run-migrate]                   let an installed package's migrate.js run
   overlay revert <slug>                   go back to the version and settings before the last upgrade
+  media add <file> [--name <name>]        upload a clip, image, sound or font (phone video is
+                                          converted for OBS when ffmpeg is available)
+  media list                              uploaded files and their URLs
+  media remove <id>                       delete one (refused while an overlay uses it)
 
 Options: --json (machine-readable output), and the server's own --data-dir, --config-dir and
 --store to find the data directory (the same environment variables work too).`;
@@ -51,7 +56,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       strict: true,
       options: {
         json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-        to: { type: 'string' }, out: { type: 'string', short: 'o' },
+        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' },
         ...Object.fromEntries(CONFIG_FLAGS.map((f) => [f, { type: 'string' }])),
       },
     });
@@ -219,6 +224,54 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         }
       }
 
+      case 'media add': {
+        if (rest.length !== 1) return usage('media add takes one file');
+        const data = openFor('media add');
+        try {
+          const doc = await data.media.add(rest[0], { name: opts.name, actor: 'cli' });
+          data.record({ media: doc.id, name: doc.data.name, url: mediaUrl(doc), converted: doc.data.converted });
+          if (opts.json) json(mediaJson(doc));
+          else {
+            out(`added ${doc.id}: ${doc.data.name} (${doc.data.type}, ${formatBytes(doc.data.size)}${doc.data.converted ? `, converted from ${doc.data.original.type}` : ''})`);
+            out(`  ${mediaUrl(doc)}`);
+            if (doc.data.note) out(`  note: ${doc.data.note}`);
+          }
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
+      case 'media list': {
+        if (rest.length) return usage('media list takes no arguments');
+        const data = openFor('media list');
+        try {
+          const docs = data.media.list();
+          if (opts.json) json(docs.map(mediaJson));
+          else {
+            for (const d of docs) out(`${d.id}  ${d.data.status.padEnd(10)} ${formatBytes(d.data.size).padStart(9)}  ${mediaUrl(d)}${d.data.note ? '  (kept as uploaded)' : ''}`);
+            if (!docs.length) out('No media yet: skp media add <file>.');
+          }
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
+      case 'media remove': {
+        if (rest.length !== 1) return usage('media remove takes <id>');
+        const data = openFor('media remove');
+        try {
+          const doc = data.media.remove(rest[0], { usedBy: (d) => data.overlays.mediaUsers(d.data.fileId) });
+          data.record({ media: doc.id, name: doc.data.name });
+          if (opts.json) json({ removed: doc.id });
+          else out(`removed ${doc.id} (${doc.data.name})`);
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
       default:
         return usage(noun ? `unknown command "${command}"` : '');
     }
@@ -241,7 +294,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       }
       return 1;
     }
-    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
+    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
       const message = err.code === 'ENOENT' ? `no such file: ${err.path}` : err.code === 'ENOTDIR' ? `not a directory: ${err.path}` : err.message;
       if (opts.json) json({ error: err.code || err.name, message });
       else stderr.write(`skp: ${message}\n`);
@@ -277,6 +330,16 @@ function record(dataDir, op, details) {
   } catch {
     // The change itself is done; a log that can't be written must not undo or hide it.
   }
+}
+
+function mediaJson(doc) {
+  return { id: doc.id, url: mediaUrl(doc), ...doc.data };
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function findingsJson({ manifest, errors, warnings, build }) {

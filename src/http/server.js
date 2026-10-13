@@ -123,11 +123,11 @@ export function createHttpServer({ log, crash, routes = [] }) {
   return server;
 }
 
-// Overlay pages and the SDK run in OBS and in the admin UI's sandboxed (opaque-origin) previews.
-// Even their errors carry Access-Control-Allow-Origin, so a preview can tell an error from an
-// outage. The admin API does not (07 §7.10).
+// Overlay pages, the SDK and media load in OBS and in the admin UI's sandboxed (opaque-origin)
+// previews. Even their errors carry Access-Control-Allow-Origin, so a preview can tell an error
+// from an outage. The admin API does not (07 §7.10).
 function corsFor(rawUrl) {
-  return /^\/(o|sdk)\//.test(rawUrl || '') ? { 'access-control-allow-origin': '*' } : {};
+  return /^\/(o|sdk|media)\//.test(rawUrl || '') ? { 'access-control-allow-origin': '*' } : {};
 }
 
 async function handle(req, res, router) {

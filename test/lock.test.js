@@ -10,6 +10,8 @@ import { syncBuiltinESMExports } from 'node:module';
 import { hostname } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import { openData } from '../src/app.js';
+import { loadConfig } from '../src/config.js';
 import { lockDataDir, LockError, REFRESH_MS } from '../src/lock.js';
 import { defer, memoryLogger, startWithOverlay, tempDir } from './helpers.js';
 
@@ -507,6 +509,26 @@ test('no temp or aside files are left behind by taking, refusing, taking over or
   assert.deepEqual(readdirSync(dir), ['skp.lock']);
   again.release();
   assert.deepEqual(readdirSync(dir), []);
+});
+
+test('a CLI command holding the data directory keeps its lock fresh too (a long conversion outlasts the 3 minutes)', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const root = tempDir(t);
+  const config = loadConfig({ argv: [], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  const data = openData(config, { log: memoryLogger().log, purpose: 'media add' });
+  defer(t, () => data.close());
+  for (let minute = 1; minute <= 4; minute++) {
+    age(config.dataDir, 10 * 60000);
+    t.mock.timers.tick(REFRESH_MS);
+    const behind = Date.now() - statSync(lockFile(config.dataDir)).mtimeMs;
+    assert.ok(Math.abs(behind) < 5000, `minute ${minute}: the lock is ${behind} ms old`);
+  }
+  data.close();
+  writeLock(config.dataDir, { pid: process.ppid, host: 'some-other-host', purpose: 'platform' });
+  age(config.dataDir, 10 * 60000);
+  const stale = statSync(lockFile(config.dataDir)).mtimeMs;
+  t.mock.timers.tick(REFRESH_MS);
+  assert.equal(statSync(lockFile(config.dataDir)).mtimeMs, stale, 'closed: it stops refreshing');
 });
 
 test('a running platform keeps its lock fresh every minute, and leaves the lock file alone once stopped', async (t) => {

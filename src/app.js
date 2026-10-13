@@ -1,12 +1,15 @@
 // Starts the platform for a given configuration: data and config directories, the data-directory
-// lock, crash log, store (with migrations), bus, templates, overlays and the HTTP server. Returns
-// a handle with stop(). Installs no process-wide handlers, so tests can run several instances.
+// lock, crash log, store (with migrations), bus, templates, overlays, media and the HTTP server.
+// Returns a handle with stop(). Installs no process-wide handlers, so tests can run several
+// instances.
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { createBus } from './bus/index.js';
 import { createCrashLog } from './crashlog.js';
 import { close, createHttpServer, listen } from './http/server.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
+import { createMediaLibrary } from './media/library.js';
+import { mediaRoutes } from './media/routes.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { migrate } from './store/migrate.js';
@@ -24,8 +27,10 @@ export class StartupError extends Error {
 }
 
 // Everything but HTTP, for the platform and for CLI commands that change the data directory:
-// { lock, store, bus, templates, overlays, close() }. Holds the data-directory lock until close().
-export function openData(config, { log, templateDirs = [], purpose = 'platform' }) {
+// { lock, store, bus, templates, overlays, media, close() }. Holds the data-directory lock until
+// close(). ffmpeg and media: test hooks ([executable, ...args] in place of config.ffmpeg; options
+// for the media library).
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {} }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -35,6 +40,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform' 
     if (err instanceof LockError) throw new StartupError(err.message, 'locked');
     throw err;
   }
+  // The lock stays fresh for as long as it is held, for a process on another host that looks at
+  // it: the platform's whole run, or a CLI command converting a long clip.
+  const freshen = setInterval(() => lock.refresh(), REFRESH_MS);
+  freshen.unref();
   let store;
   let bus;
   try {
@@ -44,15 +53,19 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform' 
     bus = createBus({ log: log.child('bus') });
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
+    const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
     return {
-      lock, store, bus, templates, overlays,
+      lock, store, bus, templates, overlays, media,
       close() {
+        clearInterval(freshen);
+        media.close();
         bus.close();
         store.close();
         lock.release();
       },
     };
   } catch (err) {
+    clearInterval(freshen);
     bus?.close();
     store?.close();
     lock.release();
@@ -60,20 +73,21 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform' 
   }
 }
 
-// Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat, and
-// options.templateDirs adds directories of templates beside the built-in ones.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [] } = {}) {
+// Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat,
+// options.templateDirs adds directories of templates beside the built-in ones, and
+// options.ffmpeg replaces the configured ffmpeg, and options.media goes to the media library.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
-  const data = openData(config, { log, templateDirs });
-  const { store, bus, templates, overlays } = data;
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions });
+  const { store, bus, templates, overlays, media } = data;
   const server = createHttpServer({
     log: log.child('http'),
     crash,
-    routes: [...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }), ...routes],
+    routes: [...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }), ...mediaRoutes({ media }), ...routes],
   });
 
   let address;
@@ -92,9 +106,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
   log.info('listening', { url: `http://${host}:${address.port}/`, exposure: config.exposure, store: store.kind, schemaVersion: store.schemaVersion });
 
-  // Keeps the data-directory lock fresh, for a process on another host that looks at it.
-  const freshen = setInterval(() => data.lock.refresh(), REFRESH_MS);
-  freshen.unref();
+  // Whether phone video can be converted, in the log from the start (not only at the first upload).
+  media.ffmpeg();
 
   let stopped = false;
   return {
@@ -103,6 +116,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     bus,
     templates,
     overlays,
+    media,
     crash,
     server,
     port: address.port,
@@ -110,8 +124,9 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     async stop() {
       if (stopped) return;
       stopped = true;
-      clearInterval(freshen);
       await close(server);
+      // Conversions are stopped, and what they leave is cleared before the store closes.
+      await media.close();
       data.close();
     },
   };

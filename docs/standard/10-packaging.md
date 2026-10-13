@@ -25,8 +25,14 @@ hardcode `/`, and keep native dependencies out of the core (README decision 8).
   time of writing). The runtime SDK and bundled templates **MUST** work there; templates declare
   their own minimum in `engines.obs`.
 - Media: ffmpeg is optional. Found on `PATH` or via `SKP_FFMPEG`; bundled in the container
-  image. Without it, `GET /system/info` reports `ffmpeg: false` and uploads are stored as-is
-  with a warning that HEVC clips will not play in OBS.
+  image. Without it, `GET /system/info` reports `ffmpeg: false`, videos are stored as-is with a
+  note that HEVC clips will not play in OBS, and HEIC photos are refused (no browser shows
+  them). With it, phone video (MP4, MOV, MKV, AVI) becomes H.264/AAC MP4 at most 1920 px on the
+  long side, rotation baked in, metadata (a phone's location) removed; HDR video (an iPhone's
+  10-bit HLG) is tone-mapped to SDR where the build has the `zscale` filter, and tagged BT.709
+  either way. HEIC photos become JPEG, which needs ffmpeg **7.1** or later; an older one refuses
+  them by name. ffmpeg runs below normal priority, so a conversion never starves a show on air.
+  WebM is kept as it is: OBS plays VP8/VP9, and a stinger's alpha channel would not survive.
 - Footprint target: under 150 MB RAM idle with 10 overlays and 4 connections; runs on a
   Raspberry Pi 4–class device or a low-end NAS. A password hash adds up to 128 MiB while it runs,
   which is why hashing is serialized (07 §7.3).
@@ -118,6 +124,10 @@ any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_
   SHA-256, where it came from). An install is unpacked beside them and renamed into place in one
   step; an uninstall renames the version aside before deleting it. Startup removes what an
   interrupted install or uninstall left.
+- Uploaded media lives in `<data>/media/<fileId>/<name>`, never changed after upload. An upload
+  is written to a staging file, identified by its first bytes, converted if need be, and renamed
+  into place; startup removes what an interrupted upload left, and marks a conversion it
+  interrupted as failed.
 - One process uses a data directory at a time (`<data>/skp.lock`). Offline tools that change it
   (installing templates, upgrading overlays) refuse while the platform runs; a lock left by a
   process that is gone (or from before a reboot, where the OS can tell) is taken over, by
