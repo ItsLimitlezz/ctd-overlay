@@ -22,7 +22,8 @@
           "name": { "type": "string" },
           "b2b": { "type": "string" },
           "headliner": { "type": "boolean" },
-          "closer": { "type": "boolean" }
+          "closer": { "type": "boolean" },
+          "logo": { "type": "string", "pattern": "^(/media/[A-Za-z0-9_-]+/[^/\\\\?#%\\s]+|https://\\S+)$", "description": "The performer's logo: uploaded media or an https URL (09 §9.1)." }
         }
       }
     },

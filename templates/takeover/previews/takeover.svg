@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <rect width="1920" height="1080" fill="#08070a"/>
+  <circle cx="300" cy="200" r="620" fill="#ff0090" opacity=".12"/>
+  <circle cx="1660" cy="900" r="560" fill="#16e0ff" opacity=".12"/>
+  <rect x="660" y="330" width="600" height="96" fill="#f2f0ea"/>
+  <text x="960" y="404" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="78" fill="#0a0a0a">D/PRTMNT</text>
+  <text x="960" y="560" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="150" fill="#ffffff">TAKEOVER</text>
+  <text x="960" y="660" text-anchor="middle" font-family="Courier New, monospace" font-weight="700" font-size="30" letter-spacing="10" fill="#16e0ff">SATURDAYS · LIVE FROM TORONTO</text>
+</svg>

@@ -571,3 +571,67 @@ describe('isolation', () => {
     assert.equal(got.length, 1);
   });
 });
+
+describe('simulated state (08 §8.5)', () => {
+  const stateOf = (got, key) => got.filter((e) => e.type === 'state.changed' && e.data.key === key);
+
+  test('a simulated value shows on that overlay only, holds back the real one, and gives it back when it ends', () => {
+    const { bus, clock } = fixture();
+    const a = bus.channel('ovl_a', { consumes: { state: ['viewers.*'] } });
+    const b = bus.channel('ovl_b', { consumes: { state: ['viewers.*'] } });
+    bus.setState('viewers.total', 1000);
+    clock.advance(500);
+    const gotA = watch(a);
+    const gotB = watch(b);
+    a.simulate('viewers.total', 5, 60000);
+    assert.deepEqual(stateOf(gotA, 'viewers.total').map((e) => [e.data.value, e.src.connector]), [[5, 'simulator']]);
+    assert.equal(a.snapshot().state['viewers.total'], 5);
+    assert.equal(a.visibleState('viewers.total'), 5);
+    assert.equal(bus.getState('viewers.total'), 1000, 'the platform\'s own state is untouched');
+    assert.equal(b.snapshot().state['viewers.total'], 1000);
+    // The real count changes meanwhile: the other overlay sees it, the simulated one doesn't.
+    clock.advance(500);
+    bus.setState('viewers.total', 1200);
+    assert.deepEqual(stateOf(gotB, 'viewers.total').map((e) => e.data.value), [1200]);
+    assert.equal(stateOf(gotA, 'viewers.total').length, 1);
+    assert.equal(a.snapshot().state['viewers.total'], 5);
+    // Simulated absent: shown as absent, even though the real count exists.
+    clock.advance(500);
+    a.simulate('viewers.total', undefined, 60000);
+    assert.equal('value' in stateOf(gotA, 'viewers.total').at(-1).data, false);
+    assert.equal('viewers.total' in a.snapshot().state, false);
+    assert.deepEqual(a.simulating, ['viewers.total']);
+    // The hold runs out (restarted by the second simulate): the real, current value comes back.
+    clock.advance(59000);
+    assert.equal('viewers.total' in a.snapshot().state, false, 'not yet');
+    clock.advance(1500);
+    assert.deepEqual(a.simulating, []);
+    assert.equal(stateOf(gotA, 'viewers.total').at(-1).data.value, 1200);
+    assert.equal(a.snapshot().state['viewers.total'], 1200);
+    // And real changes flow again.
+    clock.advance(500);
+    bus.setState('viewers.total', 1300);
+    assert.equal(stateOf(gotA, 'viewers.total').at(-1).data.value, 1300);
+  });
+
+  test('ending a simulation early restores every key; closing the channel cancels the holds', () => {
+    const { bus, clock } = fixture();
+    const a = bus.channel('ovl_a', { consumes: { state: ['viewers.*', 'music.*'] } });
+    const got = watch(a);
+    a.simulate('viewers.total', 7, 60000);
+    a.simulate('music.nowPlaying', { title: 'Strobe' }, 60000);
+    assert.equal(clock.pendingTimers(), 2);
+    clock.advance(200);
+    a.endSimulation();
+    assert.deepEqual(a.simulating, []);
+    assert.equal(clock.pendingTimers(), 0);
+    // Neither key has a real value: each is now absent.
+    for (const key of ['viewers.total', 'music.nowPlaying']) {
+      assert.equal('value' in stateOf(got, key).at(-1).data, false, key);
+      assert.equal(key in a.snapshot().state, false, key);
+    }
+    a.simulate('viewers.total', 9, 60000);
+    bus.removeChannel('ovl_a');
+    assert.equal(clock.pendingTimers(), 0);
+  });
+});

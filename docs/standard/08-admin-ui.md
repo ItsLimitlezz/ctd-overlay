@@ -69,6 +69,13 @@ Templates are designed and checked without going live.
   "Change track", "Drop viewers to absent" — so a template author can watch each state.
 - Simulated envelopes are tagged `src.connector = "simulator"` and **MUST NOT** reach overlays
   other than the one targeted, or outbound webhooks.
+- Simulated state (a track, a viewer count, a count gone absent) applies to that overlay only
+  and never changes the platform's state, nor settings bound to the key (04 §4.3). It **MUST** end by itself (the platform's choice; this
+  one holds it 60 s) or when the panel's "Reset" is pressed, and the overlay then gets the real
+  values back: a simulation left running on a live overlay must not hide the real count for the
+  rest of the show. While it holds, real changes to that key don't reach that overlay.
+- The answer says, per item, whether the overlay takes it (its template consumes it), so the
+  panel can say "this template doesn't show chat" rather than nothing happening.
 
 ## 8.6 Appearance
 

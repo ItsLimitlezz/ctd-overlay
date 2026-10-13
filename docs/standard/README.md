@@ -124,6 +124,16 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-12.** From porting the TAKEOVER template (plan step 8):
+
+1. A show publishes `show.date` and `show.goLiveAt` beside `show.lineup`, so a countdown never
+   re-reads wall-clock strings; a lineup slot may carry `logo` (uploaded media or an https URL).
+   *(02 §2.5, 09 §9.1, show.schema.json)*
+2. Simulated state is held on the targeted overlay only, ends by itself (60 s here) or at
+   "Reset" and then gives the real values back, and never reaches settings bound to the key;
+   the answer says whether the overlay consumes what was sent. *(08 §8.5)*
+3. `media.stop` may leave out `url` (stop whatever plays). *(02 §2.6)*
+
 **2026-10-12.** From building media (plan step 7):
 
 1. What is accepted is decided by content: images (PNG, JPEG, GIF, WebP, AVIF, HEIC), video

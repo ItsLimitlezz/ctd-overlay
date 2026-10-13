@@ -1,0 +1,100 @@
+{
+  "standard": "skp/1",
+  "id": "com.dprtmnt.takeover",
+  "name": "D/PRTMNT TAKEOVER",
+  "version": "1.0.0",
+  "description": "The Saturday TAKEOVER show package (countdown, live in-set, BRB, timetable, intros, The Line, POV), with a gold headliner-event look.",
+  "author": { "name": "D/PRTMNT", "url": "https://dprtmnt.com" },
+  "license": "proprietary",
+  "category": "show",
+  "tags": ["club", "dj", "takeover", "event"],
+  "entry": "index.html",
+  "previews": ["previews/takeover.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "auto", "label": "Auto (countdown, then live)", "core": "auto", "transparent": true },
+    { "id": "starting", "label": "Starting Soon", "core": "starting" },
+    { "id": "program", "label": "Live · In-set", "core": "program", "transparent": true },
+    { "id": "brb", "label": "Be Right Back", "core": "brb" },
+    { "id": "lineup", "label": "Tonight's Lineup", "core": "lineup" },
+    { "id": "outro", "label": "Outro", "core": "outro" },
+    { "id": "bg", "label": "Animated Background", "core": "bg" },
+    { "id": "intro", "label": "Event Intro", "core": "intro", "transparent": true, "durationMs": 8000, "then": "program" },
+    { "id": "headliner", "label": "Headliner Intro", "transparent": true, "durationMs": 8000, "then": "program" },
+    { "id": "line", "label": "The Line", "transparent": true },
+    { "id": "pov", "label": "POV (glasses cam)", "transparent": true }
+  ],
+  "consumes": {
+    "state": ["show.*", "viewers.total", "viewers.stale"],
+    "events": ["show.trigger", "media.*"]
+  },
+  "settings": { "$ref": "#/definitions/settings" },
+  "actions": [
+    { "id": "titleCard", "label": "DJ title card", "durationMs": 7000 },
+    { "id": "nowPlaying", "label": "Now playing", "durationMs": 22000 },
+    { "id": "chipOpening", "label": "Opening DJ chip", "durationMs": 10000 },
+    { "id": "chipOnAt", "label": "Headliner on-at chip", "durationMs": 10000 }
+  ],
+  "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap"],
+  "definitions": {
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "look": {
+          "type": "string", "title": "Look", "enum": ["takeover", "event"],
+          "x-skp-labels": ["D/PRTMNT TAKEOVER (cyan)", "Headliner event (gold)"], "default": "takeover"
+        },
+        "accent": { "type": "string", "format": "color", "title": "Accent", "description": "The TAKEOVER colour; the event look uses it on The Line and POV.", "default": "#16E0FF", "x-skp-group": "Look" },
+        "scanlines": { "type": "boolean", "title": "Scanlines and grain", "default": true, "x-skp-group": "Look" },
+        "rec": { "type": "boolean", "title": "REC timecode", "default": true, "x-skp-group": "Look" },
+        "viewers": { "type": "boolean", "title": "Viewer count beside LIVE", "default": true, "x-skp-group": "Look" },
+
+        "presents": { "type": "string", "title": "Presents line", "maxLength": 60, "default": "D/PRTMNT PRESENTS", "x-skp-group": "Copy" },
+        "tagline": { "type": "string", "title": "Tagline", "maxLength": 80, "default": "SATURDAYS · LIVE FROM TORONTO", "x-skp-group": "Copy" },
+        "venue": { "type": "string", "title": "Venue line", "maxLength": 80, "default": "DPRTMNT · TORONTO", "x-skp-group": "Copy" },
+        "doors": { "type": "string", "title": "Doors line", "maxLength": 60, "default": "DOORS 10:30PM", "x-skp-group": "Copy" },
+        "brbTag": { "type": "string", "title": "BRB line", "maxLength": 60, "default": "THE MUSIC DOESN'T STOP", "x-skp-group": "Copy" },
+        "outroPre": { "type": "string", "title": "Outro kicker", "maxLength": 60, "default": "THAT'S A WRAP — SEE YOU", "x-skp-group": "Copy" },
+        "outroBig": { "type": "string", "title": "Outro headline", "maxLength": 40, "default": "NEXT SATURDAY", "x-skp-group": "Copy" },
+        "lineEyebrow": { "type": "string", "title": "The Line · eyebrow", "maxLength": 40, "default": "OUTSIDE · THE DOOR", "x-skp-group": "Copy" },
+        "lineLabel": { "type": "string", "title": "The Line · label", "maxLength": 30, "default": "THE LINE", "x-skp-group": "Copy" },
+        "lineKicker": { "type": "string", "title": "The Line · corner kicker", "maxLength": 30, "default": "SATURDAYS", "x-skp-group": "Copy" },
+        "lineCorner": { "type": "string", "title": "The Line · corner line", "maxLength": 40, "default": "Live From Toronto", "x-skp-group": "Copy" },
+        "povLabel": { "type": "string", "title": "POV label", "maxLength": 28, "default": "ON THE FLOOR", "x-skp-group": "Copy" },
+
+        "ticker": { "type": "boolean", "title": "Ticker on Live", "default": false, "x-skp-group": "Ticker" },
+        "tickerItems": {
+          "type": "array", "title": "Ticker items", "items": { "type": "string", "maxLength": 60 }, "maxItems": 12,
+          "default": ["DPRTMNT TAKEOVER", "EVERY SATURDAY", "TORONTO", "DOORS 10:30PM"], "x-skp-group": "Ticker"
+        },
+        "lineClip": { "type": "string", "title": "The Line · clip", "description": "An uploaded video (the overlay can't play one from another site).", "pattern": "^/media/", "x-skp-widget": "media", "x-skp-accept": "video/*", "x-skp-group": "Media" },
+
+        "headliner": { "type": "string", "title": "Headliner", "description": "Follows the lineup's headliner unless you type a name.", "maxLength": 60, "x-skp-bind": "show.headliner", "x-skp-group": "Copy" },
+        "gold": { "type": "string", "format": "color", "title": "Event accent", "default": "#EFC33F", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "eventMark": { "type": "string", "title": "Headliner mark", "description": "The headliner's mark, drawn in gold wherever the star goes: a PNG with a transparent background. A star if empty.", "x-skp-widget": "media", "x-skp-accept": "image/*", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "starStyle": {
+          "type": "string", "title": "Star treatment", "enum": ["rake", "rise", "ghost", "stamp"],
+          "x-skp-labels": ["Gold rake", "Rise reveal", "Ghost trail", "Stamp + ring"], "default": "rake",
+          "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" }
+        },
+        "address": { "type": "string", "title": "Address line", "maxLength": 80, "default": "", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "showPoster": { "type": "boolean", "title": "Poster art", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "posterH": { "type": "string", "title": "Poster (landscape)", "x-skp-widget": "media", "x-skp-accept": "image/*", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "posterV": { "type": "string", "title": "Poster (vertical)", "x-skp-widget": "media", "x-skp-accept": "image/*", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "chip": { "type": "boolean", "title": "LIVE + date chip", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "lockup": { "type": "boolean", "title": "TONIGHT lockup", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "vu": { "type": "boolean", "title": "VU bars on BRB", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "eventBrbTag": { "type": "string", "title": "BRB line", "maxLength": 60, "default": "MUSIC KEEPS RUNNING", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "eventOutroPre": { "type": "string", "title": "Outro kicker", "maxLength": 60, "default": "THAT'S THE SET", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "eventOutroBig": { "type": "string", "title": "Outro headline", "description": "A | starts a new line.", "maxLength": 40, "default": "THANKS FOR|WATCHING", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "eventOutroBar": { "type": "string", "title": "Outro bar", "maxLength": 60, "default": "NEXT AT D/PRTMNT · DPRTMNT.COM", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "stinger": { "type": "boolean", "title": "Star flash between scenes", "default": false, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } }
+      }
+    }
+  }
+}

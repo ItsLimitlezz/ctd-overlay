@@ -12,6 +12,7 @@ import { createMediaLibrary } from './media/library.js';
 import { mediaRoutes } from './media/routes.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
+import { simulateRoutes } from './overlays/simulate.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
@@ -74,9 +75,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 }
 
 // Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat,
-// options.templateDirs adds directories of templates beside the built-in ones, and
-// options.ffmpeg replaces the configured ffmpeg, and options.media goes to the media library.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions } = {}) {
+// options.templateDirs adds directories of templates beside the built-in ones,
+// options.ffmpeg replaces the configured ffmpeg, options.media goes to the media library, and
+// options.simulateHoldMs shortens how long simulated state lasts.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, simulateHoldMs } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
@@ -87,7 +89,12 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const server = createHttpServer({
     log: log.child('http'),
     crash,
-    routes: [...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }), ...mediaRoutes({ media }), ...routes],
+    routes: [
+      ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
+      ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts: () => ownHosts(server), holdMs: simulateHoldMs }),
+      ...mediaRoutes({ media }),
+      ...routes,
+    ],
   });
 
   let address;
@@ -130,6 +137,13 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       data.close();
     },
   };
+}
+
+// The names this platform answers to on this machine, as host:port (until LAN and public modes
+// add theirs, step 12): what a request that changes something must be addressed to.
+function ownHosts(server) {
+  const port = server.address()?.port;
+  return port ? [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`] : [];
 }
 
 function ensureDir(dir, label, envName, mode) {

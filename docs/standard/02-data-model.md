@@ -158,6 +158,8 @@ without `display`.
 | `show.lineup` | array of slots (see 09) | core |
 | `show.headliner` | string — the name on the lineup slot flagged `headliner` (09 §9.1), for settings bound to it (04 §4.3) | core |
 | `show.currentSlot` | integer index | core |
+| `show.date` | string — the show's date, `YYYY-MM-DD` (09 §9.1) | core |
+| `show.goLiveAt` | epoch ms — the instant the show's `goLive` resolves to (09 §9.2) | core |
 | `show.recStartedAt` | epoch ms | core |
 | `overlay.settings` | the overlay's resolved settings | core |
 
@@ -184,7 +186,7 @@ progress locally between updates; templates read `SK.music.progress()` and never
 | `show.scene.changed` | `{ "scene": "brb", "prev": "program", "transition": "cut" }` — a take. The platform publishes it, then the `show.scene` state, in the same tick; the runtime uses the event's transition. It carries no `startAt`: members switch on receipt, so two of them can differ by their delivery time (up to one poll interval for a polling source). |
 | `show.trigger` | `{ "name": "titleCard", "args": { }, "startAt": 1791582412000, "durationMs": 7000 }` |
 | `show.cue.fired` | `{ "cueId": "cue_…", "action": "…" }` |
-| `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }` |
+| `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }`; a stop **MAY** leave out `url`, meaning whatever plays |
 | `system.connection` | connection health change (06 §6.3) |
 | `system.notice` | `{ "level": "info" }` — operator-facing, never rendered on air |
 

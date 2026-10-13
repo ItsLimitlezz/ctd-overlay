@@ -10,25 +10,47 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–7 of the plan. The server keeps its data in SQLite, routes live data through
+**Status:** steps 1–8 of the plan. The server keeps its data in SQLite, routes live data through
 the bus, and serves overlays to OBS browser sources over Server-Sent Events with a polling
 fallback. Every overlay page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)):
 the server clock, state and events, scenes and transitions, element lifecycle on deadlines,
 actions, alerts, chat and music helpers, and a mock show (`?mock=1`). Templates install from
 `.skp` packages, with validation, settings and upgrades, and media uploads are converted for
-OBS (below). The only bundled template so far is a diagnostic one; step 8 (the TAKEOVER
-template) is next.
+OBS (below). Bundled: the D/PRTMNT TAKEOVER show package, a viewer-count widget and a
+diagnostic template. Next is step 9: shows that run themselves.
 
 ## Try it in OBS
+
+```bash
+npm run demo
+```
+
+It starts a throwaway server on port 4950 with the TAKEOVER template in both looks (the cyan
+TAKEOVER and the gold headliner event) and a sample night: a lineup, a headliner, go-live in
+three minutes, a viewer count. Add the printed URLs to OBS as browser sources, 1920 × 1080 (or
+1080 × 1920 for the `?canvas=v` ones). Then type a scene name (`starting`, `program`, `brb`,
+`lineup`, `outro`, `bg`, `intro`, `headliner`, `line`, `pov`, `auto`) or an action (`title`,
+`np`, `opening`, `onat`) and Enter, as an operator would.
 
 ```bash
 npm run diag
 ```
 
-It starts a throwaway server on port 4949 with eight diagnostic overlays and prints their URLs.
-Add them to OBS as browser sources (1920 × 1080). Each shows whether it is streaming or polling,
-how many updates arrived, and the server clock. Add `?debug=1` to a URL for the SDK's status
-panel.
+starts eight diagnostic overlays on port 4949, for checking the transport: each shows whether it
+is streaming or polling, how many updates arrived, and the server clock. Add `?debug=1` to any
+overlay URL for the SDK's status panel.
+
+To watch one overlay react without going live, post a sample event to it (08 §8.5; from this
+machine only, until sign-in exists):
+
+```bash
+curl -X POST http://127.0.0.1:4950/api/v1/overlays/takeover-h/simulate -H "content-type: application/json" -d "{\"kind\":\"viewers\",\"value\":2500}"
+```
+
+Kinds: `chat`, `follow`, `subscription`, `gift`, `raid`, `cheer`, `tip`, `track`, `viewers`,
+`viewers-clear`, `media.play` (with a `/media/…` `url`), `media.stop`, `reset`. Simulated state
+(a viewer count, a track) shows on that overlay only, and goes back to the real value after a
+minute or at `reset`.
 
 ## Run it
 
