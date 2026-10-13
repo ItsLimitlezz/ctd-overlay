@@ -400,7 +400,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 2 || !['required', 'not-required'].includes(rest[1])) return usage('overlay key takes <slug> required|not-required');
         const r = await platform('PATCH', `/overlays/${encodeURIComponent(rest[0])}`, { keyRequired: rest[1] === 'required' });
         if (opts.json) json(r);
-        else out(r.keyRequired ? `${r.overlay}: its URL needs its key` : `${r.overlay}: no key required (this machine's network can open it without one)`);
+        else out(r.keyRequired ? `${r.slug}: its URL needs its key` : `${r.slug}: no key required (this machine's network can open it without one)`);
         return 0;
       }
 

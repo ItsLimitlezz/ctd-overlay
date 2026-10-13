@@ -61,7 +61,18 @@ const MIME = {
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
 };
 
-export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxStreamsPerClient = MAX_STREAMS_PER_CLIENT }) {
+// A template's preview with sample data (08 §8.2), before any overlay uses it: a pseudo-slug no
+// overlay can have (slugs never start with ~). Its page always runs on sample data and is only
+// for someone signed in (guard); its files, like an overlay's, are reached through its build.
+const PREVIEW = /^~p\.([a-z0-9][a-z0-9.-]*)@([0-9A-Za-z.+-]+)$/;
+export const previewSlug = (id, version) => `~p.${id}@${version}`;
+
+export function overlayRoutes({ overlays, templates, guard, log, heartbeatMs = HEARTBEAT_MS, maxStreamsPerClient = MAX_STREAMS_PER_CLIENT }) {
+  const previewOf = (slug) => {
+    const m = PREVIEW.exec(slug);
+    const template = m && templates?.get(m[1], m[2]);
+    return template ? { template, settings: {}, preview: true } : undefined;
+  };
   // The SDK's content hash goes on its <script> URL, a second guard against OBS's sticky cache
   // beside no-store (H14).
   const sdkVersion = createHash('sha256').update(readFileSync(SDK_FILE)).digest('hex').slice(0, 12);
@@ -87,9 +98,20 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     return found;
   };
 
-  function page({ res, params, url }) {
-    const o = find(res, params.slug, url);
-    if (!o) return;
+  function page({ req, res, params, url }) {
+    let o;
+    if (PREVIEW.test(params.slug)) {
+      // A template's preview is the admin UI's, for someone signed in who may see templates.
+      if (!guard || !guard(req, res, 'templates:read')) {
+        if (!guard) notFound(res);
+        return;
+      }
+      o = previewOf(params.slug);
+      if (!o) return notFound(res);
+    } else {
+      o = find(res, params.slug, url);
+      if (!o) return;
+    }
     const { manifest, build } = o.template;
     const { id, width, height } = pickCanvas(manifest, url.searchParams.get('canvas'));
     const meta = {
@@ -107,6 +129,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       // The resolved settings (what overlay.settings carries), for ?mock=1, which never fetches the
       // snapshot (04 §4.9, 08 §8.5).
       settings: o.settings,
+      ...(o.preview ? { mock: true } : {}),
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -191,7 +214,7 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
   // Only files the registry listed for this build, matched exactly: no stat of arbitrary paths, no
   // links followed, and the same answer on case-insensitive disks (Windows, macOS) as on Linux.
   async function file({ res, params }) {
-    const o = overlays.resolve(params.slug);
+    const o = overlays.resolve(params.slug) || previewOf(params.slug);
     const rel = params['*'];
     if (!o?.template || params.build !== o.template.build || !o.template.files.has(rel)) return notFound(res);
     const full = path.join(o.template.dir, ...rel.split('/'));

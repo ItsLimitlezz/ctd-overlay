@@ -124,6 +124,13 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-13.** From building the admin UI (plan step 14):
+
+1. Per-user appearance, `PUT /auth/preferences`, and the installation's name and logo,
+   `GET/PUT /system/settings`. *(03 §3.4, 08 §8.6)*
+2. A template previews with sample data before any overlay uses it, at
+   `/o/~p.{templateId}@{version}`, for someone signed in. *(03 §3.4, 08 §8.2)*
+
 **2026-10-13.** From the API conventions (plan step 13):
 
 1. `GET /openapi.json`; `Idempotent-Replayed`; answers holding a secret are never replayed;

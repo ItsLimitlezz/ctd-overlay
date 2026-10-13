@@ -13,6 +13,7 @@ import { createCrashLog } from './crashlog.js';
 import { createApi } from './http/api.js';
 import { close, createHttpServer, listen } from './http/server.js';
 import { systemRoutes } from './http/system.js';
+import { uiRoutes } from './http/ui.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
 import { mediaApiRoutes } from './media/api.js';
@@ -159,7 +160,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     trustProxy: config.trustProxy,
     admit: admission(config),
     routes: [
-      ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
+      ...overlayRoutes({ overlays, templates, guard, log: log.child('overlays'), heartbeatMs }),
+      ...uiRoutes(),
       ...mediaRoutes({ media }),
       // The API (03): every route on its conventions (http/api.js).
       ...authRoutes({ api, auth, audit }),

@@ -1,7 +1,8 @@
 // The TAKEOVER template with a sample show: npm run demo [-- --port 4950]
 //
 // Starts a throwaway platform (its own temporary data directory) with two TAKEOVER overlays, one
-// in each look, as the members of one show: a lineup, the headliner, go-live in three minutes
+// in each look, as the members of one show, and an owner for the admin UI (printed at start):
+// a lineup, the headliner, go-live in three minutes
 // with the "auto" scene on air (it counts down, then goes live, and REC starts by itself), and a
 // viewer count. Type a command and Enter to drive it, as an operator would from the admin UI:
 //
@@ -26,6 +27,10 @@ const { values } = parseArgs({ options: { port: { type: 'string', default: '4950
 const root = mkdtempSync(path.join(tmpdir(), 'skp-demo-'));
 const config = loadConfig({ argv: ['--port', values.port, '--data-dir', path.join(root, 'data'), '--config-dir', path.join(root, 'config')], env: {} });
 const platform = await startPlatform(config, { log: createLogger({ level: 'warn' }) });
+
+// The admin UI's owner on this throwaway platform: demo values, gone when the demo stops.
+const DEMO_OWNER = { username: 'demo', password: 'stream-kit-demo-night' };
+await platform.auth.createOwner({ code: platform.auth.setupCode, ...DEMO_OWNER }, { ip: '127.0.0.1' });
 
 const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
 for (const [slug, settings] of [['takeover', {}], ['event', { look: 'event', address: '473 ADELAIDE ST W · TORONTO' }]]) {
@@ -55,6 +60,7 @@ let viewers = 1159;
 platform.bus.setState('viewers.total', viewers);
 const drift = setInterval(() => { if (viewers !== undefined) platform.bus.setState('viewers.total', (viewers += Math.round(Math.random() * 20 - 8))); }, 5000);
 
+console.log(`\nAdmin UI: ${platform.url}/  (sign in as ${DEMO_OWNER.username} / ${DEMO_OWNER.password})`);
 console.log('\nTAKEOVER overlays (browser sources):\n');
 for (const slug of ['takeover', 'event']) {
   const [h, v] = platform.overlays.urls(slug, platform.url);

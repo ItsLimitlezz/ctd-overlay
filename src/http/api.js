@@ -181,7 +181,7 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
           if (idemKey !== undefined) {
             if (typeof idemKey !== 'string' || !/^[\x21-\x7e]{1,200}$/.test(idemKey)) return problem(res, req, { status: 400, code: 'bad-request', detail: 'Idempotency-Key is 1 to 200 printable characters.' });
             idemId = createHash('sha256').update(`${principalKey(who, req)}\n${idemKey}`).digest('hex');
-            const request = createHash('sha256').update(`${def.method} ${url.pathname}\n${JSON.stringify(body)}`).digest('hex');
+            const request = createHash('sha256').update(`${def.method} ${url.pathname}${url.search}\n${def.body?.stream ? '' : JSON.stringify(body)}`).digest('hex');
             const seen = store.get('idempotency', idemId);
             if (seen && now() - seen.data.at <= IDEMPOTENCY_MS) {
               if (seen.data.request !== request) return problem(res, req, { status: 422, code: 'idempotency-mismatch', detail: 'This Idempotency-Key was used for another request. Use a new key for a new request.' });

@@ -106,6 +106,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     username: doc.data.username,
     role: doc.data.role,
     totp: !!doc.data.totp,
+    preferences: doc.data.preferences || {},
     createdAt: doc.data.createdAt,
     ...(doc.data.lastLoginAt ? { lastLoginAt: doc.data.lastLoginAt } : {}),
   });
@@ -345,6 +346,25 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     return signedIn(saved, startSession(saved, { ip, ua, https, keep: false }));
   }
 
+  // The admin UI's look for this user (08 §8.6): theme, accent colour, density.
+  function setPreferences(who, prefs = {}) {
+    const doc = self(who);
+    const next = { ...(doc.data.preferences || {}) };
+    const choices = { theme: ['system', 'light', 'dark'], density: ['comfortable', 'compact'] };
+    for (const [k, v] of Object.entries(prefs)) {
+      if (k === 'accent') {
+        if (v !== null && (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v))) throw new AuthError('"accent" is a colour like #16e0ff, or null for the default.', 'invalid');
+        if (v === null) delete next.accent;
+        else next.accent = v.toLowerCase();
+      } else if (choices[k]) {
+        if (!choices[k].includes(v)) throw new AuthError(`"${k}" is one of ${choices[k].join(', ')}.`, 'invalid');
+        next[k] = v;
+      }
+    }
+    store.put('users', doc.id, { ...doc.data, preferences: next });
+    return next;
+  }
+
   // ---- two-factor (07 §7.4) ----------------------------------------------------------------
   async function totpEnroll(who, { password } = {}) {
     const doc = self(who);
@@ -546,6 +566,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     login,
     logout,
     changePassword,
+    setPreferences,
     totp: { enroll: totpEnroll, verify: totpVerify, disable: totpDisable },
     users: {
       list: () => [...all('users')].map(userView).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)),

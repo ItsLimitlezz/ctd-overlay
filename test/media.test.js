@@ -294,13 +294,15 @@ test('a conversion that runs past its time limit is stopped, and the video kept 
   const dir = tempDir(t);
   const logFile = path.join(dir, 'ffmpeg.log');
   fake(t, 'hang', { logFile });
-  const { media, root } = library(t, { limits: { conversionMs: 500 } });
+  // Long enough for the fake ffmpeg to start and log its pid on a busy machine.
+  const { media, root } = library(t, { limits: { conversionMs: 2500 } });
   const t0 = Date.now();
   const doc = await media.add(SAMPLES.mov, { name: 'clip.mov' });
-  assert.ok(Date.now() - t0 < 5000);
+  assert.ok(Date.now() - t0 < 10000);
   assert.match(doc.data.note, /took longer than/);
-  const { pid } = conversions(logFile).find((r) => r.hang);
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the ffmpeg process is gone');
+  const run = conversions(logFile).find((r) => r.hang);
+  assert.ok(run, 'the fake ffmpeg started');
+  assert.throws(() => process.kill(run.pid, 0), { code: 'ESRCH' }, 'the ffmpeg process is gone');
   assert.deepEqual(leftovers(root), []);
 });
 

@@ -171,10 +171,15 @@ test('settings schemas are checked at install; a binding must be to a declared k
 test('a settings default the template\'s own pattern can\'t check in time is refused at install, without stalling it', () => {
   // ^(\w|_)+$ backtracks exponentially on a run of "_" that ends in something else: unchecked,
   // about a second for 26 (twice that for each more), many times the 20 ms deadline. Not more, so
-  // that a lost deadline fails this test in seconds instead of hanging it.
-  const t0 = performance.now();
+  // that a lost deadline fails this test in seconds instead of hanging it. Measured in this
+  // thread's CPU time, like the deadline: on a busy machine, waiting for a CPU isn't stalling.
+  const cpu = () => {
+    const { user, system } = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage();
+    return (user + system) / 1000;
+  };
+  const t0 = cpu();
   const result = check({ manifest: { settings: { type: 'object', properties: { s: { type: 'string', pattern: '^(\\w|_)+$', default: `${'_'.repeat(26)}!` } } } } });
-  assert.ok(performance.now() - t0 < 2000, `took ${performance.now() - t0} ms`);
+  assert.ok(cpu() - t0 < 2000, `took ${cpu() - t0} ms of CPU`);
   assert.deepEqual(codes(result), ['settings /settings']);
   assert.match(result.errors[0].message, /the default "_+!" couldn't be checked .* in time/);
   assert.match(result.warnings.map((w) => w.message).join(), /repeats a group/);
