@@ -4,7 +4,13 @@
 // supported.
 import { fileStamp } from '../fsutil.js';
 
-export class StoreVersionError extends Error {}
+export class StoreVersionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StoreVersionError';
+    this.code = 'store-version';
+  }
+}
 
 export function migrate(store, migrations, { log, now = new Date() }) {
   migrations.forEach((m, i) => {

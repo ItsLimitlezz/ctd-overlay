@@ -113,6 +113,17 @@ any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_
   then rename over the target. A crash mid-write never leaves a corrupt file.
 - Corrupt or unreadable state at startup is moved aside (`*.corrupt-<timestamp>`) and reported,
   never silently replaced with defaults.
+- Installed templates live in `<data>/templates/<id>/<build>/`: the package's files, never
+  changed after install, and a receipt (`install.json`: version, build, every file's size and
+  SHA-256, where it came from). An install is unpacked beside them and renamed into place in one
+  step; an uninstall renames the version aside before deleting it. Startup removes what an
+  interrupted install or uninstall left.
+- One process uses a data directory at a time (`<data>/skp.lock`). Offline tools that change it
+  (installing templates, upgrading overlays) refuse while the platform runs; a lock left by a
+  process that is gone (or from before a reboot, where the OS can tell) is taken over, by
+  exactly one process when several start at once. Each change they make is appended to
+  `<data>/operations.log`. Run them as the user that owns the data directory: as root on
+  another user's directory they refuse, since the files they wrote would be root's.
 
 ## 10.7 Updates and backups
 

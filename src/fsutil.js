@@ -36,8 +36,8 @@ export function fileStamp(date = new Date()) {
 }
 
 // On Windows a rename fails while another process (antivirus, a sync client) briefly holds the
-// file. Retry for up to ~1 s before giving up.
-function renameRetrying(from, to) {
+// file or directory. Retry for up to ~1 s before giving up.
+export function renameRetrying(from, to) {
   for (let attempt = 0; ; attempt++) {
     try {
       renameSync(from, to);

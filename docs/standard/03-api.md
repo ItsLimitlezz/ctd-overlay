@@ -10,7 +10,7 @@ admin API: anything the UI can do, an authorized client can do.
 | Base path | `/api/v1`. A breaking change ships as `/api/v2`; v1 stays served for at least one major release. |
 | Format | JSON (`application/json; charset=utf-8`) for bodies and responses. |
 | Description | The platform **MUST** serve an OpenAPI 3.1 document at `/api/v1/openapi.json`. |
-| IDs | Opaque strings with a type prefix: `ovl_`, `tpl_`, `con_`, `usr_`, `cue_`, `show_`, `med_`, `whk_`. |
+| IDs | Opaque strings with a type prefix: `ovl_`, `con_`, `usr_`, `cue_`, `show_`, `med_`, `whk_`. Templates are addressed by their manifest's reverse-DNS `id` (04 §4.2). |
 | Time | ISO 8601 UTC in resource bodies (`2026-08-29T05:00:00Z`); epoch ms only in live envelopes. |
 | Names | `camelCase` fields; plural resource paths. |
 | Pagination | Cursor based: `?limit=50&cursor=…` → `{ "items": [], "next": "…" }`. Max limit 200. |
@@ -71,7 +71,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `POST /templates` | Install: upload `.skp` package (multipart) or `{ "url": "…" }` |
 | `GET /templates/{id}` | Manifest, versions, preview images |
 | `GET /templates/{id}/versions` | Installed versions |
-| `DELETE /templates/{id}` | Uninstall (refused while an overlay pins it) |
+| `DELETE /templates/{id}` | Uninstall every installed version, or one with `?version=` (refused while an overlay pins it; templates that ship with the platform can't be uninstalled) |
 | `POST /templates/validate` | Lint a package without installing (04 §4.11) |
 
 ### Overlays
@@ -79,7 +79,8 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 |---|---|
 | `GET/POST /overlays` | List · create from a template |
 | `GET/PATCH/DELETE /overlays/{id}` | Read · update settings/bindings/slug · delete |
-| `POST /overlays/{id}/upgrade` | Move to a newer template version (settings migrated, 04 §4.10) |
+| `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate` |
+| `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL**; UI must confirm |
 | `GET /overlays/{id}/url` | Production URL(s) per canvas |
 | `PUT /overlays/{id}/scene` | `{ "scene": "brb", "transition": "fade" }` |

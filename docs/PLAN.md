@@ -75,7 +75,14 @@ option that keeps a live show running with nobody touching it.
    window surviving a reload (steps 9 and 19).
 6. **Template packages.** Zip reader on `node:zlib` with zip-slip and zip-bomb guards, manifest
    validation, install/validate/uninstall, build hash, settings resolution and upgrade migration
-   (04 §4.1–4.3, §4.10, §4.11).
+   (04 §4.1–4.3, §4.10, §4.11). Through a CLI for now (the HTTP routes need auth: steps 11–13),
+   which records each change in `<dataDir>/operations.log` until the audit log exists (step 11).
+   Settings patterns run with a deadline (a vm timeout), since no shape rule bounds
+   backtracking. Upgrades keep the previous version for `revert`. Deferred: the headless
+   `?mock=1` check (step 14 or 24), installing from a URL (step 13). Carried forward: the upgrade
+   route's "run this package's migrate.js" must be an owner/admin decision (steps 11 and 13);
+   template file URLs are public by design (07 §7.6), and if private templates ever matter,
+   step 12 can key the build path per installation (an HMAC of the build with a server secret).
 7. **Media.** Uploads with size caps, ffmpeg transcode (H12), `/media/<fileId>/<name>`
    (03 §3.4, 07 §7.11).
 8. **TAKEOVER template.** Port the v0 look with the fixes listed above: all core scenes plus The

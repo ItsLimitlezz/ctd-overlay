@@ -156,6 +156,7 @@ without `display`.
 | `obs.recording` | boolean | OBS |
 | `show.scene` | string — the overlay's active scene | core |
 | `show.lineup` | array of slots (see 09) | core |
+| `show.headliner` | string — the name on the lineup slot flagged `headliner` (09 §9.1), for settings bound to it (04 §4.3) | core |
 | `show.currentSlot` | integer index | core |
 | `show.recStartedAt` | epoch ms | core |
 | `overlay.settings` | the overlay's resolved settings | core |

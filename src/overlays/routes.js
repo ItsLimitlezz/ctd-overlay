@@ -11,10 +11,11 @@
 // overlay endpoints need no key (07 §7.6 allows "no key required" in local mode).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readBody, sendJson, sendProblem } from '../http/server.js';
+import { attrNames, scanTags } from '../templates/html.js';
 import { pickCanvas } from '../templates/registry.js';
 import { createSseWriter } from './sse.js';
 
@@ -48,6 +49,7 @@ const OVERLAY_HEADERS = {
 };
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+const FILE_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self'";
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -95,9 +97,9 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       alerts: manifest.alerts || {},
       transitions: manifest.transitions || [],
       consumes: { state: manifest.consumes?.state || [], events: manifest.consumes?.events || [], chat: manifest.consumes?.chat || null },
-      // The saved settings, for ?mock=1, which never fetches the snapshot that carries them
-      // (04 §4.9, 08 §8.5).
-      settings: o.doc.data.settings || {},
+      // The resolved settings (what overlay.settings carries), for ?mock=1, which never fetches the
+      // snapshot (04 §4.9, 08 §8.5).
+      settings: o.settings,
     };
     res.writeHead(200, {
       ...OVERLAY_HEADERS,
@@ -105,7 +107,8 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'x-content-type-options': 'nosniff',
       'content-security-policy': overlayCsp(manifest),
     });
-    res.end(injectRuntime(o.template.entry, params.slug, build, meta, sdkVersion));
+    o.template.prepared ??= prepareEntry(o.template.entry); // once per template version
+    res.end(injectPrepared(o.template.prepared, params.slug, build, meta, sdkVersion));
   }
 
   // The build rides on every snapshot and poll, so a page whose template was upgraded reloads
@@ -150,13 +153,17 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'x-accel-buffering': 'no', // no buffering in nginx-style proxies
     });
     // Sends the headers now, so the client knows the stream opened. Comments carry server time
-    // (the client keeps its clock estimate fresh, 01 §1.6) and the open one the build.
+    // (the client keeps its clock estimate fresh, 01 §1.6) and the overlay's current build, so a
+    // page whose template was upgraded reloads even if its stream outlived the upgrade.
     res.write(`: open ${Date.now()} ${o.template.build}\n\n`);
 
     const writer = createSseWriter(res);
     for (const env of backlog.envelopes) writer.send(env);
     const unsubscribe = o.channel.subscribe((env) => writer.send(env), () => res.end());
-    const heartbeat = setInterval(() => writer.comment(`hb ${Date.now()}`), heartbeatMs);
+    const heartbeat = setInterval(() => {
+      const build = overlays.currentBuild(params.slug);
+      writer.comment(build ? `hb ${Date.now()} ${build}` : `hb ${Date.now()}`);
+    }, heartbeatMs);
 
     let cleaned = false;
     const cleanup = () => {
@@ -174,17 +181,16 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
     res.on('close', cleanup);
   }
 
+  // Only files the registry listed for this build, matched exactly: no stat of arbitrary paths, no
+  // links followed, and the same answer on case-insensitive disks (Windows, macOS) as on Linux.
   async function file({ res, params }) {
     const o = overlays.resolve(params.slug);
     const rel = params['*'];
-    const parts = rel.split('/');
-    const bad = !o?.template || params.build !== o.template.build ||
-      parts.some((p) => !p || p === '.' || p === '..' || /[\\:\0]/.test(p));
-    const full = bad ? null : path.join(o.template.dir, ...parts);
-    if (!full || !full.startsWith(o.template.dir + path.sep)) return notFound(res);
+    if (!o?.template || params.build !== o.template.build || !o.template.files.has(rel)) return notFound(res);
+    const full = path.join(o.template.dir, ...rel.split('/'));
+    if (!full.startsWith(o.template.dir + path.sep)) return notFound(res);
     let data;
     try {
-      if (!(await stat(full)).isFile()) return notFound(res);
       data = await readFile(full);
     } catch {
       return notFound(res);
@@ -194,6 +200,10 @@ export function overlayRoutes({ overlays, log, heartbeatMs = HEARTBEAT_MS, maxSt
       'cache-control': IMMUTABLE,
       'content-type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
       'x-content-type-options': 'nosniff',
+      // A template's files are third-party content on the platform's origin. Loaded by the page they
+      // are subresources and this changes nothing; opened directly, an .html or .svg among them
+      // runs sandboxed, with no script and no origin (07 §7.1).
+      'content-security-policy': FILE_CSP,
     });
     res.end(data);
   }
@@ -374,64 +384,42 @@ export const BOOT_BADGE =
 // its rejections never fire unhandledrejection (04 §4.8). Every /sdk/ and /o/<slug>/t/ response,
 // errors included, allows any origin. In OBS the page is same-origin and nothing changes.
 export function injectRuntime(entry, slug, build, meta, sdkVersion = '') {
+  return injectPrepared(prepareEntry(entry), slug, build, meta, sdkVersion);
+}
+
+// The part of injection that depends only on the entry document, done once per template version
+// (the page route caches it): the crossorigin attributes, and where <head>, <html> and <body>
+// end. Linear time, whatever the document (src/templates/html.js).
+export function prepareEntry(entry) {
   const doc = withCrossorigin(entry);
+  const tags = scanTags(doc);
+  const end = (name) => tags.find((t) => t.name === name)?.end ?? -1;
+  return { doc, head: end('head'), html: end('html'), body: end('body') };
+}
+
+function injectPrepared({ doc, head, html, body }, slug, build, meta, sdkVersion) {
   const tags =
     `<base href="/o/${slug}/t/${build}/">` +
     `<meta name="skp" content="${escapeAttr(JSON.stringify(meta))}">` +
     `<script crossorigin src="/sdk/v1/sk.js${sdkVersion ? `?v=${sdkVersion}` : ''}"></script>`;
-  let out;
-  const found = startTags(doc);
-  const head = found.find((t) => t.name === 'head');
-  const html = found.find((t) => t.name === 'html');
-  if (head) out = insertAt(doc, head.end, tags);
-  else if (html) out = insertAt(doc, html.end, `<head>${tags}</head>`);
-  else out = `<!doctype html><html><head>${tags}</head>${doc}`;
-  const body = startTags(out).find((t) => t.name === 'body');
-  return body ? insertAt(out, body.end, BOOT_BADGE) : out + BOOT_BADGE;
-}
-
-const insertAt = (s, i, text) => s.slice(0, i) + text + s.slice(i);
-
-// Elements whose content is text, never tags (HTML's raw text and RCDATA elements, and noscript
-// with scripting on).
-const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
-
-// The document's start tags in order, as { name, index, end, text }: commented-out markup,
-// attribute values and raw text are skipped, so none of them can fake a tag.
-function startTags(html) {
-  const visible = blankComments(html);
-  const lower = visible.toLowerCase();
-  const re = /<([a-zA-Z][^\s/>]*)(?:[^>"']|"[^"]*"|'[^']*')*>/g;
-  const tags = [];
-  let m;
-  while ((m = re.exec(visible))) {
-    const name = m[1].toLowerCase();
-    tags.push({ name, index: m.index, end: re.lastIndex, text: m[0] });
-    if (RAW_TEXT.has(name)) {
-      const close = lower.indexOf(`</${name}`, re.lastIndex);
-      re.lastIndex = close < 0 ? visible.length : close;
-    }
-  }
-  return tags;
-}
-
-// The document with each comment replaced by as many spaces, so a tag search skips commented-out
-// markup and its indices still point into the original. As in HTML's tokenizer, a comment ends at
-// -->, --!> or the end of the document, and <!--> and <!---> are empty comments.
-function blankComments(html) {
-  return html.replace(/<!--(?:-?>|[\s\S]*?(?:--!?>|$))/g, (c) => ' '.repeat(c.length));
+  // Where the runtime goes, and what it adds there.
+  const [at, insert] = head >= 0 ? [head, tags] : html >= 0 ? [html, `<head>${tags}</head>`] : [0, `<!doctype html><html><head>${tags}</head>`];
+  const out = doc.slice(0, at) + insert + doc.slice(at);
+  if (body < 0) return out + BOOT_BADGE;
+  const bodyEnd = body >= at ? body + insert.length : body;
+  return out.slice(0, bodyEnd) + BOOT_BADGE + out.slice(bodyEnd);
 }
 
 // A bare `crossorigin` on each external <script src> that has no crossorigin attribute of its
 // own (for a module script, which always loads with CORS, it changes nothing). Inline scripts,
-// and anything that only looks like a script tag (startTags), are left alone.
+// and anything that only looks like a script tag (scanTags), are left alone.
 function withCrossorigin(html) {
   let out = '';
   let last = 0;
-  for (const t of startTags(html)) {
+  for (const t of scanTags(html)) {
     if (t.name !== 'script') continue;
-    const attrs = t.text.replace(/"[^"]*"|'[^']*'/g, '""');
-    if (!/[\s/]src\s*=/i.test(attrs) || /[\s/]crossorigin(?=[\s=/>])/i.test(attrs)) continue;
+    const names = attrNames(t);
+    if (!names.includes('src') || names.includes('crossorigin')) continue;
     const at = t.index + '<script'.length;
     out += html.slice(last, at) + ' crossorigin';
     last = at;

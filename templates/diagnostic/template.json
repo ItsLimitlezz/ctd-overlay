@@ -21,5 +21,11 @@
   "consumes": {
     "state": ["custom.*"],
     "events": ["custom.*"]
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "accent": { "type": "string", "title": "Accent", "maxLength": 32, "default": "#16e0ff" }
+    }
   }
 }
