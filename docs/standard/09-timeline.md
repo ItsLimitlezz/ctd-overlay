@@ -84,13 +84,27 @@ Action types:
 |---|---|
 | `show.scene` | `{ "scene": "brb", "transition": "fade" }` on all member overlays |
 | `overlay.action` | fire a template action (`titleCard`, `nowPlaying`, `headliner`…) |
-| `show.slot` | set the current lineup slot |
+| `show.slot` | set the current lineup slot: an act's name (which follows the act through lineup edits) or a position |
 | `connector.action` | e.g. `{ "connector": "obs", "name": "setScene", "args": { "scene": "Live" } }` |
 | `media.play` / `media.stop` | play an uploaded clip |
 | `webhook` | call an outbound webhook (06 §6.10) |
 | `sequence` | an ordered list of the above with offsets in ms |
 
-`status` ∈ `armed`, `fired`, `skipped`, `missed`.
+`status` ∈ `armed`, `fired`, `skipped`, `missed`. A fired cue whose action did nothing (no
+member has the action, the clip isn't ready) says why in `error`.
+
+A cue is set at an instant (an ISO date-time with its offset, a real calendar date) or at a time
+of the show (`"01:00"`, resolved by §9.2, and flagged `clockGap` / `clockOverlap` like a lineup
+time). A cue at a time of the show belongs to the show's night: it moves when the show's date,
+zone or day boundary changes. When the date changes (another night) it is armed again if its
+time on that night is still to come, and `missed` if it has passed; going back to a night gives
+back what happened on it. A `missed` cue that a fix of the zone or boundary moves into the future
+is armed again.
+
+A `sequence`'s steps run at their offsets from the cue's firing. Each step is recorded as done
+before it is applied, so a restart in the middle goes on from the next step (a step more than 5
+minutes late is skipped), and a step that fails doesn't stop the others; `error` says which.
+Skipping a sequence that is playing, or deleting it, stops its remaining steps.
 
 ## 9.4 Scheduler rules
 
@@ -104,9 +118,19 @@ Action types:
   its return as part of the take, independent of any client. The return is stored with the
   show, so a restart mid-scene still returns (at once, if it fell due while the platform was
   down), and any other take cancels it.
-- Operator overrides — fire now, skip, re-arm — are always available and audited.
-- Editing the lineup regenerates generated cues (§9.5) while preserving the `fired` / `skipped`
-  status of cues that still exist, so an edit mid-show doesn't re-fire what already happened.
+- **After a restart:** what fell due while the platform was down waits a few seconds (5 here)
+  for overlay pages to reconnect, so the one-shot effects reach them; its lateness is judged as
+  of startup.
+- Operator overrides — fire now, skip, re-arm — are always available and audited. A cue
+  re-armed after its time is subject to the grace window like any other.
+- **Nothing that happened fires again by itself.** Editing the lineup regenerates generated cues
+  (§9.5) while preserving the `fired` / `skipped` status of cues that still exist, so an edit
+  mid-show doesn't re-fire what already happened. A generated cue is known by its slot's time and
+  act (a now-playing also by its minutes into the set), not its position, so inserting a slot
+  changes no other slot's cues. A regeneration never makes a cue whose time has passed (only a
+  night's first build catches up the last 5 minutes); a generated cue that no longer exists goes
+  if it was still to come and stays, as history, if it happened. A generated cue the operator
+  edited is left as they left it, and one they deleted stays deleted.
 
 ## 9.5 Generated cues
 
@@ -115,7 +139,19 @@ A show **MAY** generate cues from its lineup with a recipe. The default recipe, 
 - `introOffsetMin` after start (default 5): `overlay.action: intro` (the Event Intro);
 - every `nowPlayingEveryMin` (default 10) until the next slot: `overlay.action: nowPlaying`;
 - for the slot flagged `headliner`, at its start: `overlay.action: headliner` when the
-  template provides it.
+  template provides it (in place of the title card, which would cover it).
+
+Only what a member's template offers is generated: an action of that name, or a scene of that
+name with `durationMs` + `then` (04 §4.2), which the cue plays by taking it. A timed scene played
+by a cue takes the show off its program, so it plays only while the show is on a scene whose
+core is `program` or `auto` (or none yet); otherwise the cue fires with an `error` saying so,
+and the operator's BRB stands. Fired by hand, it plays.
+
+The recipe is kept with the show: `{ "titleCard": true, "introOffsetMin": 5,
+"nowPlayingEveryMin": 10, "headliner": true }`, either minute value `null` for none. Building
+with `null` stops generating: generated cues still armed are removed (except ones the operator
+edited), and those that fired stay. What the members' templates offer is read when the show
+changes or is built, so after changing a member's template, build again.
 
 Recipes are data, not code, so a different kind of show (a talk show, a tournament) ships its
 own.
@@ -125,3 +161,13 @@ own.
 A show configuration **MAY** be saved against a future date. At the day boundary on that date
 the server activates it — lineup, settings, regenerated timeline — with no browser open. Plans
 more than 14 days past are pruned.
+
+A plan carries the date (within three years) and any of `lineup`, `goLive`, `dayBoundary`, and
+`overlaySettings` (member slug → that overlay's settings, validated against its template when
+saved and again when applied, and applied only to overlays still in the show then; what wasn't
+applied is listed in the plan's `warnings`). It is refused as the show itself would refuse the
+change. Its day starts at the day boundary in the show's zone as they are when it comes, not when
+the plan was saved. A plan never changes a show that is live: it waits until REC ends. A platform
+that was down at the boundary activates it at startup, if that show day (23 or 25 hours on a
+clock-change night) isn't over; of several plans whose days have begun, only the latest is the
+show. Activation resets REC and who's on to before the show.

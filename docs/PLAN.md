@@ -131,6 +131,21 @@ option that keeps a live show running with nobody touching it.
    templates out once pages can sign in (sandboxed overlay pages). The demo runs on a show.
 10. **Timeline.** Cues, the scheduler rules (durable before visible, grace window), lineup
     recipe, timezone + day boundary + DST, planned shows (09). Clock tests per H19.
+    Done in `src/shows/timeline.js`, with routes under `/api/v1/shows/:ref/cues|plans` and
+    `skp show build|cues|cue|plans|plan`. The time rule came with step 9. The rule above the
+    others, after the review: nothing that happened fires again by itself. A rebuild never makes
+    a cue whose time has passed and keeps what happened as history; a cue at a show time follows
+    the date, armed for a new night only if its time is still to come; generated cues are keyed
+    by slot time and act, a deleted one stays deleted, and an edited one stays the operator's.
+    A timed scene a cue plays (the Event Intro) plays only from program, since it would pull the
+    operator off a BRB; fired by hand it plays anyway. Sequences survive a restart. What fell due
+    during downtime waits five seconds for overlay pages to reconnect. A plan follows the show's
+    zone, touches only its members, and waits while the show is live. Overrides are recorded in
+    `operations.log` until step 11's audit log. Shows and the timeline take an injectable clock
+    (`{ now, timers }`), and the H19 tests run a server with its clock set ahead through both
+    clock-change nights. `connector.action` and `webhook` cues are refused, naming their steps
+    (16, 20). Generated cues read what templates offer when the show changes: after changing a
+    member's template, build again (no overlay-change event yet; step 14's UI can rebuild).
 
 ### Milestone 3: safe to expose, and an admin UI
 11. **Auth.** Setup code, owner, serialized scrypt, sessions, CSRF, login throttling, roles, API

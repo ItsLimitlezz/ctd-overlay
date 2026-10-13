@@ -240,6 +240,15 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   }
 
   // ---- changes -----------------------------------------------------------------------------
+  // Listeners for a show's changes (its lineup, date, members, recipe): the timeline rebuilds
+  // its generated cues and plans re-arm. fn(showId, { removed }).
+  const listeners = new Set();
+  function notify(id, info = {}) {
+    for (const fn of listeners) {
+      try { fn(id, info); } catch (err) { log.error('a show change listener failed', { show: id, err }); }
+    }
+  }
+
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
@@ -247,6 +256,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     publish(doc);
     arm(doc);
     log.info('show created', { show: doc.id, name: data.name, overlays: data.overlays.length });
+    notify(doc.id);
     return view(doc);
   }
 
@@ -271,7 +281,15 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     publish(saved);
     // A go-live moved into the past while "auto" is on air counts from then.
     arm(saved, { catchUp: ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
+    notify(doc.id);
     return view(store.get('shows', doc.id) || saved);
+  }
+
+  // Checks a change without making it (a planned show's, 09 §9.6): throws as update() would, and
+  // returns the change as update() would store it.
+  function validate(ref, patch) {
+    const doc = get(ref);
+    return clean(patch || {}, { partial: true, id: doc.id });
   }
 
   function remove(ref) {
@@ -279,7 +297,46 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     store.delete('shows', doc.id);
     disarm(doc.id);
     for (const o of doc.data.overlays) release(o);
+    notify(doc.id, { removed: true });
     return { id: doc.id, name: doc.data.name };
+  }
+
+  // The recipe the timeline generates cues from (09 §9.5), validated by the timeline; null clears.
+  function setRecipe(ref, recipe) {
+    const doc = get(ref);
+    const next = { ...doc.data };
+    if (recipe) next.recipe = recipe;
+    else delete next.recipe;
+    const saved = store.put('shows', doc.id, next);
+    notify(doc.id);
+    return view(saved);
+  }
+
+  // What the members' templates offer under a name: an action, a scene (a timed one is played
+  // like an action, 09 §9.5), or neither; and whether the show is on its program now (no scene
+  // taken yet, or one whose core is program or auto), which a timed scene played by a cue needs.
+  function offers(ref, name) {
+    const doc = get(ref);
+    const list = members(doc.data);
+    const action = list.some((m) => m.manifest?.actions?.some((a) => a.id === name));
+    const scene = sceneDef(list, name);
+    const core = coreOf(sceneDef(list, doc.data.scene));
+    return {
+      action,
+      scene: !!scene,
+      timed: !!(scene && scene.durationMs && scene.then),
+      onProgram: doc.data.scene === undefined || core === 'program' || core === 'auto',
+      current: doc.data.scene,
+    };
+  }
+
+  // The operator's clip on every member (02 §2.6).
+  function media(ref, kind, data) {
+    const doc = get(ref);
+    const list = members(doc.data);
+    for (const m of list) bus.publish(kind === 'play' ? 'media.play' : 'media.stop', data, { target: m.id });
+    log.info(kind === 'play' ? 'clip played' : 'clip stopped', { show: doc.id, ...data });
+    return { overlays: list.map((m) => m.slug) };
   }
 
   // A scene's definition in the members' templates (by id, else by core): the first that has it.
@@ -539,6 +596,14 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     rec,
     takeOverlay,
     fireOverlay,
+    validate,
+    setRecipe,
+    offers,
+    media,
+    onChanged(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
     // Whether the overlay is in a show that is live now: automatic template upgrades wait.
     onAir(overlayId) {
       const show = showOf(overlayId);

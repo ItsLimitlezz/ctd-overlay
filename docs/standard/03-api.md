@@ -98,7 +98,7 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 | `GET/POST /shows/{id}/cues` · `PATCH/DELETE /shows/{id}/cues/{cueId}` | Timeline |
 | `POST /shows/{id}/cues/{cueId}/fire` · `/skip` · `/rearm` | Operator overrides |
 | `POST /shows/{id}/cues/build` | Regenerate cues from the lineup (09 §9.5) |
-| `GET/POST /shows/{id}/plans` | Pre-planned future dates (09 §9.6) |
+| `GET/POST /shows/{id}/plans` · `DELETE /shows/{id}/plans/{planId}` | Pre-planned future dates (09 §9.6) |
 
 ### Connections
 | Method · Path | Purpose |

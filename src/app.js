@@ -15,6 +15,7 @@ import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
 import { simulateRoutes } from './overlays/simulate.js';
 import { createShows } from './shows/registry.js';
+import { createTimeline } from './shows/timeline.js';
 import { showRoutes } from './shows/routes.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
@@ -32,10 +33,12 @@ export class StartupError extends Error {
 }
 
 // Everything but HTTP, for the platform and for CLI commands that change the data directory:
-// { lock, store, bus, templates, overlays, media, sources, close() }. Holds the data-directory
-// lock until close(). ffmpeg, media and fetch: test hooks ([executable, ...args] in place of
-// config.ffmpeg; options for the media library; the fetch template sources use).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup }) {
+// { lock, store, bus, templates, overlays, media, shows, timeline, sources, close() }. Holds the
+// data-directory lock until close(). ffmpeg, media, fetch, lookup and clock: test hooks
+// ([executable, ...args] in place of config.ffmpeg; options for the media library; what template
+// sources fetch and resolve with; { now, timers } for shows and the timeline, a server clock set
+// ahead, H19).
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {} }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -59,17 +62,22 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays') });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
-    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows') });
+    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock });
+    const timeline = createTimeline({
+      store, shows, overlays, media, log: log.child('timeline'), ...clock,
+      record: (op, details) => recordOperation(config.dataDir, op, details),
+    });
     const sources = createTemplateSources({
       store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
       onAir: (overlayId) => shows.onAir(overlayId),
       record: (op, details) => recordOperation(config.dataDir, op, { ...details, actor: 'updater' }),
     });
     return {
-      lock, store, bus, templates, overlays, media, shows, sources,
+      lock, store, bus, templates, overlays, media, shows, timeline, sources,
       close() {
         clearInterval(freshen);
         sources.stop();
+        timeline.stop();
         shows.stop();
         media.close();
         bus.close();
@@ -89,23 +97,24 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // Test hooks: options.routes adds routes, options.heartbeatMs shortens the SSE heartbeat,
 // options.templateDirs adds directories of templates beside the built-in ones, options.ffmpeg
 // replaces the configured ffmpeg, options.media goes to the media library, options.fetch and
-// options.sourceLimits are what template sources fetch with and their limits, and
-// options.simulateHoldMs shortens how long simulated state lasts.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs } = {}) {
+// options.sourceLimits are what template sources fetch with and their limits,
+// options.simulateHoldMs shortens how long simulated state lasts, and options.clock ({ now,
+// timers }) is the clock shows and the timeline run on.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
   if (pruned) log.info('pruned old crash.log entries', { pruned });
 
-  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup });
-  const { store, bus, templates, overlays, media, shows, sources } = data;
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock });
+  const { store, bus, templates, overlays, media, shows, timeline, sources } = data;
   const hosts = () => ownHosts(server, config.host);
   const server = createHttpServer({
     log: log.child('http'),
     crash,
     routes: [
       ...overlayRoutes({ overlays, log: log.child('overlays'), heartbeatMs }),
-      ...showRoutes({ shows, hosts, log: log.child('shows') }),
+      ...showRoutes({ shows, timeline, hosts, log: log.child('shows') }),
       ...simulateRoutes({ overlays, bus, log: log.child('simulate'), hosts, holdMs: simulateHoldMs }),
       ...mediaRoutes({ media }),
       ...routes,
@@ -134,6 +143,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   sources.start(config.templateCheckMinutes);
   const followed = sources.list().length;
   if (followed) log.info('checking template sources for new releases', { sources: followed, everyMinutes: config.templateCheckMinutes || 'never' });
+  // The timeline fires cues on the server's own clock (09 §9.4).
+  timeline.start();
 
   let stopped = false;
   return {
@@ -144,6 +155,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     overlays,
     media,
     shows,
+    timeline,
     sources,
     crash,
     server,
@@ -153,6 +165,9 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       if (stopped) return;
       stopped = true;
       await close(server);
+      // Nothing fires while the rest shuts down (a conversion can take seconds to stop).
+      timeline.stop();
+      shows.stop();
       // A template check in progress is abandoned before the store closes.
       await sources.stop();
       // Conversions are stopped, and what they leave is cleared before the store closes.
