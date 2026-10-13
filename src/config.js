@@ -1,0 +1,248 @@
+// Configuration (10 §10.5). Precedence: command-line flags > environment variables > config.json
+// > defaults. Everything is checked here, at startup; a bad value stops the process with a
+// message that names the setting, where it came from, and what to change.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isIP } from 'node:net';
+import path from 'node:path';
+import { parseArgs } from 'node:util';
+
+export class ConfigError extends Error {}
+
+// key → [environment variable, command-line flag, accepted in config.json]
+const SETTINGS = {
+  port: ['SKP_PORT', 'port', true],
+  host: ['SKP_HOST', 'host', true],
+  dataDir: ['SKP_DATA_DIR', 'data-dir', true],
+  configDir: ['SKP_CONFIG_DIR', 'config-dir', false], // config.json is read from it
+  exposure: ['SKP_EXPOSURE', 'exposure', true],
+  publicUrl: ['SKP_PUBLIC_URL', 'public-url', true],
+  tlsCert: ['SKP_TLS_CERT', 'tls-cert', true],
+  tlsKey: ['SKP_TLS_KEY', 'tls-key', true],
+  trustProxy: ['SKP_TRUST_PROXY', 'trust-proxy', true],
+  masterKey: ['SKP_MASTER_KEY', null, false], // a secret: environment only, never a file or a flag
+  masterKeyFile: ['SKP_MASTER_KEY_FILE', 'master-key-file', true],
+  ffmpeg: ['SKP_FFMPEG', 'ffmpeg', true],
+  logLevel: ['SKP_LOG_LEVEL', 'log-level', true],
+  store: ['SKP_STORE', 'store', true],
+  timezone: ['TZ', 'timezone', true],
+};
+
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
+const STORES = ['sqlite', 'json'];
+const EXPOSURES = ['local', 'lan', 'public'];
+
+export function loadConfig({ argv = process.argv.slice(2), env = process.env, platform = process.platform, home = homedir() } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const flags = parseFlags(argv);
+  const defaults = defaultDirs(platform, env, home, p);
+  const warnings = [];
+
+  const pick = (key, file = {}) => {
+    const [envName, flag] = SETTINGS[key];
+    if (flag && flags[flag] !== undefined) return { value: flags[flag], source: `--${flag}` };
+    if (env[envName] !== undefined && env[envName] !== '') return { value: env[envName], source: envName };
+    if (file[key] !== undefined) return { value: file[key], source: `config.json "${key}"` };
+    return { value: undefined, source: 'default' };
+  };
+
+  const configDirPick = pick('configDir');
+  const configDir = p.resolve(configDirPick.value ?? defaults.configDir);
+  const file = readConfigFile(p.join(configDir, 'config.json'));
+  const get = (key) => pick(key, file);
+
+  // where things live
+  const dataDir = p.resolve(get('dataDir').value ?? defaults.dataDir);
+  if (isInside(configDir, dataDir, p) || isInside(dataDir, configDir, p)) {
+    throw new ConfigError(
+      `The config directory (${configDir}) and the data directory (${dataDir}) must be separate, neither inside the other: ` +
+      'the master key lives in the config directory, and a backup of the data directory must never contain it (07 §7.7). ' +
+      'Set SKP_CONFIG_DIR or SKP_DATA_DIR so they are siblings.');
+  }
+
+  // exposure and binding
+  const exposure = oneOf(get('exposure'), EXPOSURES, 'local');
+  if (exposure !== 'local') {
+    throw new ConfigError(
+      `${get('exposure').source} is "${exposure}", which isn't available yet: login, overlay keys and TLS arrive in ` +
+      'step 12 of docs/PLAN.md, and until then the server only listens on this machine. Use "local".');
+  }
+  const host = str(get('host')) ?? '127.0.0.1';
+  if (!isLoopback(host)) {
+    throw new ConfigError(
+      `${get('host').source} is "${host}", which would expose the server beyond this machine, but exposure is "local". ` +
+      'Use 127.0.0.1, ::1 or localhost.');
+  }
+  const port = parsePort(get('port'));
+
+  // TLS and proxies (used from step 12)
+  const tlsCert = str(get('tlsCert'));
+  const tlsKey = str(get('tlsKey'));
+  if (tlsCert || tlsKey) {
+    throw new ConfigError('SKP_TLS_CERT / SKP_TLS_KEY are set, but built-in TLS arrives in step 12 of docs/PLAN.md. Unset them for now.');
+  }
+  const publicUrl = parsePublicUrl(get('publicUrl'));
+  const trustProxy = parseTrustProxy(get('trustProxy'));
+
+  // secrets
+  const masterKey = parseMasterKey(get('masterKey'));
+  const masterKeyFile = str(get('masterKeyFile'));
+  if (masterKey && masterKeyFile) {
+    throw new ConfigError('Set SKP_MASTER_KEY or SKP_MASTER_KEY_FILE, not both.');
+  }
+
+  // everything else
+  const logLevel = oneOf(get('logLevel'), LOG_LEVELS, 'info');
+  const store = oneOf(get('store'), STORES, 'sqlite');
+  const ffmpeg = str(get('ffmpeg')) ?? 'ffmpeg';
+  const timezone = parseTimezone(get('timezone'), warnings);
+
+  return Object.freeze({
+    port, host, exposure, dataDir, configDir,
+    publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
+    ffmpeg, logLevel, store, timezone, warnings: Object.freeze(warnings),
+  });
+}
+
+// What's safe to print at startup.
+export function describeConfig(config) {
+  const { masterKey, warnings, ...rest } = config;
+  return { ...rest, masterKey: masterKey ? 'set' : 'not set' };
+}
+
+export function defaultDirs(platform, env, home, p = platform === 'win32' ? path.win32 : path.posix) {
+  if (platform === 'darwin') {
+    const base = p.join(home, 'Library', 'Application Support', 'SKP');
+    return { dataDir: p.join(base, 'data'), configDir: p.join(base, 'config') };
+  }
+  if (platform === 'win32') {
+    const base = p.join(env.LOCALAPPDATA || p.join(home, 'AppData', 'Local'), 'SKP');
+    return { dataDir: p.join(base, 'data'), configDir: p.join(base, 'config') };
+  }
+  // Linux and other Unix, per user. A system install sets SKP_DATA_DIR=/var/lib/skp and
+  // SKP_CONFIG_DIR=/etc/skp in its unit; the container image sets /data and /config (10 §10.3–10.4).
+  return {
+    dataDir: p.join(env.XDG_DATA_HOME || p.join(home, '.local', 'share'), 'skp'),
+    configDir: p.join(env.XDG_CONFIG_HOME || p.join(home, '.config'), 'skp'),
+  };
+}
+
+function parseFlags(argv) {
+  const options = {};
+  for (const [, flag] of Object.values(SETTINGS)) if (flag) options[flag] = { type: 'string' };
+  try {
+    return parseArgs({ args: argv, options, strict: true, allowPositionals: false }).values;
+  } catch (err) {
+    const known = Object.keys(options).map((f) => `--${f}`).join(', ');
+    throw new ConfigError(`${err.message}. Known options: ${known}.`);
+  }
+}
+
+function readConfigFile(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw new ConfigError(`Can't read ${file}: ${err.message}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new ConfigError(`${file} isn't valid JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ConfigError(`${file} must contain a JSON object.`);
+  }
+  for (const key of Object.keys(parsed)) {
+    if (!(key in SETTINGS)) {
+      throw new ConfigError(`${file} has an unknown setting "${key}". Known settings: ${Object.keys(SETTINGS).filter((k) => SETTINGS[k][2]).join(', ')}.`);
+    }
+    if (!SETTINGS[key][2]) {
+      throw new ConfigError(`${file} can't set "${key}"; use the ${SETTINGS[key][0]} environment variable instead.`);
+    }
+  }
+  return parsed;
+}
+
+function str({ value }) {
+  if (value === undefined || value === null) return undefined;
+  const s = String(value).trim();
+  return s === '' ? undefined : s;
+}
+
+function oneOf(picked, allowed, fallback) {
+  const v = str(picked);
+  if (v === undefined) return fallback;
+  if (!allowed.includes(v)) throw new ConfigError(`${picked.source} must be one of ${allowed.join(', ')} (got "${v}").`);
+  return v;
+}
+
+function parsePort(picked) {
+  const v = str(picked);
+  if (v === undefined) return 4848;
+  if (!/^\d+$/.test(v) || Number(v) > 65535) {
+    throw new ConfigError(`${picked.source} must be a port number from 1 to 65535, or 0 for any free port (got "${v}").`);
+  }
+  return Number(v);
+}
+
+function isLoopback(host) {
+  if (host === 'localhost' || host === '::1') return true;
+  return isIP(host) === 4 && host.startsWith('127.');
+}
+
+function parsePublicUrl(picked) {
+  const v = str(picked);
+  if (v === undefined) return undefined;
+  let url;
+  try { url = new URL(v); } catch { throw new ConfigError(`${picked.source} must be a URL like https://overlays.example.com (got "${v}").`); }
+  if (url.protocol !== 'https:') throw new ConfigError(`${picked.source} must use https:// (got "${v}").`);
+  if (url.pathname !== '/' || url.search || url.hash) {
+    throw new ConfigError(`${picked.source} must be an origin only, with no path, query or fragment (got "${v}").`);
+  }
+  return url.origin;
+}
+
+function parseTrustProxy(picked) {
+  const v = picked.value;
+  if (v === undefined || v === null || v === '') return Object.freeze([]);
+  const list = (Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim()).filter(Boolean);
+  for (const addr of list) {
+    if (!isIP(addr)) throw new ConfigError(`${picked.source} must list IP addresses separated by commas (got "${addr}").`);
+  }
+  return Object.freeze(list);
+}
+
+function parseMasterKey(picked) {
+  const v = str(picked);
+  if (v === undefined) return undefined;
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(v) || Buffer.from(v, 'base64').length !== 32) {
+    throw new ConfigError(`${picked.source} must be 32 bytes in base64 (44 characters ending in "="). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`);
+  }
+  return v;
+}
+
+function parseTimezone(picked, warnings) {
+  const system = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const v = str(picked);
+  if (v === undefined) return system;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: v }).resolvedOptions().timeZone;
+  } catch {
+    // TZ in the environment is often a POSIX string (":/etc/localtime", "EST5EDT") rather than an
+    // IANA name. That's the OS's business, so it only earns a warning; an explicit flag or
+    // config.json value is a mistake and stops startup.
+    if (picked.source === 'TZ') {
+      warnings.push(`TZ="${v}" isn't an IANA time zone name; new shows default to ${system} instead.`);
+      return system;
+    }
+    throw new ConfigError(`${picked.source} must be an IANA time zone name such as America/Toronto (got "${v}").`);
+  }
+}
+
+function isInside(child, parent, p) {
+  const rel = p.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !p.isAbsolute(rel));
+}

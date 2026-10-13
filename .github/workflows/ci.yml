@@ -13,6 +13,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20 # a hung test fails the job instead of holding a runner for 6 h
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

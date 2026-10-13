@@ -25,7 +25,8 @@ broadcast advances with every browser closed and survives a restart mid-show.
 
 - `headliner` and `closer` are different things: the headliner is the billed act; the closer
   plays last. A template that needs "the headliner" reads the flag, never "the last slot".
-- `lineup` is published as `show.lineup` state to member overlays.
+- `lineup` is published as `show.lineup` state to member overlays, each slot with `startAt`: the
+  instant its `time` resolves to (§9.2), in epoch ms. `time` stays as a display label.
 
 ## 9.2 The time rule
 

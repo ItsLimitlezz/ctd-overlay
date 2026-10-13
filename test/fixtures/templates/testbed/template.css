@@ -1,0 +1,31 @@
+/* Known durations, so tests can check the runtime's timing. */
+[data-skp-scene-root][data-skp-state="enter"] { animation: fadeIn 300ms linear both; }
+[data-skp-scene-root][data-skp-state="exit"] { animation: fadeOut 300ms linear both; }
+
+.msg[data-skp-state="enter"] { animation: fadeIn 200ms linear both; }
+.msg[data-skp-state="exit"] { animation: fadeOut 200ms linear both; }
+
+[data-skp-alert] { --skp-exit-ms: 200; }
+[data-skp-alert][data-skp-state="enter"] { animation: fadeIn 200ms linear both; }
+[data-skp-alert][data-skp-state="exit"] { animation: fadeOut 200ms linear both; }
+/* No --skp-exit-ms: the runtime has to probe the exit duration. */
+.alert.probe { --skp-exit-ms: initial; }
+.alert.probe[data-skp-state="enter"] { animation: fadeIn 1000ms linear both; }
+.alert.probe[data-skp-state="exit"] { animation: fadeOut 300ms linear both; }
+
+.title[data-skp-state="enter"] { animation: fadeIn 400ms linear both; }
+.title[data-skp-state="exit"] { animation: fadeOut 100ms linear both; }
+
+/* A countdown bar runs whatever the state: it must not stretch any step. */
+.bar { height: 4px; background: #fff; transform-origin: 0 0; animation: shrink 5000ms linear forwards; }
+.countdown { animation: shrink 5000ms linear forwards; }
+
+/* An idle loop must not stretch an enter. */
+.breathing[data-skp-state="enter"] { animation: fadeIn 150ms linear both, pulse 1s linear infinite; }
+.custom { --skp-enter-ms: 75; --skp-exit-ms: 25; }
+.transitioned[data-skp-state] { transition: opacity 120ms linear 30ms; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes pulse { 50% { opacity: 0.5; } }
+@keyframes shrink { to { transform: scaleX(0); } }

@@ -70,7 +70,9 @@ option that keeps a live show running with nobody touching it.
    §4.8). Test with eight browser sources in one OBS.
 5. **Runtime SDK** (`sk.js`). Clock and skew, state and events, scenes and transitions, element
    lifecycle on deadlines (H9), actions and triggers on `startAt`, chat and music helpers, mock
-   mode, lite mode (04 §4.4, 05). CI checks it stays under 25 KB gzipped.
+   mode, lite mode (04 §4.4, 05). CI checks it stays under 25 KB gzipped. Deferred: live settings
+   and scrubbing over `postMessage` in previews (step 14); triggers and alerts still inside their
+   window surviving a reload (steps 9 and 19).
 6. **Template packages.** Zip reader on `node:zlib` with zip-slip and zip-bomb guards, manifest
    validation, install/validate/uninstall, build hash, settings resolution and upgrade migration
    (04 §4.1–4.3, §4.10, §4.11).

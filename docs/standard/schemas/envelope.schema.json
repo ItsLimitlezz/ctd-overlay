@@ -10,7 +10,7 @@
     "id": { "type": "string", "minLength": 10, "description": "Unique, time-sortable (ULID recommended). Doubles as the SSE cursor." },
     "type": {
       "type": "string",
-      "pattern": "^(state\\.changed|chat\\.(message|message\\.deleted|user\\.cleared|cleared)|alert\\.[a-z]+|show\\.(scene\\.changed|trigger|cue\\.fired)|media\\.(play|stop)|system\\.(connection|notice)|custom\\.[a-z0-9_.-]+|x-[a-z0-9-]+\\.[a-z0-9_.-]+)$"
+      "pattern": "^(state\\.changed|chat\\.(message|message\\.deleted|user\\.cleared|cleared)|alert\\.[a-z]+|alerts\\.cut|show\\.(scene\\.changed|trigger|cue\\.fired)|media\\.(play|stop)|system\\.(connection|notice)|custom\\.[a-z0-9_.-]+|x-[a-z0-9-]+\\.[a-z0-9_.-]+)$"
     },
     "ts": { "type": "integer", "minimum": 0, "description": "Server epoch milliseconds." },
     "src": {

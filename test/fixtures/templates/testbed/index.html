@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SKP testbed</title>
+  <link rel="stylesheet" href="template.css">
+</head>
+<body>
+  <div class="static" data-static>always here</div>
+
+  <template data-skp-scene="starting"><div class="card" data-card>Starting soon</div></template>
+  <template data-skp-scene="program">
+    <div class="chat" data-skp-chat></div>
+    <div class="alerts" data-skp-alerts></div>
+  </template>
+  <template data-skp-scene="brb"><div class="card" data-card>Be right back</div></template>
+  <template data-skp-scene="outro"><div class="card" data-card>Thanks</div></template>
+  <template data-skp-scene="headliner"><div class="card" data-card>Headliner</div></template>
+  <template data-skp-scene="opener"><div class="card" data-card>Opener</div></template>
+
+  <script src="template.js"></script>
+</body>
+</html>
