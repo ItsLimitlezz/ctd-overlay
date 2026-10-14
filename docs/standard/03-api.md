@@ -145,7 +145,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 ### Media, webhooks, system
 | Method · Path | Purpose |
 |---|---|
-| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads (raw body, `?name=`), identified by content and transcoded when ffmpeg is present (10 §10.2). A delete is refused (`409`, `in-use`) while anything points to the file: an overlay's settings (or the version kept for revert), a show's lineup (an act's logo), a cue that will still play it (armed, or set at a time of the show, which is armed again each night), or a plan not yet activated (its lineup or overlay settings). `usedBy` names them: overlay slugs, and phrases such as "lineup of show Night", "cue at 23:00 in show Night", "plan for 2026-10-24 of show Night" |
+| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads (raw body, `?name=`), identified by content and transcoded when ffmpeg is present (10 §10.2). A delete is refused (`409`, `in-use`) while anything points to the file: an overlay's settings (or the version kept for revert), a show's lineup (an act's logo), a cue that will still play it (armed, or set at a time of the show, which is armed again each night, or a sequence that fired with a `media.play` step not yet done and not past the restart grace of 09 §9.4), or a plan not yet activated (its lineup or overlay settings). `usedBy` names them: overlay slugs, and phrases such as "lineup of show Night", "cue at 23:00 in show Night", "plan for 2026-10-24 of show Night" |
 | `GET/POST /webhooks` · `DELETE /webhooks/{id}` · `GET /webhooks/{id}/deliveries` | Outbound webhooks (06 §6.10) |
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
@@ -182,7 +182,7 @@ and per account; `POST /events` 60/s per token, a budget of its own that doesn't
 ## 3.6 Example: a Stream Deck button
 
 ```http
-POST /api/v1/shows/show_sat/scene HTTP/1.1
+PUT /api/v1/shows/show_sat/scene HTTP/1.1
 Authorization: Bearer skp_pat_6vZ…
 Idempotency-Key: 2b7c1d4e-brb-press-0412
 Content-Type: application/json

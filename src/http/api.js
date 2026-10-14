@@ -20,15 +20,16 @@
 import { createHash } from 'node:crypto';
 import { normalizeIp } from '../net.js';
 import { jsonBody, refusedHere } from './local.js';
-import { BASE_HEADERS, BODY_MS, readBytes, sendJson } from './server.js';
+import { BASE_HEADERS, BODY_MS, claimBody, readBytes, sendJson } from './server.js';
 
 export const PER_MINUTE = 600;
 export const IDEMPOTENCY_MS = 24 * 60 * 60 * 1000;
 export const MAX_PAGE = 200;
-// A raw upload may take as long as its limit needs at 64 KiB a second (a 100 MiB package: about 27
+// A raw upload may take as long as its size needs at 64 KiB a second (a 100 MiB package: about 27
 // minutes), never less than a JSON body may.
 const UPLOAD_RATE = 64 * 1024;
 const TITLES = { 400: 'Bad request', 401: 'Not signed in', 403: 'Forbidden', 404: 'Not found', 408: 'Request timeout', 409: 'Conflict', 412: 'Precondition failed', 413: 'Too large', 415: 'Unsupported media type', 422: 'Not possible', 428: 'Precondition required', 429: 'Too many requests', 500: 'Server error', 502: 'Bad gateway', 503: 'Unavailable', 504: 'Gateway timeout' };
+const SUCCESS = { 200: 'OK', 201: 'Created', 202: 'Accepted' };
 export const problemType = (code) => `https://skp.dev/errors/${code}`;
 
 // A response nothing reaches: guard() answers its refusals itself, and a check made while a stream
@@ -107,10 +108,11 @@ const STATUS_BY_CODE = {
   'read-only': 503, 'closed': 503, 'stopped': 503, 'rate-limited': 503,
   'timeout': 504,
 };
-// A package too large to download is the remote's, not this request's body (413).
-const statusOf = (err) => (err.name === 'SourceError' && err.code === 'too-large' ? 422 : STATUS_BY_CODE[err.code] || 422);
+// A package too large to download, or too large inside (a file, the total or the ratio over the
+// zip limits), is the package's fault, not this request's body's (413): that was within its limit.
+const statusOf = (err) => ((err.name === 'SourceError' || err.name === 'ZipError') && err.code === 'too-large' ? 422 : STATUS_BY_CODE[err.code] || 422);
 
-// uploadIdleMs: how long a streamed upload may go with nothing arriving (tests shorten it).
+// uploadIdleMs: how long an upload, streamed or raw, may go with nothing arriving (tests shorten it).
 export function createApi({ guard, hosts, store, log, now = Date.now, perMinute = PER_MINUTE, uploadIdleMs = BODY_MS }) {
   const routes = [];
   const inFlight = new Set(); // idempotency keys being answered
@@ -160,15 +162,17 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
   }
 
   // def: { method, path, scope?, open?, summary, tag?,
-  //   body?: { fields?: [...], nested?: { field: [...] }, raw?: true, stream?: true, json?: [...], limit? },
+  //   body?: { fields?: [...], nested?: { field: [...] }, raw?: true, stream?: true, json?: [...], types?: [...], limit? },
   //   resource?: (params) => ({ id, rev }) (If-Match is checked against it on PATCH and PUT),
   //   command?: true (no If-Match), idempotent?: false, perSecond?: n (its own budget, a second),
-  //   paged?: true, query?: [...], status?, produces? (for the OpenAPI document),
+  //   paged?: true, query?: [...], status?: n | [n, …], produces? (for the OpenAPI document),
   //   run({ who, params, body, url, req, res, ifRev, still }) }
   // nested: the fields a field of a fixed shape takes (a template reference: id, version); json:
-  // the fields a raw route also takes as JSON. run returns a value (200 OK), or { status, body,
-  // headers }; a body with `id` and `rev` gets an ETag. still() says whether the principal may still
-  // (for a route that answers for long: a stream).
+  // the fields a raw route also takes as JSON, all of them required ({ url }); types: the content types its bytes may come as
+  // (application/octet-stream if not said). status: what a success answers, every one it may (an
+  // install answers 201, or 200 when that build was there already). run returns a value (200 OK),
+  // or { status, body, headers }; a body with `id` and `rev` gets an ETag. still() says whether the
+  // principal may still (for a route that answers for long: a stream).
   function route(def) {
     routes.push(def);
     const bodyLimit = def.body?.limit ?? 64 * 1024;
@@ -192,13 +196,15 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
         let body = {};
         if (def.body?.stream) {
           // The route reads it (an upload of hundreds of MiB, never buffered), for as long as it
-          // takes, but a minute with nothing arriving drops it.
+          // takes, but a minute with nothing arriving drops it. Only now, with whoever sends it
+          // allowed to: a refused one gets the server's minute for a body nobody reads.
+          claimBody(req);
           req.setTimeout(uploadIdleMs, () => req.destroy());
           req.once('end', () => req.setTimeout(0));
           body = req;
         } else if (def.body?.raw) {
           try {
-            body = await readBytes(req, bodyLimit, { ms: Math.max(BODY_MS, (bodyLimit / UPLOAD_RATE) * 1000) });
+            body = await readBytes(req, bodyLimit, { rate: UPLOAD_RATE, idleMs: uploadIdleMs });
           } catch (err) {
             return problem(res, req, err.status ? { status: err.status, code: err.code, detail: err.message, headers: err.headers } : { status: 400, code: 'bad-request', detail: 'The body could not be read.' });
           }
@@ -218,11 +224,12 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
         }
 
         // Whether the principal may still: signed in (not signed out, expired, revoked or removed
-        // since) and holding the route's scope.
+        // since) and holding the route's scope. A check is not a use: it leaves a session's last
+        // use as it was, so a stream left open still lets it reach its idle timeout (07 §7.3).
         const still = () => {
           if (def.open) return true;
           try {
-            return Boolean(guard(req, NOWHERE, def.scope));
+            return Boolean(guard(req, NOWHERE, def.scope, { touch: false }));
           } catch (err) {
             log.error('a principal could not be checked again', { method: def.method, path: def.path, err });
             return false;
@@ -317,12 +324,16 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
         params.push({ name: 'cursor', in: 'query', required: false, description: 'The "next" of the page before', schema: { type: 'string' } });
       }
       for (const name of r.query || []) params.push({ name, in: 'query', required: false, schema: { type: 'string' } });
-      // The body: bytes (an upload, streamed or not; JSON too where a raw route takes some), or a
-      // JSON object with the route's fields.
+      // The body: bytes (an upload, streamed or not, in the types it may come as; JSON too where a
+      // raw route takes some), or a JSON object with the route's fields.
+      const bytes = { schema: { type: 'string', format: 'binary' } };
       const requestBody = r.body?.raw || r.body?.stream
-        ? { required: true, content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } }, ...(r.body.json ? { 'application/json': { schema: object(r.body.json) } } : {}) } }
+        ? { required: true, content: { ...Object.fromEntries((r.body.types || ['application/octet-stream']).map((type) => [type, bytes])), ...(r.body.json ? { 'application/json': { schema: { ...object(r.body.json), required: r.body.json } } } : {}) } }
         : r.body && r.method !== 'GET' ? { content: { 'application/json': { schema: object(r.body.fields, r.body.nested) } } } : undefined;
-      const status = String(r.status || 200);
+      // Every success the route may answer, with what it answers (204: nothing).
+      const answers = Object.fromEntries([].concat(r.status || 200).map((status) => [String(status), status === 204
+        ? { description: 'Done' }
+        : { description: SUCCESS[status] || 'OK', content: { [r.produces || 'application/json']: r.paged ? { schema: page } : {} } }]));
       const op = {
         summary: r.summary,
         ...(r.tag ? { tags: [r.tag] } : {}),
@@ -332,7 +343,7 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
         ...(requestBody ? { requestBody } : {}),
         responses: {
           default: { description: 'A problem (RFC 9457)', content: { 'application/problem+json': { schema: { $ref: '#/components/schemas/Problem' } } } },
-          [status]: status === '204' ? { description: 'Done' } : { description: 'OK', content: { [r.produces || 'application/json']: r.paged ? { schema: page } : {} } },
+          ...answers,
         },
       };
       (paths[p] ??= {})[r.method.toLowerCase()] = op;

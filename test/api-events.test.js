@@ -127,3 +127,19 @@ test('GET /events ends at the next heartbeat once its principal may no longer re
   assert.equal(await brief.ended(3000), true, 'the token expired');
   assert.equal(await local.ended(300), false, 'the command line still may');
 });
+
+test('GET /events: checking its session again is not using it, so a tab left open still idles out (07 §7.3)', async (t) => {
+  const clock = { t: Date.UTC(2026, 9, 17, 18), now: () => clock.t };
+  const platform = await start(t, { clock: { now: clock.now }, heartbeatMs: 20 });
+  const owner = await browser(platform);
+  const stream = await open(t, platform, { cookie: owner.cookie });
+  // An hour at a time, with heartbeats (each a check) in every one: a check that counted as a use
+  // would keep the session alive for ever.
+  for (let h = 1; h < 12; h++) {
+    clock.t += 60 * 60 * 1000;
+    assert.equal(await stream.ended(100), false, `${h} h without a use`);
+  }
+  clock.t += 60 * 60 * 1000;
+  assert.equal(await stream.ended(3000), true, '12 h without a use: the session has ended, and its stream with it');
+  assert.equal((await owner.call('GET', '/auth/session')).status, 401);
+});

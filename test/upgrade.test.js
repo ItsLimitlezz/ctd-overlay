@@ -6,7 +6,7 @@ import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { DIAG_DIR, FIXTURE_TEMPLATES, defer, memoryLogger, packTemplate, startWithOverlay, tempDir } from './helpers.js';
+import { DIAG_DIR, FIXTURE_TEMPLATES, defer, memoryLogger, packTemplate, signedIn, startWithOverlay, tempDir } from './helpers.js';
 
 const ID = 'dev.skp.sample';
 const settingsV1 = {
@@ -488,7 +488,9 @@ test('settings migrate.js returns that an overlay can\'t save are refused, by a 
   assert.deepEqual(doc.data.settings, {});
 });
 
-test('migrate.js from a template that comes with the platform runs on upgrade without being asked', async (t) => {
+// A platform whose templates ship with it: dev.skp.shipped 1.0.0, and 1.1.0 whose migrate.js
+// renames "accent" to "colour"; an overlay "main" on 1.0.0.
+async function withShipped(t) {
   const shipped = tempDir(t);
   const manifest = JSON.parse(readFileSync(path.join(DIAG_DIR, 'template.json'), 'utf8'));
   const bundle = (name, fields, files = {}) => {
@@ -506,11 +508,33 @@ test('migrate.js from a template that comes with the platform runs on upgrade wi
   const platform = await start(t, config, [shipped]);
   assert.equal(platform.templates.fromPlatform(platform.templates.get('dev.skp.shipped', '1.1.0')), true);
   platform.overlays.create({ slug: 'main', template: { id: 'dev.skp.shipped', version: '1.0.0' }, settings: { accent: '#123456' } });
+  return platform;
+}
+
+test('migrate.js from a template that comes with the platform runs on upgrade without being asked', async (t) => {
+  const platform = await withShipped(t);
   assert.equal((await platform.overlays.upgrade('main', '1.1.0', { dryRun: true })).migrated, true);
   const plan = await platform.overlays.upgrade('main', '1.1.0');
   assert.equal(plan.migrated, true);
   assert.deepEqual(plan.settings, { colour: '#123456' });
   assert.deepEqual(platform.overlays.resolve('main').doc.data.settings, { colour: '#123456' });
+});
+
+test('over the API too: an upgrade that leaves runMigrate out runs a shipped template\'s migrate.js; runMigrate: false skips it', async (t) => {
+  const platform = await withShipped(t);
+  const upgrade = async (body) => {
+    const res = await fetch(`${platform.url}/api/v1/overlays/main/upgrade`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  const skipped = await upgrade({ version: '1.1.0', dryRun: true, runMigrate: false });
+  assert.equal(skipped.status, 200);
+  assert.equal(skipped.body.migrated, 'skipped', 'the operator said not to');
+  assert.deepEqual(skipped.body.changes.map((c) => `${c.change} ${c.path}`), ['removed /accent', 'added /colour']);
+  const done = await upgrade({ version: '1.1.0' });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.equal(done.body.migrated, true);
+  assert.deepEqual(done.body.overlay.settings, { colour: '#123456' });
+  assert.deepEqual(platform.audit.list({ action: 'overlay.upgrade' }).items.map((e) => e.details.migrated), [true]);
 });
 
 test('what counts as a major upgrade', async () => {

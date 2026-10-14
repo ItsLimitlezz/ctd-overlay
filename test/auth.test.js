@@ -13,6 +13,7 @@ import { cliActor, createAudit } from '../src/auth/audit.js';
 import { IDLE_MS, KEEP_MS, LOCAL_TOKEN_FILE, SESSION_MS, SETUP_MS } from '../src/auth/index.js';
 import { BusyError, createHasher, passwordProblem, SCRYPT } from '../src/auth/passwords.js';
 import { ROLES } from '../src/auth/roles.js';
+import { createGuard } from '../src/auth/routes.js';
 import { base32Decode, base32Encode, hotp, stepAt, verifyTotp } from '../src/auth/totp.js';
 import { run } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
@@ -259,6 +260,41 @@ test('sessions: an HttpOnly SameSite=Lax cookie, kept as its hash; CSRF and Orig
   const ended = await b.call('GET', '/auth/session');
   assert.deepEqual([ended.status, ended.body.type], [401, 'https://skp.dev/errors/unauthenticated']);
   assert.match(ended.setCookie, /^skp_session=; .*Max-Age=0/, 'and the browser is told to forget it');
+});
+
+test('a check that isn\'t a use (an open /events stream\'s, at each heartbeat) leaves the session\'s last use: it still ends after 12 idle hours', async (t) => {
+  const { platform, clock } = await setup(t);
+  const { auth, store } = platform;
+  const at = { ip: '127.0.0.1' };
+  await auth.createOwner({ code: auth.setupCode, username: 'juan', password: PASSWORD }, at);
+  // A browser tab's requests, at the platform's own address.
+  const tab = async () => {
+    const { cookie } = await auth.login({ username: 'juan', password: PASSWORD }, at);
+    const req = { method: 'GET', headers: { host: 'skp.test', cookie: cookie.split(';')[0] }, socket: { remoteAddress: '127.0.0.1' } };
+    return { req, id: auth.authenticate(req).principal.sessionId };
+  };
+  const lastSeen = ({ id }) => store.get('sessions', id).data.lastSeenAt;
+  const guard = createGuard({ auth, hosts: () => ['skp.test'] });
+  const answer = { writeHead(status) { this.status = status; return this; }, setHeader() {}, end() {} };
+  const left = await tab(); // nothing but its stream, open
+  const used = await tab(); // used now and then
+  const signedIn = clock.t;
+  clock.t += 5 * MIN;
+  assert.equal(auth.authenticate(left.req, { touch: false }).principal.label, 'juan');
+  assert.equal(lastSeen(left), signedIn, 'checked, not used');
+  assert.equal(guard(used.req, answer, 'events:read').label, 'juan');
+  assert.equal(lastSeen(used), clock.t, 'a request is a use');
+  // The stream's check, every minute for 12 hours: the session it checks ends all the same.
+  while (clock.t + MIN < signedIn + IDLE_MS) {
+    clock.t += MIN;
+    assert.ok(guard(left.req, answer, 'events:read', { touch: false }));
+  }
+  assert.equal(lastSeen(left), signedIn);
+  clock.t = signedIn + IDLE_MS;
+  assert.equal(guard(left.req, answer, 'events:read', { touch: false }), undefined, 'idle for 12 hours: over');
+  assert.equal(answer.status, 401);
+  assert.equal(store.get('sessions', left.id), undefined);
+  assert.equal(guard(used.req, answer, 'events:read').label, 'juan', 'the tab used 11 h 55 min ago goes on');
 });
 
 test('signing in: one answer for a wrong name or password, "keep me signed in" for 30 days, sign out, your sessions', async (t) => {
@@ -542,6 +578,35 @@ test('two-factor whose secret no longer decrypts (restored without the master ke
   assert.match(code.body.detail, /restore that master key/, 'a six-digit code says why it can\'t be checked');
   assert.equal((await b.call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recoveryCodes[0] })).status, 200);
   assert.equal((await browser(again.platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recoveryCodes[0] })).status, 422, 'once');
+});
+
+test('a two-factor secret is encrypted for its own account (totp:<user id>, 07 §7.7): put in another\'s record, it neither turns two-factor on nor signs in there', async (t) => {
+  const ctx = await withOwner(t);
+  const { platform, owner, clock } = ctx;
+  const bo = await userWith(ctx, 'admin', 'bo');
+  const record = (username) => platform.store.list('users', { limit: 1000 }).find((d) => d.data.username === username);
+  const { secret } = (await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD })).body;
+  assert.equal((await bo.call('POST', '/auth/totp/enroll', { password: `${PASSWORD} admin` })).status, 200);
+  const pending = record('juan').data.totpPending.secret;
+  assert.match(pending, /^enc:v1:/);
+  assert.ok(!JSON.stringify(record('juan').data).includes(secret), 'never as it is');
+  // The owner's secret, being enrolled, copied into bo's record: a code from it doesn't confirm bo's.
+  platform.store.put('users', record('bo').id, { ...record('bo').data, totpPending: { ...record('bo').data.totpPending, secret: pending } });
+  const confirming = await bo.call('POST', '/auth/totp/verify', { code: hotp(secret, stepAt(clock.t)) });
+  assert.equal(confirming.status, 422);
+  assert.equal(record('bo').data.totp, undefined, 'still off');
+  // On for the owner, and that secret copied into bo's record: a code from it doesn't sign bo in.
+  assert.equal((await owner.call('POST', '/auth/totp/verify', { code: hotp(secret, stepAt(clock.t)) })).status, 200);
+  const on = record('juan').data.totp;
+  assert.match(on.secret, /^enc:v1:/);
+  const moved = { ...record('bo').data, totp: on };
+  delete moved.totpPending;
+  platform.store.put('users', record('bo').id, moved);
+  clock.t += 30 * 1000;
+  const code = hotp(secret, stepAt(clock.t));
+  const signing = await browser(platform).call('POST', '/auth/login', { username: 'bo', password: `${PASSWORD} admin`, code });
+  assert.deepEqual([signing.status, signing.setCookie], [422, null], 'no session');
+  assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code })).status, 200, 'the same code, the owner\'s');
 });
 
 test('the password asked for again (a new password, two-factor) is throttled and recorded like a sign-in', async (t) => {

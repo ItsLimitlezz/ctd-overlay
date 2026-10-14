@@ -176,7 +176,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       // it is one of the platform's own names).
       ...overlayApiRoutes({ api, overlays, templates, shows, audit, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
       ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }),
-      ...mediaApiRoutes({ api, media, overlays, audit }),
+      // A file is in use while an overlay, a lineup, a cue or a plan points to it (03 §3.4).
+      ...mediaApiRoutes({ api, media, overlays, shows, timeline, audit, now: clock.now }),
       ...systemRoutes({ api, bus, store, media, templates, overlays, shows, config, version: VERSION, heartbeatMs, now: clock.now }),
       ...routes,
     ],

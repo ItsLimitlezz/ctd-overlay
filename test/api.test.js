@@ -10,6 +10,7 @@ import { startPlatform } from '../src/app.js';
 import { hotp, stepAt } from '../src/auth/totp.js';
 import { loadConfig } from '../src/config.js';
 import { pinnedFetch } from '../src/net.js';
+import { writeZip } from '../src/templates/zip.js';
 import { DIAG, DIAG_DIR, defer, FIXTURE_TEMPLATES, memoryLogger, packTemplate, signedIn, tempDir, TESTBED } from './helpers.js';
 import { selfSigned } from './tls.js';
 
@@ -56,8 +57,9 @@ test('the OpenAPI document describes every API route, with its scope', async (t)
   assert.equal(doc.paths['/api/v1/shows/{ref}'].patch['x-skp-scope'], 'timeline:write');
   assert.deepEqual(doc.paths['/api/v1/auth/login'].post.security, []);
   assert.deepEqual(Object.keys(doc.paths['/api/v1/shows'].post.requestBody.content['application/json'].schema.properties), ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup']);
-  // Uploads are bytes, streamed or not; a write without a list of fields still takes a JSON object.
-  assert.deepEqual(Object.keys(doc.paths['/api/v1/media'].post.requestBody.content), ['application/octet-stream']);
+  // Uploads are bytes, streamed or not (a media file as anything: its type is read from its bytes);
+  // a write without a list of fields still takes a JSON object.
+  assert.deepEqual(Object.keys(doc.paths['/api/v1/media'].post.requestBody.content), ['*/*']);
   assert.ok(doc.paths['/api/v1/templates'].post.requestBody.content['application/octet-stream']);
   assert.equal(doc.paths['/api/v1/overlays/{ref}/simulate'].post.requestBody.content['application/json'].schema.type, 'object');
   // What a success answers, and with what.
@@ -197,6 +199,24 @@ test('open routes (setup, login, openapi.json) refuse another name and another o
   assert.equal(await send('GET', '/api/v1/openapi.json', {}), 200, 'from its own address');
 });
 
+test('a Host the platform lacks has the machine\'s addresses read again at once, not up to 5 s later', async (t) => {
+  let ifaces = { lo: [{ address: '127.0.0.1', family: 'IPv4' }] };
+  let now = Date.UTC(2026, 9, 17, 18);
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config'), SKP_EXPOSURE: 'lan', SKP_HOST: '127.0.0.1' } });
+  const platform = await startPlatform(config, { log: memoryLogger().log, scrypt: { N: 1024 }, interfaces: () => ifaces, clock: { now: () => now } });
+  defer(t, () => platform.stop());
+  const as = (host) => new Promise((resolve, reject) => {
+    request(`${platform.url}/api/v1/setup`, { headers: { host: `${host}:${platform.port}` } }, (res) => { res.resume(); resolve(res.statusCode); }).on('error', reject).end();
+  });
+  assert.equal(await as('192.168.1.77'), 403);
+  ifaces = { ...ifaces, wlan0: [{ address: '192.168.1.77', family: 'IPv4' }] };
+  now += 1000; // a second since the last read (at most one a second), not the 5 s of a refresh
+  assert.equal(await as('192.168.1.77'), 200, 'the Wi-Fi address that just arrived');
+  now += 1000;
+  assert.equal(await as('rebind.example'), 403, 'read again, and still not one of its names');
+});
+
 test('problems carry the base headers too: no-store, nosniff, Referrer-Policy (03 §3.4, 07 §7.10)', async (t) => {
   const { platform, api } = await start(t);
   await owner(platform);
@@ -317,6 +337,21 @@ test('templates: list, read with previews, install a package or a URL, validate,
   assert.equal(followed.body.check.error.code, 'no-release');
   assert.equal((await api('GET', '/templates/sources')).body.items.length, 1);
   assert.equal((await api('DELETE', '/templates/sources/a%2Fmissing')).status, 200);
+});
+
+test('a package too large inside (a zip bomb), sent or downloaded, is a 422: the request itself was within its limit', async (t) => {
+  // 4 MiB of zeros deflate to a few KiB: over the zip limits' ratio (templates/zip.js).
+  const bomb = writeZip([{ name: 'template.json', data: JSON.stringify({ id: 'dev.skp.bomb', version: '1.0.0' }) }, { name: 'zeros.bin', data: Buffer.alloc(4 * 1024 * 1024) }]);
+  assert.ok(bomb.length < 64 * 1024);
+  const lookup = async () => [{ address: '140.82.112.6', family: 4 }];
+  const fake = async () => new Response(bomb, { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(bomb.length) } });
+  const { api } = await start(t, { fetch: fake, lookup });
+  const sent = await api('POST', '/templates', bomb);
+  const downloaded = await api('POST', '/templates', Buffer.from(JSON.stringify({ url: 'https://packages.example/bomb.skp' })), { 'content-type': 'application/json' });
+  for (const [how, answer] of [['sent', sent], ['downloaded', downloaded]]) {
+    assert.deepEqual([answer.status, answer.body.type], [422, 'https://skp.dev/errors/too-large'], how);
+    assert.match(answer.body.detail, /expands more than/, how);
+  }
 });
 
 test('media: upload (streamed), list, delete (not while used)', async (t) => {

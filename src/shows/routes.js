@@ -49,8 +49,8 @@ export function showRoutes({ api, shows, timeline }) {
   };
   const r = (def) => api.route({ tag, ...def });
   return [
-    r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows', run: ({ url }) => api.paginate(shows.list().map(showResource), url) }),
-    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, run: ({ body, who }) => ({ status: 201, body: showResource(shows.create(body, { actor: who.label })) }) }),
+    r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows', paged: true, run: ({ url }) => api.paginate(shows.list().map(showResource), url) }),
+    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, status: 201, run: ({ body, who }) => ({ status: 201, body: showResource(shows.create(body, { actor: who.label })) }) }),
     r({ method: 'GET', path: '/api/v1/shows/:ref', scope: READ, summary: 'A show, by id or name', run: ({ params }) => showResource(shows.get(params.ref)) }),
     r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: { fields: SHOW_FIELDS }, resource: showRev, run: ({ params, body, ifRev }) => showResource(shows.update(params.ref, body, { ifRev })) }),
     r({ method: 'DELETE', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Delete a show', resource: showRev, run: ({ params }) => shows.remove(params.ref) }),
@@ -62,15 +62,15 @@ export function showRoutes({ api, shows, timeline }) {
     r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null', body: { fields: ['slot'] }, run: ({ params, body }) => showResource(shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot)) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/rec', scope: CONTROL, command: true, summary: 'Start or reset REC', body: { fields: ['action'] }, run: ({ params, body }) => showResource(shows.rec(params.ref, body.action)) }),
     // The timeline (09 §9.3–9.6).
-    r({ method: 'GET', path: '/api/v1/shows/:ref/cues', scope: READ, summary: 'The show\'s cues, in time order', run: ({ params, url }) => api.paginate(timeline.list(params.ref), url, cueKey) }),
-    r({ method: 'POST', path: '/api/v1/shows/:ref/cues', scope: WRITE, summary: 'Add a cue', body: { fields: ['at', 'action', 'label'] }, run: ({ params, body, who }) => ({ status: 201, body: timeline.add(params.ref, body, { actor: who.label }) }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref/cues', scope: READ, summary: 'The show\'s cues, in time order', paged: true, run: ({ params, url }) => api.paginate(timeline.list(params.ref), url, cueKey) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/cues', scope: WRITE, summary: 'Add a cue', body: { fields: ['at', 'action', 'label'] }, status: 201, run: ({ params, body, who }) => ({ status: 201, body: timeline.add(params.ref, body, { actor: who.label }) }) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/cues/build', scope: WRITE, summary: 'Generate cues from the lineup with a recipe', body: { fields: ['recipe'] }, run: ({ params, body }) => ({ items: timeline.build(params.ref, body.recipe) }) }),
     r({ method: 'GET', path: '/api/v1/shows/:ref/cues/:cueId', scope: READ, summary: 'A cue', run: ({ params }) => timeline.get(params.ref, params.cueId) }),
     r({ method: 'PATCH', path: '/api/v1/shows/:ref/cues/:cueId', scope: WRITE, summary: 'Change a cue', body: { fields: ['at', 'action', 'label'] }, resource: (p) => timeline.get(p.ref, p.cueId), run: ({ params, body }) => timeline.update(params.ref, params.cueId, body) }),
     r({ method: 'DELETE', path: '/api/v1/shows/:ref/cues/:cueId', scope: WRITE, summary: 'Delete a cue', resource: (p) => timeline.get(p.ref, p.cueId), run: ({ params }) => timeline.remove(params.ref, params.cueId) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/cues/:cueId/:op', scope: CONTROL, command: true, summary: 'Fire now, skip or re-arm a cue (op: fire | skip | rearm)', body: { fields: [] }, run: ({ params, who }) => timeline.override(params.ref, params.cueId, params.op, { actor: who.label }) }),
-    r({ method: 'GET', path: '/api/v1/shows/:ref/plans', scope: READ, summary: 'The show\'s planned dates', run: ({ params, url }) => api.paginate(timeline.plans.list(params.ref), url, (p) => `${p.date}|${p.id}`) }),
-    r({ method: 'POST', path: '/api/v1/shows/:ref/plans', scope: WRITE, summary: 'Plan the show for a date', body: { fields: ['date', 'lineup', 'goLive', 'dayBoundary', 'overlaySettings'] }, run: ({ params, body }) => ({ status: 201, body: timeline.plans.add(params.ref, body) }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref/plans', scope: READ, summary: 'The show\'s planned dates', paged: true, run: ({ params, url }) => api.paginate(timeline.plans.list(params.ref), url, (p) => `${p.date}|${p.id}`) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/plans', scope: WRITE, summary: 'Plan the show for a date', body: { fields: ['date', 'lineup', 'goLive', 'dayBoundary', 'overlaySettings'] }, status: 201, run: ({ params, body }) => ({ status: 201, body: timeline.plans.add(params.ref, body) }) }),
     r({ method: 'DELETE', path: '/api/v1/shows/:ref/plans/:planId', scope: WRITE, summary: 'Delete a plan', run: ({ params }) => timeline.plans.remove(params.ref, params.planId) }),
     r({ method: 'PUT', path: '/api/v1/overlays/:ref/scene', scope: CONTROL, command: true, tag: 'Overlays', summary: 'Take a scene on an overlay outside a show', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => shows.takeOverlay(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label }) }),
     r({ method: 'POST', path: '/api/v1/overlays/:ref/actions/:name', scope: CONTROL, command: true, tag: 'Overlays', summary: 'Fire an overlay\'s action', body: { fields: ['args'] }, run: ({ params, body, who }) => {

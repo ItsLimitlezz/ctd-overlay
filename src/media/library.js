@@ -54,14 +54,23 @@ export const mediaUrl = (doc) => `/media/${doc.data.fileId}/${doc.data.name}`;
 // will apply). Removing a file any of them use would put a broken logo or a failing clip on air.
 // shows and timeline are optional: without them, only overlays are asked. Everything is read once
 // here, so a whole list is matched in one pass: mediaUsers(data)(doc) → names, in plain words.
-export function mediaUsers({ overlays, shows, timeline }) {
+// now: the timeline's clock.
+export function mediaUsers({ overlays, shows, timeline, now = Date.now }) {
   const others = []; // { name, text } (the URLs it holds) or { name, plays } (the media ids it plays)
+  const at = now();
   for (const show of shows?.list() || []) {
     others.push({ name: `lineup of show ${show.name}`, text: JSON.stringify(show.lineup) });
     if (!timeline) continue;
     for (const cue of timeline.list(show.id)) {
       // A cue at a time of the show is armed again on another night, whatever it did on this one.
-      if (cue.status === 'armed' || cue.time) others.push({ name: `cue at ${cue.time || cue.at} in show ${show.name}`, plays: played(cue.action) });
+      // A sequence that has fired still plays the steps it hasn't done (skipping it marks them all
+      // done): up to an hour on, and after a restart up to the timeline's grace late; a step later
+      // than that is marked missed, not played.
+      const plays = cue.status === 'armed' || cue.time ? played(cue.action)
+        : cue.status === 'fired' && cue.action.type === 'sequence'
+          ? cue.action.steps.slice(cue.stepsDone ?? 0).filter((s) => Date.parse(cue.firedAt) + s.offsetMs + (timeline.graceMs ?? 0) > at).flatMap((s) => played(s.action))
+          : [];
+      if (plays.length) others.push({ name: `cue at ${cue.time || cue.at} in show ${show.name}`, plays });
     }
     for (const plan of timeline.plans.list(show.id)) {
       if (!plan.activatedAt) others.push({ name: `plan for ${plan.date} of show ${show.name}`, text: JSON.stringify([plan.lineup, plan.overlaySettings]) });

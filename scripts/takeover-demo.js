@@ -12,7 +12,9 @@
 //   rec            restart the REC timer
 //   viewers        drop the viewer count to absent, or bring it back
 //
-// The same show answers the command line while this runs: npm run skp -- show list --port 4950.
+// The command line drives the same show while this runs, once it is told the demo's config
+// folder (a temporary one, where its local token is). The demo prints the command:
+// npm run skp -- show list --port 4950 --config-dir <its config folder>.
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -61,6 +63,8 @@ for (const slug of ['takeover', 'event']) {
   console.log(`  ${h.url}`);
   if (v) console.log(`  ${v.url}   (1080 x 1920)`);
 }
+// The config folder is a temporary one: the command line finds the local token only when told.
+console.log(`\nThe command line, from another terminal: npm run skp -- show list --port ${platform.port} --config-dir "${config.configDir}"`);
 console.log('\nCommands: starting program brb lineup outro bg intro headliner line pov auto · title np opening onat · next · rec · viewers · Ctrl+C to stop\n');
 
 const ACTIONS = { title: 'titleCard', np: 'nowPlaying', opening: 'chipOpening', onat: 'chipOnAt' };

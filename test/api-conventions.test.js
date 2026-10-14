@@ -148,7 +148,7 @@ test('If-Match (RFC 9110 §13.1.1): "*" when it exists, a list when one is curre
   assert.equal((await call('DELETE', '/thing', { headers: { 'x-who': 'session:usr_1', 'if-match': '*' } })).status, 200);
 });
 
-test('problems: a conflict is 409, a failure of the platform 500, shutting down 503, a download failing upstream 502/504; settings problems are `problems`', async (t) => {
+test('problems: a conflict is 409, a failure of the platform 500, shutting down 503, a download failing upstream 502/504, a package too large (not the body) 422; settings problems are `problems`', async (t) => {
   const thrown = (name, code, detail) => Object.assign(new Error(`${name} ${code}`), { name, code, ...(detail !== undefined ? { detail } : {}) });
   const errors = {
     busy: thrown('MediaError', 'busy'),
@@ -163,6 +163,7 @@ test('problems: a conflict is 409, a failure of the platform 500, shutting down 
     'download-failed': thrown('SourceError', 'download-failed'),
     timeout: thrown('SourceError', 'timeout'),
     'remote-too-large': thrown('SourceError', 'too-large'),
+    'zip-too-large': thrown('ZipError', 'too-large'),
     'upload-too-large': thrown('MediaError', 'too-large'),
     'no-release': thrown('SourceError', 'no-release'),
     'login-busy': Object.assign(thrown('AuthError', 'busy'), { status: 429, retryAfterS: 2 }),
@@ -177,7 +178,7 @@ test('problems: a conflict is 409, a failure of the platform 500, shutting down 
     busy: 409, 'in-use': 409, 'version-exists': 409,
     'write-failed': 500, 'read-only': 503, closed: 503, stopped: 503,
     unreachable: 502, 'bad-response': 502, 'download-failed': 502, timeout: 504,
-    'remote-too-large': 422, 'upload-too-large': 413, 'no-release': 422, 'login-busy': 429,
+    'remote-too-large': 422, 'zip-too-large': 422, 'upload-too-large': 413, 'no-release': 422, 'login-busy': 429,
     settings: 422, upgrade: 422, major: 409,
   });
   assert.equal((await call('GET', '/fail/unreachable')).body.title, 'Bad gateway');

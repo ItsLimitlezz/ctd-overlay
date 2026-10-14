@@ -169,7 +169,8 @@ more than 14 days past are pruned.
 A plan carries the date (within three years) and any of `lineup`, `goLive`, `dayBoundary`, and
 `overlaySettings` (member slug → that overlay's settings, kept by overlay: a rename before the
 day keeps them, and a new overlay that takes the old slug doesn't get them; shown under each
-overlay's current slug; validated against its template when saved and again when applied, and
+overlay's current slug, or, for one deleted since, the slug it had when the plan was saved (its id
+if another overlay has taken that slug); validated against its template when saved and again when applied, and
 applied only to overlays still in the show then; what wasn't applied is listed in the plan's
 `warnings`). It is refused as the show itself would refuse the change. Its day starts at the day boundary in the show's zone as they are when it comes, not when
 the plan was saved. A plan never changes a show that is live: it waits until REC ends. A platform

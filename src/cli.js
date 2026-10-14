@@ -24,7 +24,7 @@ import { cliActor } from './auth/audit.js';
 import { readLocalToken } from './auth/index.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createLogger } from './log.js';
-import { MediaError, mediaUrl } from './media/library.js';
+import { MediaError, mediaUrl, mediaUsers } from './media/library.js';
 import { isLoopback } from './net.js';
 import { OverlayError } from './overlays/registry.js';
 import { rotateMasterKey, SecretsError } from './secrets.js';
@@ -59,7 +59,8 @@ export const USAGE = `Usage: skp <command> [options]
   media add <file> [--name <name>]        upload a clip, image, sound or font (phone video is
                                           converted for OBS when ffmpeg is available)
   media list                              uploaded files and their URLs
-  media remove <id>                       delete one (refused while an overlay uses it)
+  media remove <id>                       delete one (refused while an overlay, a show's lineup,
+                                          a cue or a plan uses it)
 
 These drive the running platform (start it first):
   show list                               shows, their members, scene and whether they're live
@@ -474,7 +475,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('media remove takes <id>');
         const data = openFor('media remove');
         try {
-          const doc = data.media.remove(rest[0], { usedBy: (d) => data.overlays.mediaUsers(d.data.fileId) });
+          const doc = data.media.remove(rest[0], { usedBy: mediaUsers(data) });
           data.record({ media: doc.id, name: doc.data.name });
           if (opts.json) json({ removed: doc.id });
           else out(`removed ${doc.id} (${doc.data.name})`);
@@ -817,7 +818,8 @@ async function callPlatform(cfg, method, apiPath, body, fetchFn) {
       signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    if (err.tls) throw new PlatformError(`${base} didn't answer with the platform's certificate, SKP_TLS_CERT (${err.code || err.message}), so the local token wasn't sent. Is the platform running with this configuration?`, 'certificate', 69);
+    // The platform reads its certificate once, at startup: renewed on disk since, the two differ.
+    if (err.tls) throw new PlatformError(`${base} didn't answer with the platform's certificate, SKP_TLS_CERT (${err.code || err.message}), so the local token wasn't sent. Is the platform running with this configuration? If its certificate was renewed, restart the platform: it reads the certificate only when it starts.`, 'certificate', 69);
     throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.code || err.name}). Start it first (npm start): this command drives it.`, 'not-running', 69);
   }
   const value = await res.json().catch(() => null);
@@ -832,10 +834,18 @@ async function callPlatform(cfg, method, apiPath, body, fetchFn) {
 // A fetch for the platform's own HTTPS: only the certificate in certFile (its first, for a full
 // chain) is accepted, whatever names it carries, and it is checked in the handshake, before the
 // request (and its token) is sent. A connection that fails after it was made, in the handshake,
-// rejects with err.tls.
+// rejects with err.tls. A certificate that can't be read or isn't one is a configuration problem,
+// said as one (exit 78).
 function pinnedFetch(certFile) {
-  const pem = readFileSync(certFile);
-  const pinned = new X509Certificate(pem).fingerprint256;
+  let pem;
+  let pinned;
+  try {
+    pem = readFileSync(certFile);
+    pinned = new X509Certificate(pem).fingerprint256;
+  } catch (err) {
+    const why = err.code === 'ENOENT' ? 'no such file' : err.syscall ? err.code : 'not a PEM certificate';
+    throw new PlatformError(`Can't read the platform's certificate, SKP_TLS_CERT ${certFile} (${why}): the command line trusts that certificate only. Check the file, and that this user can read it.`, 'certificate', 78);
+  }
   return (url, { method, headers, body, signal }) => new Promise((resolve, reject) => {
     let connected = false;
     const req = httpsRequest(url, {

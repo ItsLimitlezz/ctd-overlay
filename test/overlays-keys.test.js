@@ -77,6 +77,11 @@ test('"no key required" is the owner\'s choice (07 §7.6): an operator, or their
   assert.deepEqual([mine.status, mine.body.keyRequired], [200, false]);
   assert.equal(await keyless(), 200);
   assert.equal((await deck('PATCH', '/overlays/main', { keyRequired: false })).status, 200, 'already so: nothing to decide');
+  assert.equal((await deck('PATCH', '/overlays/main', { keyRequired: true })).status, 200);
+  // The log shows who changed the choice, and only that: asking for what was already so (the key,
+  // then no key) decided nothing, so it never shows the owner's choice as the operator's.
+  const decided = platform.audit.list({ action: 'overlay.key-required' }).items.reverse().map((e) => [e.actor, e.details.required]);
+  assert.deepEqual(decided, [['juan', false], ['op (token deck)', true]]);
 });
 
 test('in public mode every overlay needs its key: one marked "no key required" in lan mode needs it again, and can\'t be marked again', async (t) => {
@@ -98,6 +103,10 @@ test('in public mode every overlay needs its key: one marked "no key required" i
   assert.equal((await pub.api('GET', '/overlays/renamed')).status, 404);
   assert.equal(await snapshot(key), 200);
   assert.deepEqual(pub.platform.audit.list({ action: 'overlay' }).items, []);
+  // Asking for the key here stores the choice (lan mode's "no key" was stored): recorded, though
+  // public mode needed the key either way, so the overlay keeps it if the mode goes back to lan.
+  assert.equal((await pub.api('PATCH', '/overlays/main', { keyRequired: true })).status, 200);
+  assert.deepEqual(pub.platform.audit.list({ action: 'overlay.key-required' }).items.map((e) => e.details.required), [true]);
 });
 
 test('an overlay key is bound to its own overlay\'s record (07 §7.7): copied into another, it doesn\'t decrypt there', async (t) => {

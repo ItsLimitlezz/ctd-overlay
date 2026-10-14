@@ -15,6 +15,7 @@
     "edited": { "type": "boolean", "description": "A generated cue the operator changed: rebuilds leave it as it is." },
     "status": { "enum": ["armed", "fired", "skipped", "missed"] },
     "firedAt": { "type": "string", "format": "date-time" },
+    "stepsDone": { "type": "integer", "minimum": 0, "description": "A sequence that fired: how many of its steps are done (applied, missed or skipped). The rest are still to come, after a restart too." },
     "error": { "type": "string", "description": "Why a fired cue did nothing (no member has the action, the clip isn't ready …)." },
     "action": { "$ref": "#/$defs/action" }
   },

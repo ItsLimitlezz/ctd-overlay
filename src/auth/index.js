@@ -1,17 +1,19 @@
 // Accounts and sign-in (07 §7.2–7.5): the setup code and the owner, users and roles, sessions,
 // API tokens, two-factor codes, login protection, and the command line's local token.
 //
-//   store collection "users"     id usr_…: { username, role, passwordHash, totp?, recovery?, … }
+//   store collection "users"     id usr_…: { username, role, passwordHash, passwordId, totp?, … }
 //   store collection "sessions"  id ses_…: { userId, hash (SHA-256 of the cookie's value), csrf, … }
 //   store collection "tokens"    id tok_…: { userId, name, hash (SHA-256 of the token), scopes, … }
 //
 // Secrets are never stored as they are: a session or API token is kept as its SHA-256, a password
-// as its scrypt hash, a recovery code as its SHA-256. The TOTP secret is kept as it is until secrets
-// at rest are encrypted (step 12).
+// as its scrypt hash, a recovery code as its SHA-256. The TOTP secret is encrypted with the master
+// key (07 §7.7), with totp:<user id> as associated data, so it can't be moved to another account.
 //
 // The command line on this machine drives the running platform with a local token: 32 random
-// bytes the platform writes, at each start, to <configDir>/local-token (0600), accepted only from a
-// loopback address. Whoever can read the config directory can read the master key there anyway.
+// bytes the platform writes, at each start, to <configDir>/local-token (0600 on POSIX; on Windows
+// the mode doesn't apply and the file takes the config directory's permissions, 07 §7.7), accepted
+// only from a loopback address. Whoever can read the config directory can read the master key
+// there anyway.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
@@ -156,6 +158,11 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     try { return await hasher.verify(typeof password === 'string' ? password : '', stored); } catch (err) { throw busy(err); }
   };
   const busy = (err) => (err instanceof BusyError ? new AuthError(err.message, 'busy', 429, { retryAfterS: err.retryAfterS }) : err);
+  // Which password is on file: a new one each time a password is set (setup, a new user, a change,
+  // a reset), kept by a rehash under new scrypt parameters, which is the same password. A request
+  // that waited for the hasher compares this, not the hash. A record from before it has none, on
+  // both sides, until its password is next set.
+  const newPasswordId = () => randomBytes(8).toString('hex');
 
   // ---- sessions ----------------------------------------------------------------------------
   function cookie(token, keep, secure) {
@@ -196,7 +203,10 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   // ---- who is asking -----------------------------------------------------------------------
   // { principal } for a valid credential, { error } for one that isn't, {} for none. A principal:
   // { kind: 'session' | 'token' | 'local', user?, role, scopes (a Set), label, csrf?, sessionId?, tokenId? }.
-  function authenticate(req) {
+  // touch: false for a check that isn't a use, such as an open /events stream's at each heartbeat:
+  // the session's last use stays, so a tab left open still ends after 12 idle hours (07 §7.3). A
+  // token's last use moves either way: a stream on it is that token in use, and it has no idle end.
+  function authenticate(req, { touch = true } = {}) {
     const authz = req.headers.authorization;
     if (authz !== undefined) {
       const m = /^Bearer\s+(\S+)\s*$/i.exec(authz);
@@ -208,10 +218,10 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     // (another port, another app on this host) can't plant in a browser (07 §7.3).
     const jar = parseCookies(req.headers.cookie);
     const value = jar[cookieName(Boolean(req.client?.https))];
-    return value ? session(value) : {};
+    return value ? session(value, touch) : {};
   }
 
-  function session(value) {
+  function session(value, touch) {
     const id = sessionsByHash.get(sha256(value));
     const doc = id && store.get('sessions', id);
     if (!doc) return { error: 'Your session has ended. Sign in again.', clear: true };
@@ -224,7 +234,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
       dropSession(doc.id);
       return { error: 'Your session has ended. Sign in again.', clear: true };
     }
-    if (now() - doc.data.lastSeenAt >= TOUCH_MS) store.put('sessions', doc.id, { ...doc.data, lastSeenAt: now() });
+    if (touch && now() - doc.data.lastSeenAt >= TOUCH_MS) store.put('sessions', doc.id, { ...doc.data, lastSeenAt: now() });
     return { principal: { kind: 'session', user: userView(user), role: user.data.role, scopes: new Set(scopesOf(user.data.role)), label: user.data.username, csrf: doc.data.csrf, sessionId: doc.id } };
   }
 
@@ -289,7 +299,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     }
     if (ownerDoc()) throw new AuthError('The owner account exists already: sign in instead.', 'setup-done', 409);
     const t = new Date(now()).toISOString();
-    const user = store.put('users', newId('usr'), { username: name, role: 'owner', passwordHash, createdAt: t, lastLoginAt: t }, { ifRev: 0 });
+    const user = store.put('users', newId('usr'), { username: name, role: 'owner', passwordHash, passwordId: newPasswordId(), createdAt: t, lastLoginAt: t }, { ifRev: 0 });
     audit.record({ action: 'setup', actor: name, ip, target: user.id });
     log.info('owner account created', { username: name });
     return signedIn(user, startSession(user, { keep, ip, ua, https }));
@@ -313,10 +323,11 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
       audit.record({ action: 'login.failure', actor: name || 'anonymous', ip, reason: what });
     };
     // The record again, now the hash is done: a removal or a new password that came meanwhile
-    // stands (the password checked is no longer the one on file), and a code another sign-in used
-    // meanwhile is used up. From here to the session nothing waits, so nothing comes in between.
+    // stands (the password checked is no longer the one on file; another sign-in's rehash of it
+    // is still it), and a code another sign-in used meanwhile is used up. From here to the session
+    // nothing waits, so nothing comes in between.
     let user = doc && ok ? store.get('users', doc.id) : undefined;
-    if (!user || user.data.passwordHash !== doc.data.passwordHash) {
+    if (!user || user.data.passwordId !== doc.data.passwordId) {
       failed('password');
       throw new AuthError('The username or password is wrong.', 'bad-credentials', 401);
     }
@@ -389,11 +400,12 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   // The signed-in user's record again after a wait for the hasher: what is decided and written
   // from here on comes from it, with nothing waiting before the write. Refused when the session
   // ended meanwhile (signed out, revoked, a role change, the user removed) or the password just
-  // checked is no longer the one on file, so this request's write can't bring either back.
+  // checked is no longer the one on file (a sign-in's rehash of it is still it), so this request's
+  // write can't bring either back.
   function stillSelf(who, doc) {
     const user = store.get('users', doc.id);
     if (!user || !store.get('sessions', who.sessionId)) throw new AuthError('Your session has ended. Sign in again.', 'unauthenticated', 401);
-    if (user.data.passwordHash !== doc.data.passwordHash) throw new AuthError('Your password changed while this was being checked. Sign in again.', 'changed', 409);
+    if (user.data.passwordId !== doc.data.passwordId) throw new AuthError('Your password changed while this was being checked. Sign in again.', 'changed', 409);
     return user;
   }
 
@@ -403,7 +415,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     checkPassword(password, doc.data.username);
     const passwordHash = await hash(password);
     const user = stillSelf(who, doc);
-    const saved = store.put('users', user.id, { ...user.data, passwordHash }, { ifRev: user.rev });
+    const saved = store.put('users', user.id, { ...user.data, passwordHash, passwordId: newPasswordId() }, { ifRev: user.rev });
     endSessions(doc.id);
     audit.record({ action: 'password.change', actor: who.label, ip, target: doc.id });
     return signedIn(saved, startSession(saved, { ip, ua, https, keep: false }));
@@ -460,7 +472,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     checkPassword(password, name);
     const passwordHash = await hash(password);
     if (findUser(name)) throw new AuthError(`There is already a user "${name}".`, 'name-taken', 409);
-    const doc = store.put('users', newId('usr'), { username: name, role, passwordHash, createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
+    const doc = store.put('users', newId('usr'), { username: name, role, passwordHash, passwordId: newPasswordId(), createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
     audit.record({ action: 'user.create', actor, ip, target: doc.id, username: name, role });
     return userView(doc);
   }
@@ -495,6 +507,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     }
     if (passwordHash) {
       next.passwordHash = passwordHash;
+      next.passwordId = newPasswordId();
       changed.push('password');
     }
     if (patch.totp === false && doc.data.totp) {

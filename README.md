@@ -176,8 +176,8 @@ show carries the night: its date, timezone, go-live time and lineup. Times are w
 poster (`01:00` after midnight belongs to the same night, until the show's day boundary,
 `12:00` by default), and the server turns them into instants, clock changes included.
 
-These commands drive the running platform, so start it first (`npm start`; the demo, whose
-config folder is a temporary one, takes its own commands in its console instead):
+These commands drive the running platform, so start it first (`npm start`; for the demo, add
+the `--config-dir` it prints, since its config folder is a temporary one):
 
 ```bash
 npm run skp -- show create --name "Saturday TAKEOVER" --overlays main-h,main-v --date 2026-10-17 --timezone America/Toronto --go-live 22:30 --lineup lineup.json
@@ -240,7 +240,8 @@ fileId is a long random string) to paste into a setting. With [ffmpeg](https://f
 installed (or `SKP_FFMPEG` pointing to it), phone video is converted to H.264 MP4, which OBS's
 browser plays, and HEIC photos to JPEG (that needs ffmpeg 7.1 or later). Without it, video is
 kept as uploaded with a note that OBS may not play it. `media list` shows every file;
-`media remove <med_id>` deletes one, and refuses while an overlay's settings use it.
+`media remove <med_id>` deletes one, and refuses while anything uses it (an overlay's settings,
+a show's lineup, a cue or a plan), saying what.
 
 These commands change the data folder, so stop the platform first; until the admin UI (step 14)
 they are the way to manage media.

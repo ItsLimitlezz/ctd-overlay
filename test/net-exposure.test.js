@@ -73,8 +73,10 @@ test('behind a trusted proxy: X-Forwarded-For with ports, an entry that isn\'t a
   assert.equal(isPrivateAddress(junk.ip), false);
   // From the proxy's address, forwarding nothing: the proxy's machine itself (the command line).
   assert.deepEqual(clientOf(req('10.0.0.2'), trusted), { ip: '10.0.0.2', https: false, proxied: false });
-  assert.equal(clientOf(req('10.0.0.2', { 'x-forwarded-proto': 'https' }), trusted).proxied, true);
-  assert.equal(clientOf(req('10.0.0.2', { 'x-real-ip': '8.8.8.8' }), trusted).proxied, true);
+  // Forwarding without naming the client: unknown, never the proxy's own address.
+  assert.deepEqual(clientOf(req('10.0.0.2', { 'x-forwarded-proto': 'https' }), trusted), { ip: 'unknown', https: true, proxied: true, unnamed: true });
+  assert.deepEqual(clientOf(req('10.0.0.2', { 'x-forwarded-for': ' , ', 'x-forwarded-proto': 'https' }), trusted), { ip: 'unknown', https: true, proxied: true, unnamed: true });
+  assert.deepEqual(clientOf(req('10.0.0.2', { 'x-real-ip': '8.8.8.8' }), trusted), { ip: 'unknown', https: false, proxied: true, unnamed: true });
 });
 
 test('SKP_TRUST_PROXY is written the way the peer\'s address is, so any spelling of it matches', (t) => {
@@ -94,9 +96,11 @@ test('lan mode: a public client stays outside, whatever range or port form it co
   assert.equal(await via('192.168.1.10, junk'), 403);
   assert.equal(await via('192.168.1.10:5555'), 200);
   // The local token through a proxy on this machine: refused when it forwards, not when the
-  // command line beside it asks directly.
+  // command line beside it asks directly. Forwarded without the client's address, the client is
+  // unknown: outside the local network.
   assert.equal((await fetch(`${platform.url}/api/v1/users`, { headers: signedIn(platform) })).status, 200);
-  assert.equal((await fetch(`${platform.url}/api/v1/users`, { headers: signedIn(platform, { 'x-forwarded-proto': 'https' }) })).status, 401);
+  assert.equal((await fetch(`${platform.url}/api/v1/users`, { headers: signedIn(platform, { 'x-forwarded-for': '192.168.1.10', 'x-forwarded-proto': 'https' }) })).status, 401);
+  assert.equal((await fetch(`${platform.url}/api/v1/users`, { headers: signedIn(platform, { 'x-forwarded-proto': 'https' }) })).status, 403);
 });
 
 test('the machine\'s names follow its addresses: one that arrives after startup is accepted', async (t) => {

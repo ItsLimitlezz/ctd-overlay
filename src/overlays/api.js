@@ -50,8 +50,8 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base 
   };
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
-    r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays', run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
-    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template', body: { fields: ['slug', 'template', 'settings'] }, run: ({ body, who, req }) => {
+    r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
+    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template', body: { fields: ['slug', 'template', 'settings'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
       const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {} });
       audit.record({ action: 'overlay.create', actor: who.label, ip: req.client?.ip, target: doc.data.slug, template: `${doc.data.template.id}@${doc.data.template.version}` });
       return { status: 201, body: resource(docOf(doc.data.slug)) };
@@ -68,7 +68,9 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base 
       // One save, after every field is checked: a refused one changes nothing.
       const saved = overlays.update(doc.id, body, { ifRev });
       if (saved.data.slug !== doc.data.slug) audit.record({ action: 'overlay.rename', actor: who.label, ip: req.client?.ip, target: saved.data.slug, from: doc.data.slug });
-      if (body.keyRequired !== undefined) recordKey(who, req, 'overlay.key-required', saved.data.slug, { required: body.keyRequired });
+      // Recorded only when the choice changed: asking for what is already so decides nothing, and
+      // must not show someone else's choice as theirs.
+      if (body.keyRequired !== undefined && (saved.data.keyRequired !== false) !== (doc.data.keyRequired !== false)) recordKey(who, req, 'overlay.key-required', saved.data.slug, { required: body.keyRequired });
       return resource(docOf(saved.data.slug));
     } }),
     r({ method: 'DELETE', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Delete an overlay (its URL stops working)', resource: rev, run: ({ params, who, req }) => {

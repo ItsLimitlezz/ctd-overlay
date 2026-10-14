@@ -27,7 +27,7 @@ const ENTRY_BYTES = 2 * 1024 * 1024;
 // Desktop clutter, and a version-control directory (a template packed from its repository).
 const JUNK = /(^|\/)(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini)$|(^|\/)(__MACOSX|\.git|\.svn|\.hg)(\/|$)/i;
 // SemVer 2.0.0 (semver.org), without build metadata: no leading zeros.
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
+export const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
 const CATEGORY_CORES = { show: ['starting', 'program', 'brb', 'outro'] };
 const ALL_CORES = ['auto', 'starting', 'program', 'brb', 'lineup', 'outro', 'bg', 'intro'];
 const KNOWN_FIELDS = new Set(['$schema', 'standard', 'id', 'name', 'version', 'description', 'author', 'license', 'category', 'tags', 'entry', 'previews', 'engines', 'canvases', 'scenes', 'consumes', 'settings', 'actions', 'alerts', 'transitions', 'fonts', 'definitions', '$defs']);

@@ -11,8 +11,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
+import { createAudit } from '../src/auth/audit.js';
+import { createAuth } from '../src/auth/index.js';
+import { createHasher } from '../src/auth/passwords.js';
 import { hotp, stepAt } from '../src/auth/totp.js';
 import { loadConfig } from '../src/config.js';
+import { openStore } from '../src/store/index.js';
 import { defer, memoryLogger, tempDir } from './helpers.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -121,6 +125,69 @@ test('the owner sets her password while she turns two-factor on: both stand; wit
   const before = mallory().data.passwordHash;
   await assert.rejects(auth.users.update('mallory', { password: 'from a stale page 1' }, { who: cli, actor: cli.label, ifRev: read.rev, ...AT }), { name: 'ConflictError' });
   assert.equal(mallory().data.passwordHash, before);
+});
+
+// Auth on a store of its own, with the owner and Mallory: authAt(N) is one more on the same store,
+// hashing at scrypt cost N, and hooks.hashing() is called each time one starts hashing a password.
+async function onOneStore(t) {
+  const store = openStore({ dataDir: tempDir(t) });
+  defer(t, () => store.close());
+  const audit = createAudit({ store });
+  const hooks = { hashing: () => {} };
+  const authAt = (N) => {
+    const hasher = createHasher({ params: { N, r: 8, p: 1 } });
+    const hash = (password) => {
+      const out = hasher.hash(password);
+      hooks.hashing();
+      return out;
+    };
+    return createAuth({ store, audit, log: memoryLogger().log, hasher: { ...hasher, hash, verify: hasher.verify } });
+  };
+  const first = authAt(2048);
+  first.start();
+  await first.createOwner({ code: first.setupCode, username: 'juan', password: PASSWORD }, AT);
+  await first.users.create({ username: 'mallory', password: MALLORY, role: 'admin' }, { actor: 'juan', ...AT });
+  const mallory = () => store.list('users', { limit: 1000 }).find((d) => d.data.username === 'mallory');
+  const login = (auth, password = MALLORY) => auth.login({ username: 'mallory', password }, AT);
+  return { audit, hooks, authAt, first, mallory, login };
+}
+
+test('her own password change while a sign-in checked the old one: the old one signs nobody in', async (t) => {
+  const { hooks, first: auth, login } = await onOneStore(t);
+  const signed = await login(auth);
+  const who = auth.authenticate({ headers: { cookie: signed.cookie.split(';')[0] } }).principal;
+  // The sign-in reads her record as the change hashes the new password, and its check of the old
+  // one ends after the change is saved.
+  let signing;
+  hooks.hashing = () => {
+    hooks.hashing = () => {};
+    signing = login(auth);
+  };
+  await auth.changePassword(who, { current: MALLORY, password: 'mallory\'s next password' }, AT);
+  await assert.rejects(signing, { code: 'bad-credentials', status: 401 });
+  assert.equal((await login(auth, 'mallory\'s next password')).user.username, 'mallory');
+});
+
+// The scrypt cost changed since her password was hashed (07 §7.3): a sign-in rehashes it, and that
+// is still her password, not a new one. Auth on one store at two costs, each made after the last
+// one's sessions so it knows them: whichever cost her hash isn't at, a sign-in there rehashes.
+test('her password rehashed meanwhile (the scrypt cost changed) is still hers: two sign-ins at once, and her change beside one, all go through', async (t) => {
+  const { audit, authAt, mallory, login } = await onOneStore(t);
+  const cost = () => /^scrypt\$N=(\d+),/.exec(mallory().data.passwordHash)[1];
+
+  const cheaper = authAt(1024);
+  assert.deepEqual(await statuses([login(cheaper), login(cheaper)]), [200, 200], 'both sign in');
+  assert.equal(cost(), '1024', 'rehashed');
+  const signed = await login(cheaper);
+
+  const dearer = authAt(2048);
+  const who = dearer.authenticate({ headers: { cookie: signed.cookie.split(';')[0] } }).principal;
+  const signing = login(dearer); // rehashes while her change waits for the hasher
+  const changing = dearer.changePassword(who, { current: MALLORY, password: 'mallory\'s next password' }, AT);
+  assert.deepEqual(await statuses([signing, changing]), [200, 200], 'her change goes through');
+  await assert.rejects(login(dearer), { code: 'bad-credentials' });
+  assert.equal((await login(dearer, 'mallory\'s next password')).user.username, 'mallory');
+  assert.deepEqual(audit.list({ action: 'login.failure' }).items.map((e) => e.details.reason), ['password'], 'only the old password, last, failed');
 });
 
 test('a two-factor code, or a recovery code, carried by two sign-ins at once signs in once', async (t) => {

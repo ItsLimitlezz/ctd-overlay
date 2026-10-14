@@ -62,19 +62,22 @@ const forwardedIp = (entry) => {
 // says: the client in X-Forwarded-For, read from the right past any trusted proxies, and
 // X-Forwarded-Proto. X-Forwarded-* from anyone else is ignored (07 §7.8). A request from the
 // proxy's address that forwards nothing is the proxy's machine's own: the command line beside a
-// local reverse proxy, say. trustProxy: addresses as normalizeIp writes them (config.js).
+// local reverse proxy, say. One it forwards without naming the client (no X-Forwarded-For, or an
+// empty one) is from "unknown", never the proxy's own address: that would make anyone on the
+// internet local to setup, lan mode, the per-IP limits and a token's address list. trustProxy:
+// addresses as normalizeIp writes them (config.js).
 export function clientOf(req, trustProxy = []) {
   const peer = normalizeIp(req.socket?.remoteAddress);
   const tls = Boolean(req.socket?.encrypted);
   if (!trustProxy.includes(peer) || !FORWARDING.some((h) => req.headers[h] !== undefined)) return { ip: peer, https: tls, proxied: false };
   const chain = String(req.headers['x-forwarded-for'] || '').split(',').filter((e) => e.trim() !== '').map(forwardedIp);
-  let ip = peer;
+  let ip = 'unknown';
   for (let i = chain.length - 1; i >= 0; i--) {
     ip = chain[i];
     if (!trustProxy.includes(chain[i])) break;
   }
   const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  return { ip, https: proto ? proto === 'https' : tls, proxied: true };
+  return { ip, https: proto ? proto === 'https' : tls, proxied: true, ...(chain.length ? {} : { unnamed: true }) };
 }
 
 // A fetch for downloads the platform makes on someone's behalf (07 §7.11): https only, and the

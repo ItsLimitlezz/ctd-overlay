@@ -177,7 +177,9 @@ Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS.
 (`ip:port`, `[v6]:port`); an entry that isn't an address ends the walk, and the client counts as
 outside. A trusted proxy **MUST** send `X-Forwarded-For` and `X-Forwarded-Proto` on every request
 it forwards (Caddy and Traefik do; nginx once `proxy_set_header` sets them): a request from its
-address with no forwarding header is treated as that machine's own. `SKP_TRUST_PROXY` matches any
+address with no forwarding header is treated as that machine's own, and one it forwards without
+`X-Forwarded-For` (or with an empty one) comes from an unknown client, outside: refused in `lan`
+mode and at setup, and logged once so the proxy gets fixed. `SKP_TRUST_PROXY` matches any
 spelling of an address.
 
 In `public` mode, a client on the local network may still use plain HTTP (OBS on the LAN needs

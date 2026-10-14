@@ -14,7 +14,8 @@ import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ApiError } from '../http/api.js';
-import { packageFromZip, previewType, validatePackage } from './package.js';
+import { packageFromZip, previewType, SEMVER, validatePackage } from './package.js';
+import { compareVersions } from './registry.js';
 import { fetchPackage, parseSource } from './sources.js';
 import { bufferSource } from './zip.js';
 
@@ -61,8 +62,8 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
 
   // The sources first: /templates/sources would otherwise be read as a template id.
   return [
-    r({ method: 'GET', path: '/api/v1/templates/sources', scope: 'templates:read', summary: 'Followed template sources', run: ({ url }) => api.paginate(sources.list().map(sourceView), url, (s) => s.id) }),
-    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL', body: { fields: ['source', 'autoUpgrade', 'template'] }, run: async ({ body, req, who }) => {
+    r({ method: 'GET', path: '/api/v1/templates/sources', scope: 'templates:read', summary: 'Followed template sources', paged: true, run: ({ url }) => api.paginate(sources.list().map(sourceView), url, (s) => s.id) }),
+    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL', body: { fields: ['source', 'autoUpgrade', 'template'] }, status: 201, run: async ({ body, req, who }) => {
       if (typeof body.source !== 'string') throw new ApiError(422, 'invalid', '"source" is owner/name or an https URL.');
       const s = sources.add(body.source, { autoUpgrade: body.autoUpgrade, actor: who.label, claim: body.template });
       record(who, req, 'template.follow', { target: s.data.label });
@@ -74,8 +75,8 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
       record(who, req, 'template.unfollow', { target: s.data.label });
       return { id: s.id, label: s.data.label };
     } }),
-    r({ method: 'POST', path: '/api/v1/templates/sources/check', scope: 'templates:write', summary: 'Check followed sources now (?source= one)', body: { fields: [] }, run: async ({ url }) => ({ items: await sources.check(url.searchParams.get('source') || undefined, { force: true }) }) }),
-    r({ method: 'GET', path: '/api/v1/templates', scope: 'templates:read', summary: 'Installed templates', run: ({ url }) => {
+    r({ method: 'POST', path: '/api/v1/templates/sources/check', scope: 'templates:write', summary: 'Check followed sources now (?source= one)', body: { fields: [] }, query: ['source'], run: async ({ url }) => ({ items: await sources.check(url.searchParams.get('source') || undefined, { force: true }) }) }),
+    r({ method: 'GET', path: '/api/v1/templates', scope: 'templates:read', summary: 'Installed templates (?category=)', paged: true, query: ['category'], run: ({ url }) => {
       const category = url.searchParams.get('category');
       const ids = [...new Set(templates.list().map((t) => t.id))].sort();
       const list = ids.map(summary).filter((t) => !category || t.category === category);
@@ -86,14 +87,21 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
       const newest = templates.versions(params.id)[0];
       return { ...s, manifest: newest.manifest, previews: previewsOf(newest) };
     } }),
-    r({ method: 'GET', path: '/api/v1/templates/:id/versions', scope: 'templates:read', summary: 'A template\'s installed versions, newest first', run: ({ params, url }) => {
-      // Paged like every list (03 §3.1). Newest first is SemVer order, not string order, so a
-      // version's place in the list is its key.
+    r({ method: 'GET', path: '/api/v1/templates/:id/versions', scope: 'templates:read', summary: 'A template\'s installed versions, newest first', paged: true, run: ({ params, url }) => {
+      // Paged like every list (03 §3.1). Newest first is SemVer order, not string order, so the
+      // cursor is the last version a page gave, and the next page is what sorts below it: a
+      // version installed or removed between pages neither repeats nor skips another (a place in
+      // the list would shift).
       const versions = summary(params.id).versions;
-      const place = new Map(versions.map((v, i) => [v, String(i).padStart(6, '0')]));
-      return api.paginate(versions, url, (v) => place.get(v));
+      const cursor = url.searchParams.get('cursor');
+      if (!cursor) return api.paginate(versions, url, (v) => v.version);
+      const after = Buffer.from(cursor, 'base64url').toString('utf8');
+      if (!SEMVER.test(after)) throw new ApiError(422, 'invalid', '"cursor" is the "next" of the page before.');
+      const rest = new URL(url);
+      rest.searchParams.delete('cursor');
+      return api.paginate(versions.filter((v) => compareVersions(v.version, after) < 0), rest, (v) => v.version);
     } }),
-    r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version/previews/*', scope: 'templates:read', summary: 'A preview image (its path in previews/)', run: async ({ params, res }) => {
+    r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version/previews/*', scope: 'templates:read', summary: 'A preview image (its path in previews/)', produces: 'image/*', run: async ({ params, res }) => {
       const t = templates.get(params.id, params.version);
       // Only a path the manifest lists as a preview (validated: inside the package) and installed.
       const rel = `previews/${params['*']}`;
@@ -109,8 +117,9 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
       });
       res.end(data);
     } }),
-    r({ method: 'POST', path: '/api/v1/templates', scope: 'templates:write', summary: 'Install a package (the body) or { url }', body: { raw: true, limit: PACKAGE_LIMIT }, run: ({ body, req, who }) => install(body, req, who) }),
-    r({ method: 'DELETE', path: '/api/v1/templates/:id', scope: 'templates:write', summary: 'Uninstall every version, or ?version= one', run: ({ params, url, req, who }) => {
+    // 201 installed, or 200: that build of that version was installed already (nothing to do).
+    r({ method: 'POST', path: '/api/v1/templates', scope: 'templates:write', summary: 'Install a package (the body) or { url }', body: { raw: true, json: ['url'], limit: PACKAGE_LIMIT }, status: [201, 200], run: ({ body, req, who }) => install(body, req, who) }),
+    r({ method: 'DELETE', path: '/api/v1/templates/:id', scope: 'templates:write', summary: 'Uninstall every version, or ?version= one', query: ['version'], run: ({ params, url, req, who }) => {
       const version = url.searchParams.get('version') || undefined;
       const removed = templates.uninstall(params.id, version, { pinnedBy: overlays.pinnedBy, actor: who.label });
       record(who, req, 'template.uninstall', { target: params.id, removed: removed.map((x) => `${x.id}@${x.version}`) });
