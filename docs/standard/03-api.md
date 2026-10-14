@@ -116,7 +116,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 ### Shows & timeline
 | Method · Path | Purpose |
 |---|---|
-| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays |
+| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
 | `GET /shows/{id}/alerts` · `POST /shows/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | The show's alert queue (05 §5.5) |

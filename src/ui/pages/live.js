@@ -619,10 +619,11 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     returnNote.hidden = !returning;
     if (returning) set(returnNote, `Back to ${cat.sceneLabel(ret.then)} in ${until(back - now)}`);
   }
-  // A show as the API answered it (a poll, or a command's answer); an older revision is ignored.
+  // A show as the API answered it (a poll, or a command's answer); an older one is ignored. stateRev
+  // moves with every change, live control included (rev, the ETag, only with edits).
   function applyShow(next) {
     if (!next || typeof next !== 'object' || next.id !== show.id) return false;
-    if (Number.isInteger(next.rev) && Number.isInteger(show.rev) && next.rev < show.rev) return false;
+    if (Number.isInteger(next.stateRev) && Number.isInteger(show.stateRev) && next.stateRev < show.stateRev) return false;
     show = next;
     set(titleEl, show.name || 'Show');
     const option = select && [...select.options].find((o) => o.value === show.id);

@@ -478,14 +478,14 @@ export async function detail(view, ctx) {
         show = await api.patch(base(), patch, { ifMatch: formShow });
       } catch (err) {
         if (err.status !== 412) throw err;
-        // Changed meanwhile (H16): re-read it. If what this form edits is as it was, the change
-        // was elsewhere (a scene, who's on): the edits stay here to save again. Otherwise the
-        // form shows the latest, to redo the change on.
+        // Edited meanwhile (H16; live control doesn't count): re-read it. If what this form edits
+        // is as it was, the edit was elsewhere (the lineup tab, another user's members): the edits
+        // stay here to save again. Otherwise the form shows the latest, to redo the change on.
         const before = detailsOf(formShow);
         await fresh(true);
         const same = detailsOf(show) === before;
         toast(same
-          ? 'The show changed since you opened it (a scene or who\'s on), but not these details. Your changes are still here: save again.'
+          ? 'The show was edited since you opened it, but not these details. Your changes are still here: save again.'
           : 'These details changed since you opened them: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
         drawDetails(panel, overlays, same ? { name: name.value, date: date.value, timezone: zone.value, dayBoundary: boundary.value, goLive: goLive.value, overlays: picker.values() } : undefined);
         return;
@@ -630,12 +630,13 @@ export async function detail(view, ctx) {
         show = await api.patch(base(), { lineup }, { ifMatch: formShow });
       } catch (err) {
         if (err.status !== 412) throw err;
-        // Changed meanwhile (H16): if the lineup itself is as it was, the change was elsewhere
-        // (a scene, who's on), and the edits stay to save again; otherwise the latest shows.
+        // Edited meanwhile (H16; live control doesn't count): if the lineup itself is as it was,
+        // the edit was elsewhere (the details), and the edits stay to save again; otherwise the
+        // latest shows.
         await fresh(true);
         const same = JSON.stringify(lineupOf(show)) === original;
         toast(same
-          ? 'The show changed since you opened it (a scene or who\'s on), but not its lineup. Your changes are still here: save again.'
+          ? 'The show was edited since you opened it, but not its lineup. Your changes are still here: save again.'
           : 'The lineup changed since you opened it: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
         drawLineup(panel, images, same ? rows : undefined);
         return;

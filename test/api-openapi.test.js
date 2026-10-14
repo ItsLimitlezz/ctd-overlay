@@ -207,6 +207,9 @@ test('a tour of every route: each success it answers, the type it answers in, th
   const testbed = (await call('GET', `/templates/${TESTBED.id}`)).body;
   await call('GET', testbed.previews[0].slice('/api/v1'.length));
   await call('GET', '/templates/dev.skp.sample/versions?limit=1');
+  const pinned = (await call('GET', `/templates/${TESTBED.id}/versions/${TESTBED.version}`)).body;
+  assert.deepEqual([pinned.version, pinned.manifest.id, pinned.previews], [TESTBED.version, TESTBED.id, testbed.previews], 'one version, with its own manifest');
+  assert.ok(testbed.canvases.length && Array.isArray(testbed.tags), 'a summary has what a gallery card shows');
   await call('POST', '/templates/sources', { body: { source: 'a/missing' } });
   await call('GET', '/templates/sources');
   await call('POST', '/templates/sources/check?source=a/missing', { body: {} });
