@@ -7,5 +7,7 @@ data/
 config/
 
 *.log
+# v0's crash log in the importer's fixtures (test/import.test.js)
+!test/fixtures/v0/*/crash.log
 .DS_Store
 Thumbs.db

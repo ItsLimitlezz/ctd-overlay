@@ -118,6 +118,38 @@ v0 is the working prototype this standard generalizes. Mapping:
 | `/settings` page | Settings + Connections sections |
 | No login | users, roles, sessions, overlay keys |
 
+Importing a v0 data directory (informative: how this platform's `skp import v0` reads the table
+above):
+- **The setup** is `kit.json`, else the base64 `cfg` in `live.json` (an install from before
+  `kit.json`), whose event may still be the legacy `evParams` query string. A setup v0 never
+  cleaned (`_cmig` missing) is cleaned as v0 would have. A field of the wrong type is skipped with
+  a warning, and v0's own default stands for it.
+- **Times** keep v0's rule as the show's day boundary, `12:00` (H7), in the zone the operator
+  names: v0 had only its server's.
+- **The headliner** (H8) is the event options' name, else the event's billed artist, matched to
+  the lineup as v0's overlay did (lowercase, letters only, doubled letters collapsed; exact, then
+  prefix). With no match, no slot is flagged; the event look shows the name as a setting.
+- **One overlay with both canvases** replaces v0's `feed=h` and `feed=v` links; only the settings
+  that differ from the template's defaults are saved. In the event look, v0's own scanline switch
+  (`evOpts.scan`) is the one that applies, and its now-playing and chip switches (`np`, `sched`),
+  which the template doesn't have, turn those cues off instead. A typed viewer number is not
+  imported (H6).
+- **Generated cues** use v0's recipe: a title card at every start, the headliner's included (v0
+  had no headliner intro of its own), the Event Intro `clubIntroMin` in, now playing every
+  `npIntervalMin`. Two differences remain, the platform's: the last set's now playing runs two
+  hours (v0: one), and a generated Event Intro plays only from program (09 §9.5). **Hand-made
+  cues** for that night that haven't happened map as `djtitle`/`title` → `titleCard`,
+  `djnp`/`djon`/`np` → `nowPlaying` (a DJ cue that named an act is a `sequence`: who's on, then
+  the action), `clubintro` and `headliner` → those scenes, `sched:*` → `chipOpening`/`chipOnAt`,
+  `clip:play`/`clip:stop` → `media.play` of the imported clip/`media.stop`, `scene:<x>` → `x`.
+- **Plans** are the dates from today on, except the show's own and any v0 had already loaded. A
+  plan's settings replace the overlay's when it activates, so a plan whose look differs carries
+  the overlay's whole settings.
+- **Credentials** wait, encrypted with the record id as associated data, until connections exist
+  (06 §6.1); `skp key rotate` re-encrypts them with the rest.
+- Never imported: the roster, live state (scene, REC, counters), other uploads, `crash.log`. Paths
+  in v0's files are never followed: the clip is looked up by its base name in `uploads/` only.
+
 Suggested order for the new build: storage and auth → overlays and the runtime SDK with mock
 data → port the TAKEOVER design as the first template (VIKKSTAR was removed from v0 after its
 event; recover it from commit `7c41201` if wanted as a second) → shows and timeline → Twitch and

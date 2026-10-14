@@ -77,6 +77,10 @@ const ACTIONS = {
   'media.add': 'Uploaded media', 'media.remove': 'Deleted media',
   'overlay.create': 'Created an overlay', 'overlay.rename': 'Renamed an overlay', 'overlay.delete': 'Deleted an overlay',
   'overlay.upgrade': 'Upgraded an overlay', 'overlay.revert': 'Reverted an overlay',
+  'import.v0.show.create': 'Imported a show from v0', 'import.v0.show.delete': 'Replaced a show with one from v0',
+  'import.v0.overlay.create': 'Imported an overlay from v0', 'import.v0.overlay.update': 'Updated an overlay from v0',
+  'import.v0.media.add': 'Imported v0\'s Line clip', 'import.v0.cues.build': 'Built a v0 show\'s cues', 'import.v0.cue.add': 'Imported a v0 cue',
+  'import.v0.plan.add': 'Imported a v0 planned date', 'import.v0.connection.keep': 'Kept v0 credentials for a connection',
 };
 const REASONS = { password: 'wrong password', code: 'wrong code' };
 
