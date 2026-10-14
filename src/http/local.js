@@ -31,7 +31,7 @@ export async function jsonBody(req, res, limit) {
   try {
     text = await readBody(req, limit);
   } catch (err) {
-    if (err.status) sendProblem(res, err.status, 'Body too large', err.message, { headers: err.headers });
+    if (err.status) sendProblem(res, err.status, err.status === 408 ? 'Request timeout' : 'Body too large', err.message, { headers: err.headers });
     else sendProblem(res, 400, 'Bad request', 'The body could not be read.');
     return undefined;
   }

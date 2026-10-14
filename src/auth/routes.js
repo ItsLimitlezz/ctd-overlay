@@ -20,7 +20,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { refusedHere } from '../http/local.js';
 import { sendProblem } from '../http/server.js';
-import { AuthError } from './index.js';
+import { AuthError, newestFirst } from './index.js';
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 const TITLES = { 401: 'Not signed in', 403: 'Forbidden', 404: 'Not found', 409: 'Conflict', 422: 'Not possible', 429: 'Too many requests' };
@@ -79,20 +79,21 @@ export function authRoutes({ api, auth, audit }) {
     r({ method: 'POST', path: '/api/v1/auth/login', open: true, summary: 'Sign in', body: { fields: ['username', 'password', 'code', 'keep'] }, run: async ({ body, req }) => signIn(200, await auth.login(body, ctxOf(req, undefined, body))) }),
     r({ method: 'POST', path: '/api/v1/auth/logout', summary: 'Sign out', body: { fields: [] }, run: ({ who, req }) => signIn(200, auth.logout(who, ctxOf(req, who))) }),
     r({ method: 'GET', path: '/api/v1/auth/session', summary: 'Who is asking: user, role, scopes, CSRF token', run: ({ who }) => auth.describe(who) }),
-    r({ method: 'GET', path: '/api/v1/auth/sessions', summary: 'Your sessions', run: ({ who, url }) => api.paginate(auth.sessions.list(who), url, (s) => `${s.lastSeenAt}|${s.id}`) }),
+    r({ method: 'GET', path: '/api/v1/auth/sessions', summary: 'Your sessions, newest first', run: ({ who, url }) => api.paginate(auth.sessions.list(who), url, (s) => newestFirst(s.id)) }),
     r({ method: 'DELETE', path: '/api/v1/auth/sessions/:id', summary: 'End one of your sessions', run: ({ who, params, req }) => {
       const ctx = ctxOf(req, who);
       const out = auth.sessions.revoke(who, params.id, ctx);
       return signIn(200, out.current ? { ...out, cookie: auth.clearCookie(ctx.https) } : out);
     } }),
     r({ method: 'POST', path: '/api/v1/auth/password', summary: 'Change your password', body: { fields: ['current', 'password'] }, run: async ({ who, body, req }) => signIn(200, await auth.changePassword(who, body, ctxOf(req, who))) }),
-    r({ method: 'POST', path: '/api/v1/auth/totp/enroll', summary: 'Start two-factor: a secret for your authenticator app', body: { fields: ['password'] }, run: ({ who, body }) => auth.totp.enroll(who, body) }),
+    r({ method: 'POST', path: '/api/v1/auth/totp/enroll', summary: 'Start two-factor: a secret for your authenticator app', body: { fields: ['password'] }, run: ({ who, body, req }) => auth.totp.enroll(who, body, ctxOf(req, who)) }),
     r({ method: 'POST', path: '/api/v1/auth/totp/verify', summary: 'Turn two-factor on with a code: ten recovery codes, once', body: { fields: ['code'] }, run: ({ who, body, req }) => signIn(200, auth.totp.verify(who, body, ctxOf(req, who))) }),
     r({ method: 'DELETE', path: '/api/v1/auth/totp', summary: 'Turn two-factor off (with your password)', body: { fields: ['password'] }, run: async ({ who, body, req }) => signIn(200, await auth.totp.disable(who, body, ctxOf(req, who))) }),
     r({ method: 'GET', path: '/api/v1/users', scope: 'users:admin', summary: 'Accounts', run: ({ url }) => api.paginate(auth.users.list(), url, (u) => `${u.createdAt}|${u.id}`) }),
     r({ method: 'POST', path: '/api/v1/users', scope: 'users:admin', summary: 'Add an account', body: { fields: ['username', 'password', 'role'] }, run: async ({ who, body, req }) => ({ status: 201, body: await auth.users.create(body, ctxOf(req, who)) }) }),
     r({ method: 'GET', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'An account', run: ({ params }) => auth.users.get(params.ref) }),
-    r({ method: 'PATCH', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'Change a role, set a password, or turn two-factor off', body: { fields: ['role', 'password', 'totp'] }, run: ({ who, params, body, req }) => auth.users.update(params.ref, body, ctxOf(req, who)) }),
+    // An account has an ETag like any resource: the admin UI changes the one it read (If-Match).
+    r({ method: 'PATCH', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'Change a role, set a password, or turn two-factor off', body: { fields: ['role', 'password', 'totp'] }, resource: (p) => auth.users.get(p.ref), run: ({ who, params, body, req, ifRev }) => auth.users.update(params.ref, body, { ...ctxOf(req, who), who, ifRev }) }),
     r({ method: 'DELETE', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'Remove an account, its sessions and tokens', run: ({ who, params, req }) => auth.users.remove(params.ref, ctxOf(req, who)) }),
     r({ method: 'GET', path: '/api/v1/tokens', summary: 'Your API tokens (?all=true: everyone\'s, for the owner)', run: ({ who, url }) => api.paginate(auth.tokens.list(who, { all: url.searchParams.get('all') === 'true' }), url) }),
     r({ method: 'POST', path: '/api/v1/tokens', summary: 'Create an API token (its secret is shown once)', body: { fields: ['name', 'scopes', 'expiresAt', 'expiresInDays', 'ips'] }, run: ({ who, body, req }) => ({ status: 201, body: auth.tokens.create(who, body, ctxOf(req, who)) }) }),

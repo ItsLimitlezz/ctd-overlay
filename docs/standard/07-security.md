@@ -23,9 +23,10 @@ There are **no default credentials**, ever.
   log (and, on desktop, shows it in the app window).
 - `POST /api/v1/setup` requires that code and creates the owner. The code expires after 1 hour
   or first use; a restart issues a new one.
-- In `public` exposure mode the setup endpoint **MUST** additionally refuse requests that do not
-  come from a loopback or private address, so an exposed fresh install cannot be claimed by a
-  stranger who finds it first.
+- The setup endpoint **MUST** refuse requests that do not come from a loopback or private
+  address (behind a trusted proxy, the client it forwards, §7.8), so an exposed fresh install
+  cannot be claimed by a stranger who finds it first. It matters in `public` mode: in `local`
+  mode only this machine reaches setup, and `lan` mode serves the local network only.
 
 ## 7.3 Passwords and sessions
 
@@ -49,7 +50,8 @@ composition rules.
 **Sessions.**
 - Session IDs: 256 bits from a CSPRNG. Store only their SHA-256 server-side.
 - Cookie: `HttpOnly`, `SameSite=Lax`, `Path=/`. Over HTTPS: `Secure` and the `__Host-` name
-  prefix (`__Host-skp_session`). Over plain HTTP on a LAN: `skp_session` without `Secure`.
+  prefix (`__Host-skp_session`). Over plain HTTP on a LAN: `skp_session` without `Secure`. Over
+  HTTPS only the `__Host-` cookie is read; signing out there clears both names.
 - Idle timeout 12 h; absolute lifetime 30 days ("keep me signed in") or 24 h otherwise.
 - Rotate the session ID on login and on any privilege change. Invalidate all of a user's
   sessions on password change, 2FA change or role change.
@@ -64,14 +66,23 @@ requests are exempt.
 exponential delay (1 s → 2 s → … → 15 min). The count is a streak: each failure within 15
 minutes of the last one counts, so the delay can reach its cap (a sliding 15-minute window would
 empty before it did); 15 quiet minutes, or a success for the account, start it over. The same
-protection covers setup codes. Error messages never reveal whether the account exists, and an
-unknown name costs one hash too. Failed and successful logins go to the audit log.
+protection covers setup codes. The password asked for again (a new password, turning two-factor
+on or off) counts with the sign-ins, and each failure is audited as `login.failure` (reason
+`recheck`). Error messages never reveal whether the account exists, and an unknown name costs one
+hash too. Failed and successful logins go to the audit log.
 
 **The command line.** On the platform's own machine, `skp` drives the running platform with a
-local token (03 §3.3) the platform writes at each start into the config directory (`0600`),
-beside the master key: whoever can read one can read the other. It acts as the owner, is accepted
-only from a loopback address, and is removed when the platform stops. It is how the owner resets
-a forgotten password (`skp user password <name>`).
+local token (03 §3.3) the platform writes at each start into the config directory (`0600` on
+POSIX, §7.7), beside the master key: whoever can read one can read the other. It acts as the
+owner, is accepted only from a loopback address and never through a proxy (§7.8), and is removed
+when the platform stops. Its changes are recorded as `cli:<user>` (§7.12). It reaches the
+platform at 127.0.0.1 (or `::1`) when the platform listens on every interface, and over HTTPS
+with built-in TLS, trusting only the certificate in `SKP_TLS_CERT`, checked before the token is
+sent. It works in every exposure mode, but not when `SKP_HOST` is a specific address that isn't
+loopback (exit 78). It is how the owner resets a forgotten password (`skp user password <name>`).
+The owner's own password and two-factor change only with the current password
+(`POST /auth/password`, `DELETE /auth/totp`) or from the command line: `PATCH /users/{id}`
+refuses them to a session or a token (`403`).
 
 ## 7.4 Two-factor authentication
 
@@ -79,7 +90,8 @@ TOTP (RFC 6238, SHA-1, 6 digits, 30 s, ±1 step) with 10 single-use recovery cod
 A code is accepted once (a later step only), and enrolling or turning it off takes the password.
 In `public` mode 2FA **SHOULD** be required for owner and admin roles and the UI nags until it
 is enabled. WebAuthn passkeys **MAY** be supported in addition. The TOTP secret is a secret at
-rest (§7.7).
+rest (§7.7). Recovery codes are kept as hashes, so they still sign in when the TOTP secret can't
+be decrypted (data restored without its master key).
 
 ## 7.5 Roles and API tokens
 
@@ -100,6 +112,9 @@ owner gives the other roles.
 SHA-256. Each has scopes (03 §3.3), an optional expiry, an optional IP allow-list, and a
 last-used timestamp. A token can never exceed its creator's role.
 
+Revoking a token, removing a user or ending a session also ends their open `/api/v1/events`
+streams, at the next heartbeat or event (03 §3.4).
+
 ## 7.6 Overlay keys
 
 OBS browser sources can't log in, so overlays use capability URLs.
@@ -118,7 +133,10 @@ OBS browser sources can't log in, so overlays use capability URLs.
 - Rotating it is explicit and warns that OBS sources must be updated.
 - Overlay responses send `Referrer-Policy: no-referrer`; the platform **MUST** redact `key=`
   values from access logs and error reports.
-- In `local`/`lan` mode the owner **MAY** mark an overlay "no key required".
+- In `local`/`lan` mode the owner **MAY** mark an overlay "no key required" (`system:admin`;
+  other roles may require the key again or rotate it, never drop it). Rotating the key, or
+  requiring it again, ends the overlay's open streams; a page reconnects only with the key that
+  works now.
 
 ## 7.7 Secrets at rest
 
@@ -128,8 +146,15 @@ encrypted with **AES-256-GCM** (random 96-bit nonce per record, record ID as ass
 - The 32-byte **master key** comes from `SKP_MASTER_KEY` (base64) or `SKP_MASTER_KEY_FILE`.
 - If neither is set on first start, the platform generates one into the config directory with
   `0600` permissions — deliberately **outside** the data directory — and warns that backing up
-  data without the key makes secrets unrecoverable.
+  data without the key makes secrets unrecoverable. The `0600` mode is POSIX: on Windows the key
+  takes the config directory's permissions, so keep `SKP_CONFIG_DIR` in the user's profile (the
+  platform warns otherwise).
+- Command-line commands never make a master key: they use the platform's, from the config
+  directory or the same `SKP_MASTER_KEY` / `SKP_MASTER_KEY_FILE`.
 - Ciphertexts carry a key ID so the key can be rotated (`skp key rotate` re-encrypts in place).
+  It never replaces an existing `master.key.next`: a rotation that stopped part way is finished
+  with that key, and a `.next` left without its `master.key` is put in place the next time the
+  key is read.
 - Decrypted secrets live only in connector memory.
 
 ## 7.8 Exposure modes
@@ -148,11 +173,21 @@ certificate (`SKP_TLS_CERT`, `SKP_TLS_KEY`) or a trusted reverse proxy (`SKP_TRU
 the proxy's address, with `X-Forwarded-Proto: https`). Recommended: a reverse proxy such as
 Caddy or Traefik with automatic certificates, or a tunnel that terminates HTTPS.
 `X-Forwarded-*` headers **MUST** be ignored unless they come from a configured trusted proxy.
+`X-Forwarded-For` is read from the right, past any trusted proxies. Entries may carry a port
+(`ip:port`, `[v6]:port`); an entry that isn't an address ends the walk, and the client counts as
+outside. A trusted proxy **MUST** send `X-Forwarded-For` and `X-Forwarded-Proto` on every request
+it forwards (Caddy and Traefik do; nginx once `proxy_set_header` sets them): a request from its
+address with no forwarding header is treated as that machine's own. `SKP_TRUST_PROXY` matches any
+spelling of an address.
 
 In `public` mode, a client on the local network may still use plain HTTP (OBS on the LAN needs
 no certificate); anyone else gets HTTPS only. API requests must be addressed to one of the
-platform's names: loopback, its addresses and host name, `SKP_HOSTS` and `SKP_PUBLIC_URL`'s host.
-The command line's local token is refused on a request that came through a proxy.
+platform's names: loopback, its addresses and host name (read again as they change),
+`SKP_HOSTS` and `SKP_PUBLIC_URL`'s host. In a container its own addresses aren't the host's:
+name those in `SKP_HOSTS` (10 §10.3). The command line's local token is refused on a request that
+came through a proxy: one that carries a forwarding header (`X-Forwarded-For`,
+`X-Forwarded-Proto`, `X-Forwarded-Host`, `Forwarded`, `X-Real-IP`, `Via`). The command line's own
+requests carry none, so it works beside a proxy.
 
 ## 7.9 Inbound webhooks
 
@@ -183,13 +218,19 @@ The command line's local token is refused on a request that came through a proxy
 - URL-decoding errors and malformed requests return `400` — they **MUST NOT** crash the process.
 - Uploads: size caps (media 600 MiB, templates 100 MiB), at most 2 concurrent transcodes,
   partial files deleted on abort, content type sniffed rather than trusted.
+- Time limits: headers must arrive within 30 s; a JSON body within 60 s (`408`); a package
+  within the time its size limit takes at 64 KiB/s (about 27 minutes); a streamed media upload
+  is dropped after 60 s with nothing arriving; and every request must arrive whole within 30
+  minutes.
 - ffmpeg is invoked with an argument array (never a shell), a fixed output directory, a time
   limit and lowered priority.
 - Template archives are extracted with zip-slip and zip-bomb protection (ratio and total-size
   caps).
 - Outbound requests the platform makes on a user's behalf (template install from URL, webhook
   delivery) **MUST** block private, loopback and link-local destinations unless the owner
-  enables them, to prevent server-side request forgery.
+  enables them, to prevent server-side request forgery. That includes IPv4-mapped IPv6 in any
+  notation, and addresses written directly in the URL; of 192.0.0.0/16 only 192.0.0.0/24 and
+  192.0.2.0/24 are private.
 
 ## 7.12 Audit log
 
@@ -198,7 +239,8 @@ changes, token creation and revocation, connection changes, template installs, o
 rotations, exposure changes, backups and restores; also overlay upgrades, cue overrides, media
 changes and the platform's own template updates. Each entry: time, actor, IP, action, target.
 Retained 90 days by default (`SKP_AUDIT_DAYS`). Never contains secrets. Changes made from the
-command line are recorded as `cli:<user>`.
+command line are recorded as `cli:<user>` (its OS user), whether it drives the running platform
+with the local token or changes the data directory itself.
 
 ## 7.13 Backups
 

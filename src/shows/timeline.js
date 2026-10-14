@@ -60,6 +60,7 @@ const ACTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
 const SCENE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const MEDIA_ID = /^med_[0-9A-Z]{26}$/;
 const CUE_ID = /^cue_[0-9A-Z]{26}$/;
+const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
 const MAX_DELAY = 2 ** 31 - 1;
 
@@ -543,6 +544,10 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
   function dayOf(plan, show) {
     return showDay(plan.date, { timezone: show.timezone, dayBoundary: plan.changes.dayBoundary || show.dayBoundary });
   }
+  // A plan keeps its overlay settings by overlay id, which never changes: an overlay renamed before
+  // the day still gets them, and a new one that took the old slug doesn't. They are shown by each
+  // overlay's slug now. (Plans saved before were keyed by slug, and still are.)
+  const slugOf = (key) => (OVERLAY_ID.test(key) && store.get('overlays', key)?.data.slug) || key;
   function planView(doc) {
     const d = doc.data;
     let activateAt = d.activateAt;
@@ -552,7 +557,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       rev: doc.rev,
       date: d.date,
       ...d.changes,
-      ...(d.overlaySettings ? { overlaySettings: d.overlaySettings } : {}),
+      ...(d.overlaySettings ? { overlaySettings: Object.fromEntries(Object.entries(d.overlaySettings).map(([k, v]) => [slugOf(k), v])) } : {}),
       activateAt: new Date(activateAt).toISOString(),
       ...(d.activatedAt ? { activatedAt: new Date(d.activatedAt).toISOString() } : {}),
       ...(d.error ? { error: d.error } : {}),
@@ -571,15 +576,16 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     let overlaySettings;
     if (input.overlaySettings !== undefined) {
       if (!input.overlaySettings || typeof input.overlaySettings !== 'object' || Array.isArray(input.overlaySettings)) bad('"overlaySettings" maps overlay slugs to their settings.');
+      overlaySettings = {};
       for (const [slug, settings] of Object.entries(input.overlaySettings)) {
         if (!show.members.includes(slug)) bad(`"${slug}" isn't one of the show's overlays.`);
-        const r = overlays.resolve(slug);
+        const r = overlays.resolve(slug); // a member: it resolves
         const problems = !settings || typeof settings !== 'object' || Array.isArray(settings) ? [{ path: '', message: 'must be an object' }]
           : jsonBytes(settings) > SAVED_BYTES ? [{ path: '', message: `is over ${SAVED_BYTES / 1024} KiB` }]
             : r?.template ? validateSettings(r.template.manifest, settings) : [];
         if (problems.length) bad(`The settings for "${slug}" don't fit its template: ${problems.map((p) => `${p.path} ${p.message}`.trim()).join('; ')}.`);
+        overlaySettings[r.doc.id] = settings;
       }
-      overlaySettings = input.overlaySettings;
     }
     const plan = { showId: show.id, date: input.date, changes, ...(overlaySettings ? { overlaySettings } : {}) };
     const day = dayOf(plan, show);
@@ -633,12 +639,14 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     const marked = store.put('show_plans', planId, { ...d, activatedAt: now() });
     const warnings = [];
     try {
-      for (const [slug, settings] of Object.entries(d.overlaySettings || {})) {
-        if (!before.members.includes(slug)) {
+      for (const [key, settings] of Object.entries(d.overlaySettings || {})) {
+        const id = OVERLAY_ID.test(key) ? key : overlays.resolve(key)?.doc.id;
+        const slug = slugOf(key);
+        if (!id || !before.overlays.includes(id)) {
           warnings.push(`${slug}: no longer one of the show's overlays; its settings were left alone`);
           continue;
         }
-        try { overlays.updateSettings(slug, settings); } catch (err) { warnings.push(`${slug}: ${err.message}`); }
+        try { overlays.updateSettings(id, settings); } catch (err) { warnings.push(`${slug}: ${err.message}`); }
       }
       if (before.recStartedAt !== undefined) shows.rec(d.showId, 'reset');
       if (before.currentSlot !== undefined) shows.setSlot(d.showId, null);

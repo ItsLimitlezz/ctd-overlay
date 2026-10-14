@@ -32,6 +32,10 @@ broadcast advances with every browser closed and survives a restart mid-show.
   also publishes `show.date` (its `date`) and `show.goLiveAt` (the instant `goLive` resolves to),
   so a countdown never re-interprets wall-clock strings. This is each member overlay's own state:
   two shows never see each other's.
+- A slot as the show resource returns it also carries `startAt` (and `clockGap` /
+  `clockOverlap`); a write takes and ignores them, so a lineup read and sent back whole goes
+  through. Any other slot field is refused (`unknown-field`). An overlay deleted since, still in
+  the show's `overlays` as read, is dropped when the list is sent back.
 - **REC.** `show.recStartedAt` is set by the server when the show first goes on air (it takes a
   scene whose core is `program`, or a scene whose core is `auto` is on air at `goLiveAt`, which
   anchors it at `goLiveAt`) and cleared when it takes a scene whose core is `starting`; the
@@ -163,10 +167,11 @@ the server activates it — lineup, settings, regenerated timeline — with no b
 more than 14 days past are pruned.
 
 A plan carries the date (within three years) and any of `lineup`, `goLive`, `dayBoundary`, and
-`overlaySettings` (member slug → that overlay's settings, validated against its template when
-saved and again when applied, and applied only to overlays still in the show then; what wasn't
-applied is listed in the plan's `warnings`). It is refused as the show itself would refuse the
-change. Its day starts at the day boundary in the show's zone as they are when it comes, not when
+`overlaySettings` (member slug → that overlay's settings, kept by overlay: a rename before the
+day keeps them, and a new overlay that takes the old slug doesn't get them; shown under each
+overlay's current slug; validated against its template when saved and again when applied, and
+applied only to overlays still in the show then; what wasn't applied is listed in the plan's
+`warnings`). It is refused as the show itself would refuse the change. Its day starts at the day boundary in the show's zone as they are when it comes, not when
 the plan was saved. A plan never changes a show that is live: it waits until REC ends. A platform
 that was down at the boundary activates it at startup, if that show day (23 or 25 hours on a
 clock-change night) isn't over; of several plans whose days have begun, only the latest is the

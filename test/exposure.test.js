@@ -104,8 +104,8 @@ test('skp overlay url | rotate-key | key, and skp key rotate: secrets survive a 
   assert.match(url.stdout, /^h: http:\/\/127\.0\.0\.1:\d+\/o\/main\?key=skp_ovl_\w{33}\nv: .*&canvas=v\n$/);
   const rotated = await cli(['overlay', 'rotate-key', 'main']);
   assert.match(rotated.stderr, /old URL no longer works/);
-  assert.match((await cli(['overlay', 'key', 'main', 'not-required'])).stdout, /no key required/);
-  assert.match((await cli(['overlay', 'key', 'main', 'required'])).stdout, /needs its key/);
+  assert.match((await cli(['overlay', 'key', 'main', 'not-required'])).stdout, /^main: no key required/);
+  assert.match((await cli(['overlay', 'key', 'main', 'required'])).stdout, /^main: its URL needs its key\n$/);
   const key = platform.overlays.key('main');
   await platform.stop();
   const before = loadMasterKey(config).kid;
@@ -138,8 +138,10 @@ test('lan mode serves the local network only; public mode answers outsiders over
   assert.equal(plain.status, 403);
   assert.match((await plain.json()).detail, /https:\/\/overlays\.example\.com/);
   const outside = { 'x-forwarded-for': '8.8.8.8', 'x-forwarded-proto': 'https', host: 'overlays.example.com', origin: 'https://overlays.example.com', 'content-type': 'application/json' };
-  const made = await fetch(`${pub.platform.url}/api/v1/setup`, { method: 'POST', headers: outside, body: JSON.stringify({ code: pub.platform.auth.setupCode, username: 'juan', password: PASSWORD }) });
-  assert.equal(made.status, 201, 'the public name is one of the platform\'s own');
+  const setup = (headers) => fetch(`${pub.platform.url}/api/v1/setup`, { method: 'POST', headers, body: JSON.stringify({ code: pub.platform.auth.setupCode, username: 'juan', password: PASSWORD }) });
+  assert.equal((await setup(outside)).status, 403, 'a stranger with the code can\'t claim it (07 §7.2)');
+  const made = await setup({ ...outside, 'x-forwarded-for': '192.168.1.5' });
+  assert.equal(made.status, 201, 'the public name is one of the platform\'s own; the owner is made from the local network');
   assert.equal(made.headers.get('strict-transport-security'), 'max-age=31536000');
   assert.match(made.headers.get('set-cookie'), /^__Host-skp_session=[\w-]{43}; HttpOnly; SameSite=Lax; Path=\/; Secure$/);
   const session = made.headers.get('set-cookie').split(';')[0];

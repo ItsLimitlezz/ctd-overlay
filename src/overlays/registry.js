@@ -175,6 +175,47 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     return doc;
   }
 
+  // Changes an overlay's settings, slug and whether its URL needs its key, any of them (those
+  // `changes` has). Every one is checked before anything is saved, then all are saved at once, so a
+  // refused one leaves the overlay as it was (a PATCH, 03 §3.1). ifRev: the revision the caller
+  // last saw; a newer one is a ConflictError (03 §3.1, H16). A new slug changes the overlay's URL
+  // (01 §1.4), so OBS sources must be updated; its key, settings and channel stay.
+  function update(ref, changes, { ifRev } = {}) {
+    const doc = byIdOrSlug(ref);
+    const has = (k) => Object.prototype.hasOwnProperty.call(changes, k);
+    const next = { ...doc.data };
+    if (has('settings')) {
+      const t = templates.get(doc.data.template.id, doc.data.template.version);
+      if (!t) throw new OverlayError(`The overlay's template ${doc.data.template.id}@${doc.data.template.version} isn't installed.`, 'no-template');
+      checkSettings(t, changes.settings);
+      next.settings = changes.settings;
+    }
+    if (has('slug')) {
+      const { slug } = changes;
+      if (typeof slug !== 'string' || !SLUG.test(slug)) {
+        throw new OverlayError(`"${slug}" isn't a valid slug: use lowercase letters, digits and dashes, starting with a letter or digit`, 'bad-slug');
+      }
+      if (slug !== doc.data.slug && bySlug.has(slug)) throw new OverlayError(`the slug "${slug}" is taken`, 'slug-taken');
+      next.slug = slug;
+    }
+    if (has('keyRequired')) {
+      // "No key required" (local and lan modes only, 07 §7.6).
+      if (changes.keyRequired === false && exposure === 'public') throw new OverlayError('In public mode every overlay needs its key.', 'public-needs-key');
+      if (changes.keyRequired === false) next.keyRequired = false;
+      else delete next.keyRequired;
+    }
+    if (!has('settings') && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired) return doc;
+    const saved = store.put('overlays', doc.id, next, { ifRev: ifRev ?? doc.rev });
+    if (saved.data.slug !== doc.data.slug) {
+      bySlug.delete(doc.data.slug);
+      bySlug.set(saved.data.slug, doc.id);
+    }
+    if (has('settings')) open(saved);
+    // Streams opened without the key end once it is needed: they come back with it, or not at all.
+    if (secrets && !keyRequired(doc) && keyRequired(saved)) bus.channel(doc.id).reset();
+    return saved;
+  }
+
   // Puts an overlay on another pinned template version and settings, keeping where it was as
   // `previous` (one step of undo), then re-syncs its open pages (they reload with the new build).
   function repin(doc, template, settings, ifRev) {
@@ -218,24 +259,21 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       return keyOf(byIdOrSlug(ref));
     },
 
-    // A new key: the old URL stops working, in OBS too (07 §7.6).
+    // A new key: the old URL stops working, in OBS too (07 §7.6). Streams opened with the old key
+    // end now, not at their next reconnect, so a leaked URL stops showing anything at once.
     rotateKey(ref) {
       if (!secrets) throw new OverlayError('Overlay keys need the master key.', 'no-secrets');
       const doc = byIdOrSlug(ref);
       const key = newOverlayKey();
       store.put('overlays', doc.id, { ...doc.data, key: secrets.encrypt(key, doc.id) });
       keys.set(doc.id, key);
+      bus.channel(doc.id).reset();
       return key;
     },
 
     // "No key required" (local and lan modes only, 07 §7.6).
     setKeyRequired(ref, required) {
-      const doc = byIdOrSlug(ref);
-      if (required === false && exposure === 'public') throw new OverlayError('In public mode every overlay needs its key.', 'public-needs-key');
-      const next = { ...doc.data };
-      if (required === false) next.keyRequired = false;
-      else delete next.keyRequired;
-      return store.put('overlays', doc.id, next);
+      return update(ref, { keyRequired: required });
     },
 
     // The overlay's URLs for OBS, one per canvas (01 §1.4): base is the platform's address.
@@ -253,31 +291,16 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       });
     },
 
-    // Replaces the overlay's settings (only the values the operator set). ifRev: the revision the
-    // caller last saw; a newer one is a ConflictError (03 §3.1, H16).
+    update,
+
+    // Replaces the overlay's settings (only the values the operator set).
     updateSettings(ref, settings, { ifRev } = {}) {
-      const doc = byIdOrSlug(ref);
-      const t = templates.get(doc.data.template.id, doc.data.template.version);
-      if (!t) throw new OverlayError(`The overlay's template ${doc.data.template.id}@${doc.data.template.version} isn't installed.`, 'no-template');
-      checkSettings(t, settings);
-      const next = store.put('overlays', doc.id, { ...doc.data, settings }, { ifRev: ifRev ?? doc.rev });
-      open(next);
-      return next;
+      return update(ref, { settings }, { ifRev });
     },
 
-    // A new slug: the overlay's URL changes (01 §1.4), so OBS sources must be updated; its key,
-    // settings and channel stay.
+    // A new slug: the overlay's URL changes (01 §1.4).
     rename(ref, slug, { ifRev } = {}) {
-      const doc = byIdOrSlug(ref);
-      if (typeof slug !== 'string' || !SLUG.test(slug)) {
-        throw new OverlayError(`"${slug}" isn't a valid slug: use lowercase letters, digits and dashes, starting with a letter or digit`, 'bad-slug');
-      }
-      if (slug === doc.data.slug) return doc;
-      if (bySlug.has(slug)) throw new OverlayError(`the slug "${slug}" is taken`, 'slug-taken');
-      const saved = store.put('overlays', doc.id, { ...doc.data, slug }, { ifRev: ifRev ?? doc.rev });
-      bySlug.delete(doc.data.slug);
-      bySlug.set(slug, doc.id);
-      return saved;
+      return update(ref, { slug }, { ifRev });
     },
 
     remove(id) {

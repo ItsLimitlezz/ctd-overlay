@@ -1,5 +1,5 @@
 // Uploaded media (03 §3.4, 07 §7.11, H12): clips, images, sounds and fonts that settings,
-// lineups and media.play point to, served at /media/<fileId>/<name>.
+// lineups and media.play point to (mediaUsers), served at /media/<fileId>/<name>.
 //
 //   <dataDir>/media/<fileId>/<name>   the file, never changed again (its URL is immutable, H14)
 //   store collection "media"          one record per file (id med_…)
@@ -47,6 +47,35 @@ export function mediaName(original, ext) {
 }
 
 export const mediaUrl = (doc) => `/media/${doc.data.fileId}/${doc.data.name}`;
+
+// What points to media, for remove()'s usedBy and the API's (03 §3.4): the overlays whose
+// settings use a file (by slug; the version kept for revert too), show lineups (an act's logo),
+// cues that will still play it, and plans still to come (the lineup and the overlay settings they
+// will apply). Removing a file any of them use would put a broken logo or a failing clip on air.
+// shows and timeline are optional: without them, only overlays are asked. Everything is read once
+// here, so a whole list is matched in one pass: mediaUsers(data)(doc) → names, in plain words.
+export function mediaUsers({ overlays, shows, timeline }) {
+  const others = []; // { name, text } (the URLs it holds) or { name, plays } (the media ids it plays)
+  for (const show of shows?.list() || []) {
+    others.push({ name: `lineup of show ${show.name}`, text: JSON.stringify(show.lineup) });
+    if (!timeline) continue;
+    for (const cue of timeline.list(show.id)) {
+      // A cue at a time of the show is armed again on another night, whatever it did on this one.
+      if (cue.status === 'armed' || cue.time) others.push({ name: `cue at ${cue.time || cue.at} in show ${show.name}`, plays: played(cue.action) });
+    }
+    for (const plan of timeline.plans.list(show.id)) {
+      if (!plan.activatedAt) others.push({ name: `plan for ${plan.date} of show ${show.name}`, text: JSON.stringify([plan.lineup, plan.overlaySettings]) });
+    }
+  }
+  return (doc) => {
+    const needle = `/media/${doc.data.fileId}/`;
+    const named = others.filter((o) => (o.plays ? o.plays.includes(doc.id) : o.text.includes(needle))).map((o) => o.name);
+    return [...overlays.mediaUsers(doc.data.fileId), ...new Set(named)]; // two cues at one time: named once
+  };
+}
+
+// The media ids a cue's action plays: its own, or its sequence's steps'.
+const played = (action) => (action.type === 'media.play' ? [action.mediaId] : action.type === 'sequence' ? action.steps.flatMap((s) => played(s.action)) : []);
 
 // fsync, so a record never says ready for bytes still in the OS's cache (10 §10.6).
 function syncFile(file) {

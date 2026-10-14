@@ -17,7 +17,7 @@ import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
 import { mediaApiRoutes } from './media/api.js';
 import { mediaRoutes } from './media/routes.js';
-import { isPrivateAddress, machineNames } from './net.js';
+import { isPrivateAddress, liveMachineNames, machineNames } from './net.js';
 import { overlayApiRoutes } from './overlays/api.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
@@ -67,10 +67,12 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
   let bus;
   try {
     // The master key, made in the config directory on the platform's first start (07 §7.7); a
-    // command line command reads it, or makes it, only when it needs it.
+    // command line command reads it only when it needs it, and never makes one: a new key decrypts
+    // nothing already stored, and a command run without the platform's SKP_MASTER_KEY(_FILE) would
+    // leave a stray key where the platform looks for one.
     const keyFor = () => {
       try {
-        return createSecrets(loadMasterKey(config, { log: log.child('secrets') }));
+        return createSecrets(loadMasterKey(config, { log: log.child('secrets'), create: purpose === 'platform' }));
       } catch (err) {
         if (err instanceof SecretsError) throw new StartupError(err.message);
         throw err;
@@ -127,9 +129,11 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // replaces the configured ffmpeg, options.media goes to the media library, options.fetch and
 // options.sourceLimits are what template sources fetch with and their limits,
 // options.simulateHoldMs shortens how long simulated state lasts, options.clock ({ now, timers })
-// is the clock shows, the timeline and sign-in run on, options.scrypt lowers the password hash's
-// cost for tests ({ N }), and options.rateLimit replaces the API's requests a minute.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit } = {}) {
+// is the clock shows, the timeline and sign-in run on (and how long the machine's addresses are
+// kept), options.scrypt lowers the password hash's cost for tests ({ N }), options.rateLimit
+// replaces the API's requests a minute, and options.interfaces is what os.networkInterfaces()
+// would answer.
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit, interfaces } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
@@ -147,8 +151,11 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
 
   const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock });
   const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources } = data;
-  const network = config.exposure === 'local' ? [] : machineNames();
-  const hosts = () => ownHosts(server, config.host, { exposure: config.exposure, extra: [...network, ...config.hosts], publicUrl: config.publicUrl, tls: Boolean(tls) });
+  // In lan and public modes the machine's own names too, read again as its addresses change; a
+  // container's are its own, not the host's: SKP_HOSTS names those. hosts(req): with the request,
+  // a Host that isn't among them has them read again (http/local.js).
+  const network = config.exposure === 'local' ? () => [] : liveMachineNames({ read: () => machineNames(interfaces ? { interfaces } : {}), now: clock.now });
+  const hosts = (req) => ownHosts(server, config.host, { exposure: config.exposure, extra: [...network(req?.headers?.host), ...config.hosts], publicUrl: config.publicUrl, tls: Boolean(tls) });
   const auth = createAuth({ store, audit, secrets, log: log.child('auth'), now: clock.now, hasher: createHasher(scrypt ? { params: { r: 8, p: 1, ...scrypt } } : {}), configDir: config.configDir });
   const guard = createGuard({ auth, hosts });
   const api = createApi({ guard, hosts, store, log: log.child('api'), now: clock.now, ...(rateLimit ? { perMinute: rateLimit } : {}) });

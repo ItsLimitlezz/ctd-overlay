@@ -3,9 +3,11 @@
 // templates, media, system, live events and state; and downloads pinned to the address checked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { createServer } from 'node:https';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
+import { hotp, stepAt } from '../src/auth/totp.js';
 import { loadConfig } from '../src/config.js';
 import { pinnedFetch } from '../src/net.js';
 import { DIAG, DIAG_DIR, defer, FIXTURE_TEMPLATES, memoryLogger, packTemplate, signedIn, tempDir, TESTBED } from './helpers.js';
@@ -54,10 +56,19 @@ test('the OpenAPI document describes every API route, with its scope', async (t)
   assert.equal(doc.paths['/api/v1/shows/{ref}'].patch['x-skp-scope'], 'timeline:write');
   assert.deepEqual(doc.paths['/api/v1/auth/login'].post.security, []);
   assert.deepEqual(Object.keys(doc.paths['/api/v1/shows'].post.requestBody.content['application/json'].schema.properties), ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup']);
-  // Every API route the server has is in it.
+  // Uploads are bytes, streamed or not; a write without a list of fields still takes a JSON object.
+  assert.deepEqual(Object.keys(doc.paths['/api/v1/media'].post.requestBody.content), ['application/octet-stream']);
+  assert.ok(doc.paths['/api/v1/templates'].post.requestBody.content['application/octet-stream']);
+  assert.equal(doc.paths['/api/v1/overlays/{ref}/simulate'].post.requestBody.content['application/json'].schema.type, 'object');
+  // What a success answers, and with what.
+  assert.ok(doc.paths['/api/v1/events'].post.responses['202']);
+  assert.deepEqual(Object.keys(doc.paths['/api/v1/events'].get.responses['200'].content), ['text/event-stream']);
+  assert.deepEqual(doc.paths['/api/v1/events'].get.parameters.map((p) => `${p.in}:${p.name}`), ['query:types']);
+  // Every API route the server has is in it, and nothing else.
   const described = new Set(Object.entries(doc.paths).flatMap(([p, ops]) => Object.keys(ops).map((m) => `${m.toUpperCase()} ${p}`)));
-  const served = platform.server.listeners('request').length; // the server is up
-  assert.ok(served >= 1 && described.size > 50);
+  const served = new Set(platform.server.routes.filter((r) => r.path.startsWith('/api/v1/')).map((r) => `${r.method} ${r.path.replace(/:([A-Za-z]+)/g, '{$1}').replace(/\/\*$/, '/{path}')}`));
+  assert.ok(served.size > 50);
+  assert.deepEqual(described, served);
 });
 
 test('ETag and If-Match (H16): a session must send it on PATCH and PUT; a stale one is refused; a token may leave it out', async (t) => {
@@ -94,13 +105,38 @@ test('Idempotency-Key: a repeat within 24 hours answers the first answer, once; 
   clock.t += 24 * 60 * 60 * 1000 + 1;
   const later = await api('POST', '/shows', { ...SHOW, name: 'Later' }, { 'idempotency-key': 'button-1' });
   assert.equal(later.status, 201, 'a day on, the key is new again');
-  // Answers that hold a secret are never kept: a token's, a session's.
-  const tok = await api('POST', '/tokens', { name: 'deck' }, { 'idempotency-key': 't-1' });
-  assert.equal(tok.status, 409, 'there is no owner yet');
 });
 
-test('rate limits (03 §3.5): RateLimit-* on every answer, 429 with Retry-After past the limit', async (t) => {
-  const { api } = await start(t, { rateLimit: 5 });
+test('Idempotency-Key: answers that hold a secret are never kept, nor given again (a session\'s, a token\'s, two-factor\'s)', async (t) => {
+  const clock = { t: Date.UTC(2026, 9, 17, 18), now: () => clock.t };
+  const { platform } = await start(t, { clock: { now: clock.now } });
+  const key = { 'idempotency-key': 'secret-1' };
+  const post = (p, body, headers = {}) => fetch(`${platform.url}/api/v1${p}`, { method: 'POST', headers: { 'content-type': 'application/json', ...key, ...headers }, body: JSON.stringify(body) });
+  const setup = await post('/setup', { code: platform.auth.setupCode, username: 'juan', password: PASSWORD });
+  assert.equal(setup.status, 201);
+  const setupAgain = await post('/setup', { code: platform.auth.setupCode, username: 'juan', password: PASSWORD });
+  assert.deepEqual([setupAgain.status, setupAgain.headers.get('idempotent-replayed')], [409, null], 'the owner exists: refused, not signed in again');
+  const logins = [await post('/auth/login', { username: 'juan', password: PASSWORD }), await post('/auth/login', { username: 'juan', password: PASSWORD })];
+  assert.deepEqual(logins.map((r) => [r.status, r.headers.get('idempotent-replayed')]), [[200, null], [200, null]]);
+  assert.notEqual(logins[0].headers.get('set-cookie'), logins[1].headers.get('set-cookie'), 'a session each');
+  let cookie = logins[1].headers.get('set-cookie').split(';')[0];
+  const { csrf } = await logins[1].json();
+  const session = (p, body) => post(p, body, { cookie, 'x-skp-csrf': csrf }).then(async (res) => ({ status: res.status, replayed: res.headers.get('idempotent-replayed'), cookie: res.headers.get('set-cookie'), body: await res.json() }));
+  const tokens = [await session('/tokens', { name: 'deck' }), await session('/tokens', { name: 'deck' })];
+  assert.deepEqual(tokens.map((r) => [r.status, r.replayed]), [[201, null], [201, null]]);
+  assert.notEqual(tokens[0].body.token, tokens[1].body.token, 'a token each');
+  const enrolled = [await session('/auth/totp/enroll', { password: PASSWORD }), await session('/auth/totp/enroll', { password: PASSWORD })];
+  assert.deepEqual(enrolled.map((r) => [r.status, r.replayed]), [[200, null], [200, null]]);
+  const on = await session('/auth/totp/verify', { code: hotp(enrolled[1].body.secret, stepAt(clock.t)) });
+  assert.deepEqual([on.status, on.body.recoveryCodes.length], [200, 10]);
+  cookie = on.cookie.split(';')[0]; // two-factor on: signed in again
+  const onAgain = await session('/auth/totp/verify', { code: hotp(enrolled[1].body.secret, stepAt(clock.t)) });
+  assert.deepEqual([onAgain.replayed, onAgain.body.recoveryCodes], [null, undefined], 'recovery codes are shown once');
+  assert.deepEqual(platform.store.list('idempotency', { limit: 1000 }), [], 'none of it is kept for replay');
+});
+
+test('rate limits (03 §3.5): RateLimit-* on every answer, 429 with Retry-After past the limit; each principal its own', async (t) => {
+  const { platform, api } = await start(t, { rateLimit: 5 });
   const answers = [];
   for (let i = 0; i < 6; i++) answers.push(await api('GET', '/shows'));
   assert.deepEqual(answers.map((a) => a.headers.get('ratelimit-remaining')), ['4', '3', '2', '1', '0', '0']);
@@ -109,6 +145,71 @@ test('rate limits (03 §3.5): RateLimit-* on every answer, 429 with Retry-After 
   assert.equal(answers[5].status, 429);
   assert.equal(answers[5].body.type, 'https://skp.dev/errors/rate-limited');
   assert.ok(Number(answers[5].headers.get('retry-after')) >= 1);
+  // One busy client doesn't use up anyone else's.
+  const anon = await fetch(`${platform.url}/api/v1/openapi.json`);
+  await anon.arrayBuffer();
+  assert.deepEqual([anon.status, anon.headers.get('ratelimit-remaining')], [200, '4'], 'an address has its own');
+  const ui = await owner(platform);
+  const theirs = await ui('GET', '/shows');
+  assert.deepEqual([theirs.status, theirs.headers.get('ratelimit-remaining')], [200, '4'], 'a session has its own');
+});
+
+test('POST /events: 60 a second per principal, a budget of its own beside the 600 a minute (03 §3.5)', async (t) => {
+  const clock = { t: Date.UTC(2026, 9, 17, 18), now: () => clock.t };
+  const { api } = await start(t, { clock: { now: clock.now } });
+  // 30 a second for 25 seconds: 750, more than 600 in a minute, all published.
+  const statuses = new Set();
+  for (let s = 0; s < 25; s++, clock.t += 1000) {
+    for (let i = 0; i < 30; i++) statuses.add((await api('POST', '/events', { type: 'custom.tick', data: { s, i } })).status);
+  }
+  assert.deepEqual([...statuses], [202]);
+  assert.equal((await api('GET', '/shows')).headers.get('ratelimit-remaining'), '599', 'publishing used none of it');
+  const second = [];
+  for (let i = 0; i < 61; i++) second.push(await api('POST', '/events', { type: 'custom.tick', data: { i } }));
+  assert.deepEqual([second[0].headers.get('ratelimit-limit'), second[59].status, second[59].headers.get('ratelimit-remaining')], ['60', 202, '0']);
+  assert.deepEqual([second[60].status, second[60].body.type, second[60].headers.get('retry-after')], [429, 'https://skp.dev/errors/rate-limited', '1']);
+  clock.t += 1000;
+  assert.equal((await api('POST', '/events', { type: 'custom.tick', data: {} })).status, 202, 'the next second');
+});
+
+test('open routes (setup, login, openapi.json) refuse another name and another origin too', async (t) => {
+  const { platform } = await start(t);
+  const port = new URL(platform.url).port;
+  // fetch can't set Host: a DNS-rebinding page's request names the attacker's host.
+  const send = (method, p, headers, body) => new Promise((resolve, reject) => {
+    const data = body === undefined ? undefined : JSON.stringify(body);
+    const req = request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, ...headers, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+  const owner = { code: platform.auth.setupCode, username: 'juan', password: PASSWORD };
+  for (const headers of [{ host: `rebind.example:${port}`, origin: `http://rebind.example:${port}` }, { origin: 'https://evil.example' }, { origin: 'null' }]) {
+    const where = JSON.stringify(headers);
+    assert.equal(await send('GET', '/api/v1/openapi.json', headers), 403, where);
+    assert.equal(await send('GET', '/api/v1/setup', headers), 403, where);
+    assert.equal(await send('POST', '/api/v1/setup', headers, owner), 403, where);
+    assert.equal(await send('POST', '/api/v1/auth/login', headers, { username: 'juan', password: PASSWORD }), 403, where);
+  }
+  assert.equal(platform.auth.setupNeeded(), true, 'no owner was made');
+  assert.equal(await send('GET', '/api/v1/openapi.json', {}), 200, 'from its own address');
+});
+
+test('problems carry the base headers too: no-store, nosniff, Referrer-Policy (03 §3.4, 07 §7.10)', async (t) => {
+  const { platform, api } = await start(t);
+  await owner(platform);
+  const login = await fetch(`${platform.url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'juan', password: 'wrong horse battery staple' }) });
+  const answers = { login: [login.status, login.headers], ...Object.fromEntries(await Promise.all([
+    ['missing', api('GET', '/shows/nope')],
+    ['unknown field', api('POST', '/shows', { ...SHOW, admin: true })],
+  ].map(async ([what, p]) => { const a = await p; return [what, [a.status, a.headers]]; }))) };
+  await login.arrayBuffer();
+  for (const [what, [status, headers]] of Object.entries(answers)) {
+    assert.ok(status >= 400, what);
+    assert.deepEqual([headers.get('cache-control'), headers.get('x-content-type-options'), headers.get('referrer-policy')], ['no-store', 'nosniff', 'same-origin'], `${what} (${status})`);
+  }
 });
 
 test('pagination: { items, next } up to 200 at a time; a cursor goes on where the page ended, whatever was deleted', async (t) => {
@@ -158,7 +259,8 @@ test('overlays: create, read, change settings and slug, upgrade (dry run), rever
   const changed = await ui('PATCH', '/overlays/main', { settings: { size: 5 }, slug: 'main-h' }, { 'if-match': made.headers.get('etag') });
   assert.equal(changed.status, 200);
   assert.deepEqual([changed.body.slug, changed.body.settings], ['main-h', { size: 5 }]);
-  assert.equal((await api('PATCH', '/overlays/main-h', { settings: { size: 99 } })).status, 422, 'settings that don\'t fit');
+  const misfit = await api('PATCH', '/overlays/main-h', { settings: { size: 99 } });
+  assert.deepEqual([misfit.status, misfit.body.problems?.[0]?.path, misfit.body.plan], [422, '/size', undefined], 'settings that don\'t fit: what, where');
   const pkg = packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version: '1.0.0' } });
   await api('POST', '/templates', pkg);
   await api('POST', '/templates', packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version: '1.1.0' } }));
@@ -185,6 +287,7 @@ test('templates: list, read with previews, install a package or a URL, validate,
   const img = await fetch(`${platform.url}${diag.previews[0]}`, { headers: signedIn(platform) });
   assert.equal(img.status, 200);
   assert.match(img.headers.get('content-type'), /^image\//);
+  assert.deepEqual([img.headers.get('x-content-type-options'), img.headers.get('referrer-policy')], ['nosniff', 'same-origin'], 'an answer a route writes itself has them too (07 §7.10)');
   await img.arrayBuffer();
   const pkg = packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version: '1.0.0' } });
   const lint = await api('POST', '/templates/validate', pkg);
@@ -193,6 +296,14 @@ test('templates: list, read with previews, install a package or a URL, validate,
   const installed = await api('POST', '/templates', pkg);
   assert.deepEqual([installed.status, installed.body.installed], [201, true]);
   assert.deepEqual([(await api('POST', '/templates', pkg)).status], [200], 'the same package again: nothing to do');
+  // With an Idempotency-Key: the same bytes again are the first answer; other bytes are refused.
+  const keyed = packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.keyed', version: '1.0.0' } });
+  const press = { 'idempotency-key': 'install-1' };
+  const once = await api('POST', '/templates', keyed, press);
+  const twice = await api('POST', '/templates', keyed, press);
+  assert.deepEqual([once.status, twice.status, twice.headers.get('idempotent-replayed'), twice.body.installed], [201, 201, 'true', true]);
+  const another = await api('POST', '/templates', packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.keyed', version: '1.1.0' } }), press);
+  assert.deepEqual([another.status, another.body.type], [422, 'https://skp.dev/errors/idempotency-mismatch']);
   await api('POST', '/overlays', { slug: 'uses', template: { id: 'dev.skp.sample', version: '1.0.0' } });
   assert.equal((await api('DELETE', '/templates/dev.skp.sample')).status, 409, 'in use');
   await api('DELETE', '/overlays/uses');
@@ -224,6 +335,11 @@ test('media: upload (streamed), list, delete (not while used)', async (t) => {
   assert.equal((await api('DELETE', `/media/${up.body.id}`)).status, 200);
   assert.equal((await api('DELETE', `/media/${up.body.id}`)).status, 404);
   assert.equal((await api('POST', '/media?name=x.txt', Buffer.from('just text'))).status, 415);
+  // A client that sends Idempotency-Key with every POST can upload too; an upload is never
+  // answered for another (its body can't be fingerprinted before it is read).
+  const keyed = [await api('POST', '/media?name=Logo.png', PNG, { 'idempotency-key': 'up-1' }), await api('POST', '/media?name=Logo.png', PNG, { 'idempotency-key': 'up-1' })];
+  assert.deepEqual(keyed.map((a) => [a.status, a.headers.get('idempotent-replayed')]), [[201, null], [201, null]]);
+  assert.equal(platform.media.list().length, 2);
 });
 
 test('system: info and health; live events over SSE; custom events and state, and nothing else', async (t) => {

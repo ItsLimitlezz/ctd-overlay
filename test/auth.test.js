@@ -3,17 +3,20 @@
 // the audit log.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import crypto from 'node:crypto';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { startPlatform } from '../src/app.js';
-import { createAudit } from '../src/auth/audit.js';
+import { cliActor, createAudit } from '../src/auth/audit.js';
 import { IDLE_MS, KEEP_MS, LOCAL_TOKEN_FILE, SESSION_MS, SETUP_MS } from '../src/auth/index.js';
 import { BusyError, createHasher, passwordProblem, SCRYPT } from '../src/auth/passwords.js';
 import { ROLES } from '../src/auth/roles.js';
 import { base32Decode, base32Encode, hotp, stepAt, verifyTotp } from '../src/auth/totp.js';
 import { run } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
+import { clientOf } from '../src/net.js';
 import { openStore } from '../src/store/index.js';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, tempDir, TESTBED } from './helpers.js';
 
@@ -53,10 +56,13 @@ function browser(platform) {
     }
     const json = await res.json().catch(() => null);
     if (json?.csrf) b.csrf = json.csrf;
-    return { status: res.status, body: json, setCookie, retryAfter: res.headers.get('retry-after') };
+    return { status: res.status, body: json, setCookie, retryAfter: res.headers.get('retry-after'), etag: res.headers.get('etag') };
   };
   return b;
 }
+
+// What the admin UI sends to change an account: the ETag it read (03 §3.1).
+const readFirst = async (b, ref) => ({ 'if-match': (await b.call('GET', `/users/${ref}`)).etag });
 
 const bearer = (platform, token) => (method, url, body) => fetch(`${platform.url}/api/v1${url}`, {
   method,
@@ -104,21 +110,31 @@ test('passwords: scrypt at N = 2^17, r = 8, p = 1, stored with their parameters;
   assert.deepEqual(await cheap.verify(PASSWORD, undefined), { ok: false, rehash: false });
 });
 
-test('passwords: hashed one at a time; with more than ten waiting, the next is refused (busy)', async () => {
-  const hasher = createHasher({ params: { N: 4096, r: 8, p: 1 }, maxWaiting: 10 });
+test('passwords: hashed one at a time; with more than ten waiting, the next is refused (busy)', async (t) => {
+  // Count the scrypt calls actually running (passwords.js imports scrypt by name: a live binding).
   let running = 0;
   let most = 0;
-  const calls = Array.from({ length: 13 }, (_, i) => hasher.hash(`password number ${i}`).then(() => {
-    most = Math.max(most, running);
-  }, (err) => err));
-  // Watch concurrency through the queue's own count of waiting calls.
-  running = hasher.waiting;
-  const results = await Promise.all(calls);
+  const scrypt = crypto.scrypt;
+  crypto.scrypt = (password, salt, length, options, done) => {
+    most = Math.max(most, ++running);
+    scrypt(password, salt, length, options, (err, key) => {
+      running--;
+      done(err, key);
+    });
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    crypto.scrypt = scrypt;
+    syncBuiltinESMExports();
+  });
+  const hasher = createHasher({ params: { N: 4096, r: 8, p: 1 }, maxWaiting: 10 });
+  const results = await Promise.all(Array.from({ length: 13 }, (_, i) => hasher.hash(`password number ${i}`).catch((err) => err)));
   const busy = results.filter((r) => r instanceof BusyError);
   assert.equal(busy.length, 2, 'eleven accepted (one running, ten waiting), two refused');
   assert.ok(busy[0].retryAfterS >= 1);
   assert.equal(hasher.waiting, 0);
-  assert.ok(most <= 11);
+  assert.equal(results.filter((r) => typeof r === 'string').length, 11);
+  assert.equal(most, 1, 'never two scrypt calls at once (07 §7.3: 128 MiB each)');
 });
 
 test('what a password may be: 12 to 256 characters, not common, not the username, not a run', () => {
@@ -274,6 +290,41 @@ test('signing in: one answer for a wrong name or password, "keep me signed in" f
   assert.equal((await stale.call('GET', '/auth/session')).status, 401);
 });
 
+test('your sessions: newest first, and paged a page at a time, each once', async (t) => {
+  const { platform, owner, clock } = await withOwner(t);
+  for (let i = 0; i < 4; i++) {
+    clock.t += MIN;
+    assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD })).status, 200);
+  }
+  clock.t += MIN;
+  assert.equal((await owner.call('GET', '/auth/session')).status, 200, 'the oldest is the one used last');
+  const all = (await owner.call('GET', '/auth/sessions')).body.items;
+  assert.equal(all.length, 5);
+  assert.deepEqual(all.map((s) => s.createdAt), all.map((s) => s.createdAt).sort().reverse(), 'newest first');
+  assert.equal(all[4].current, true);
+  const walked = [];
+  let cursor;
+  do {
+    const page = (await owner.call('GET', `/auth/sessions?limit=2${cursor ? `&cursor=${cursor}` : ''}`)).body;
+    walked.push(...page.items);
+    cursor = page.next;
+  } while (cursor);
+  assert.deepEqual(walked.map((s) => s.id), all.map((s) => s.id));
+});
+
+test('over HTTPS only the __Host- cookie counts, and signing out clears both names', async (t) => {
+  const { platform, owner } = await withOwner(t);
+  const value = owner.cookie.split('=')[1];
+  const as = (cookie, https) => platform.auth.authenticate({ headers: { cookie }, socket: { remoteAddress: '127.0.0.1' }, client: { ip: '127.0.0.1', https, proxied: false } });
+  assert.equal(as(`skp_session=${value}`, false).principal.user.username, 'juan');
+  assert.deepEqual(as(`skp_session=${value}`, true), {}, 'a cookie plain HTTP could have planted signs nobody in over HTTPS');
+  assert.equal(as(`__Host-skp_session=${value}`, true).principal.user.username, 'juan');
+  assert.deepEqual(as(`__Host-skp_session=${value}`, false), {});
+  const out = platform.auth.logout(as(`__Host-skp_session=${value}`, true).principal, { https: true });
+  assert.deepEqual(out.cookie, ['__Host-skp_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure', 'skp_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0']);
+  assert.equal(platform.auth.logout({ kind: 'local' }, { https: false }).cookie, 'skp_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+});
+
 test('login protection: ten failures, then 1 s, 2 s, 4 s … per account and per address; a success resets the account', async (t) => {
   const { platform, clock } = await withOwner(t);
   const b = browser(platform);
@@ -297,6 +348,21 @@ test('login protection: ten failures, then 1 s, 2 s, 4 s … per account and per
   // Fifteen quiet minutes: the window is over; the right password works and resets the account.
   clock.t += 30 * MIN;
   assert.equal((await attempt(PASSWORD)).status, 200);
+});
+
+test('login protection counts each address across names, and each account across addresses; a success starts the account over', async (t) => {
+  const { platform, clock } = await withOwner(t);
+  const tryAs = (username, password, ip) => platform.auth.login({ username, password }, { ip }).then(() => 200, (err) => err.status);
+  for (let i = 0; i < 10; i++) assert.equal(await tryAs(`nobody${i}`, 'wrong password!', '203.0.113.1'), 401);
+  assert.equal(await tryAs('juan', PASSWORD, '203.0.113.1'), 429, 'one address trying many names waits');
+  assert.equal(await tryAs('juan', PASSWORD, '192.0.2.1'), 200, 'the account itself is fine');
+  for (let i = 0; i < 10; i++) assert.equal(await tryAs('juan', 'wrong password!', `198.51.100.${i}`), 401);
+  assert.equal(await tryAs('juan', PASSWORD, '192.0.2.1'), 429, 'one account tried from many addresses waits');
+  clock.t += 30 * MIN;
+  for (let i = 0; i < 9; i++) assert.equal(await tryAs('juan', 'wrong password!', `198.51.100.${i}`), 401);
+  assert.equal(await tryAs('juan', PASSWORD, '192.0.2.2'), 200);
+  assert.equal(await tryAs('juan', 'wrong password!', '192.0.2.3'), 401);
+  assert.equal(await tryAs('juan', PASSWORD, '192.0.2.4'), 200, 'the success started the count over: one failure, not ten');
 });
 
 // ---- roles ---------------------------------------------------------------------------------------
@@ -335,17 +401,34 @@ test('accounts: the owner adds, changes and removes users; each change signs tha
   const list = (await owner.call('GET', '/users')).body.items;
   assert.deepEqual(list.map((u) => [u.username, u.role]), [['juan', 'owner'], ['ana', 'operator']]);
   assert.ok(list.every((u) => !('passwordHash' in u)));
+  // An account has an ETag, and the admin UI changes the one it read (03 §3.1).
+  const read = await owner.call('GET', '/users/ana');
+  assert.equal(read.etag, `"${read.body.id}-r${read.body.rev}"`);
+  const blind = await owner.call('PATCH', '/users/ana', { role: 'viewer' });
+  assert.deepEqual([blind.status, blind.body.type], [428, 'https://skp.dev/errors/if-match-required']);
+  assert.equal((await owner.call('PATCH', '/users/ana', { role: 'viewer' }, { 'if-match': `"${read.body.id}-r${read.body.rev - 1}"` })).status, 412);
   // A role change ends her sessions.
-  assert.equal((await owner.call('PATCH', '/users/ana', { role: 'viewer' })).body.role, 'viewer');
+  const demoted = await owner.call('PATCH', '/users/ana', { role: 'viewer' }, { 'if-match': read.etag });
+  assert.deepEqual([demoted.body.role, demoted.etag], ['viewer', `"${read.body.id}-r${read.body.rev + 1}"`]);
   assert.equal((await ana.call('GET', '/auth/session')).status, 401);
-  assert.equal((await owner.call('PATCH', '/users/juan', { role: 'admin' })).status, 409, 'the owner stays the owner');
+  assert.equal((await owner.call('PATCH', '/users/juan', { role: 'admin' }, await readFirst(owner, 'juan'))).status, 409, 'the owner stays the owner');
+  // The owner's own password and two-factor: with the current password, at /auth/password and
+  // /auth/totp; not through the accounts route, by a session (perhaps stolen) or a token.
+  for (const patch of [{ password: 'taken over by a token 1' }, { totp: false }]) {
+    const own = await owner.call('PATCH', '/users/juan', patch, await readFirst(owner, 'juan'));
+    assert.deepEqual([own.status, own.body.type], [403, 'https://skp.dev/errors/owner'], JSON.stringify(patch));
+  }
+  const admin = bearer(ctx.platform, (await owner.call('POST', '/tokens', { name: 'accounts', scopes: ['users:admin'] })).body.token);
+  for (const patch of [{ password: 'taken over by a token 1' }, { totp: false }, { role: 'viewer' }]) assert.equal((await admin('PATCH', '/users/juan', patch)).status, patch.role ? 409 : 403, JSON.stringify(patch));
+  assert.equal((await browser(ctx.platform).call('POST', '/auth/login', { username: 'juan', password: 'taken over by a token 1' })).status, 401);
+  assert.equal((await admin('PATCH', '/users/ana', { password: 'reset by the owner\'s token' })).status, 200, 'other accounts are what users:admin is for');
   // Her own password change ends her other sessions and keeps her signed in here.
   const here = browser(ctx.platform);
-  await here.call('POST', '/auth/login', { username: 'ana', password: `${PASSWORD} operator` });
+  await here.call('POST', '/auth/login', { username: 'ana', password: 'reset by the owner\'s token' });
   const there = browser(ctx.platform);
-  await there.call('POST', '/auth/login', { username: 'ana', password: `${PASSWORD} operator` });
+  await there.call('POST', '/auth/login', { username: 'ana', password: 'reset by the owner\'s token' });
   assert.equal((await here.call('POST', '/auth/password', { current: 'wrong', password: 'a whole new password' })).status, 403);
-  const changed = await here.call('POST', '/auth/password', { current: `${PASSWORD} operator`, password: 'a whole new password' });
+  const changed = await here.call('POST', '/auth/password', { current: 'reset by the owner\'s token', password: 'a whole new password' });
   assert.equal(changed.status, 200);
   assert.equal((await here.call('GET', '/auth/session')).status, 200, 'a new cookie came with it');
   assert.equal((await there.call('GET', '/auth/session')).status, 401);
@@ -369,6 +452,14 @@ test('API tokens: skp_pat_ + 32 random bytes, shown once, kept as a hash; scopes
   assert.equal((await deck('GET', '/shows')).status, 200);
   assert.equal((await deck('POST', '/shows', { name: 'X', overlays: [], date: '2026-10-17', timezone: 'UTC' })).status, 403, 'timeline:write not granted');
   assert.equal((await deck('POST', '/tokens', { name: 'another' })).status, 403, 'a token can\'t make tokens');
+  // What only a person does (their sessions, password, two-factor): not with a token, nor from
+  // the command line.
+  for (const [method, url, body] of [['GET', '/auth/sessions'], ['DELETE', '/auth/sessions/ses_01J00000000000000000000000'], ['POST', '/auth/password', { current: PASSWORD, password: 'another long password' }], ['POST', '/auth/totp/enroll', { password: PASSWORD }], ['POST', '/auth/totp/verify', { code: '000000' }], ['DELETE', '/auth/totp', { password: PASSWORD }]]) {
+    for (const who of [deck, bearer(platform, platform.auth.localToken)]) {
+      const r = await who(method, url, body);
+      assert.deepEqual([r.status, r.body.type], [403, 'https://skp.dev/errors/session-only'], `${method} ${url}`);
+    }
+  }
   const listed = (await owner.call('GET', '/tokens')).body.items;
   assert.equal(listed.length, 1);
   assert.equal(listed[0].token, undefined, 'never shown again');
@@ -382,7 +473,7 @@ test('API tokens: skp_pat_ + 32 random bytes, shown once, kept as a hash; scopes
   assert.equal((await bearer(platform, opToken.token)('PUT', '/shows/nope/scene', { scene: 'brb' })).status, 404);
   assert.equal((await operator.call('DELETE', `/tokens/${made.body.id}`)).status, 404, 'not theirs');
   // The creator demoted: the token shrinks with them.
-  await owner.call('PATCH', '/users/operator', { role: 'viewer' });
+  assert.equal((await owner.call('PATCH', '/users/operator', { role: 'viewer' }, await readFirst(owner, 'operator'))).status, 200);
   assert.equal((await bearer(platform, opToken.token)('PUT', '/shows/nope/scene', { scene: 'brb' })).status, 403);
   // An address list.
   const lan = (await owner.call('POST', '/tokens', { name: 'lan only', scopes: ['timeline:read'], ips: ['192.168.1.0/24'] })).body;
@@ -430,9 +521,57 @@ test('two-factor: enroll with the password, confirm a code, ten recovery codes; 
   const recovery = on.body.recoveryCodes[3];
   assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recovery.toLowerCase() })).status, 200);
   assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recovery })).status, 401);
-  // Off again, with the password.
+  // Off again, with the password: not without it.
+  const guessed = await b.call('DELETE', '/auth/totp', { password: 'not the password' });
+  assert.deepEqual([guessed.status, guessed.body.type], [403, 'https://skp.dev/errors/bad-credentials']);
+  assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD })).body.type, 'https://skp.dev/errors/totp-required', 'still on');
   assert.equal((await b.call('DELETE', '/auth/totp', { password: PASSWORD })).status, 200);
   assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD })).status, 200);
+});
+
+test('two-factor whose secret no longer decrypts (restored without the master key): the recovery codes still sign in', async (t) => {
+  const { platform, owner, clock, config, dataRoot } = await withOwner(t);
+  const { secret } = (await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD })).body;
+  const { recoveryCodes } = (await owner.call('POST', '/auth/totp/verify', { code: hotp(secret, stepAt(clock.t)) })).body;
+  await platform.stop();
+  rmSync(path.join(config.configDir, 'master.key'));
+  const again = await setup(t, { dataRoot, start: clock.t + MIN });
+  const b = browser(again.platform);
+  const code = await b.call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: hotp(secret, stepAt(again.clock.t)) });
+  assert.equal(code.status, 422);
+  assert.match(code.body.detail, /restore that master key/, 'a six-digit code says why it can\'t be checked');
+  assert.equal((await b.call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recoveryCodes[0] })).status, 200);
+  assert.equal((await browser(again.platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD, code: recoveryCodes[0] })).status, 422, 'once');
+});
+
+test('the password asked for again (a new password, two-factor) is throttled and recorded like a sign-in', async (t) => {
+  const { platform, owner, clock } = await withOwner(t);
+  const asks = [['POST', '/auth/password', (p) => ({ current: p, password: 'another long password' })], ['POST', '/auth/totp/enroll', (p) => ({ password: p })], ['DELETE', '/auth/totp', (p) => ({ password: p })]];
+  for (let i = 0; i < 10; i++) {
+    const [method, url, body] = asks[i % 3];
+    assert.equal((await owner.call(method, url, body('not the password'))).status, 403, url);
+  }
+  const waits = await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD });
+  assert.deepEqual([waits.status, waits.body.type, waits.retryAfter], [429, 'https://skp.dev/errors/throttled', '1'], 'even the right password waits');
+  assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD })).status, 429, 'one count with signing in');
+  const failures = platform.audit.list({ action: 'login.failure' }).items;
+  assert.equal(failures.length, 10);
+  assert.ok(failures.every((e) => e.actor === 'juan' && e.details.reason === 'recheck' && /127\.0\.0\.1/.test(e.ip)));
+  clock.t += 1000;
+  assert.equal((await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD })).status, 200);
+});
+
+test('answers that hold a secret are never kept for replay: a token, a two-factor secret, a session', async (t) => {
+  const { platform, owner } = await withOwner(t);
+  const once = { 'idempotency-key': 'press-1' };
+  const first = await owner.call('POST', '/tokens', { name: 'deck' }, once);
+  const again = await owner.call('POST', '/tokens', { name: 'deck' }, once);
+  assert.deepEqual([first.status, again.status], [201, 201]);
+  assert.notEqual(again.body.token, first.body.token, 'a second token, not the first one\'s secret again');
+  assert.equal((await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD }, { 'idempotency-key': 'enroll-1' })).status, 200);
+  assert.equal((await browser(platform).call('POST', '/auth/login', { username: 'juan', password: PASSWORD }, { 'idempotency-key': 'login-1' })).status, 200);
+  const kept = JSON.stringify(platform.store.list('idempotency', { limit: 1000 }));
+  for (const secret of ['skp_pat_', 'otpauth:', 'csrf']) assert.ok(!kept.includes(secret), secret);
 });
 
 // ---- the local token and the command line ---------------------------------------------------------
@@ -443,10 +582,22 @@ test('the command line\'s local token: written at start (0600), only from this m
   assert.match(token, /^skp_cli_[0-9A-Za-z]{43}$/);
   assert.equal(token, platform.auth.localToken);
   if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600);
-  const req = (remoteAddress) => ({ headers: { authorization: `Bearer ${token}` }, socket: { remoteAddress } });
-  assert.equal(platform.auth.authenticate(req('127.0.0.1')).principal.kind, 'local');
+  const req = (remoteAddress, headers = {}) => ({ headers: { authorization: `Bearer ${token}`, ...headers }, socket: { remoteAddress } });
+  const local = platform.auth.authenticate(req('127.0.0.1')).principal;
+  assert.deepEqual([local.kind, local.label], ['local', cliActor()], 'its changes are the command line\'s: cli:<user> (07 §7.12)');
+  assert.match(local.label, /^cli(:.+)?$/);
   assert.equal(platform.auth.authenticate(req('::ffff:127.0.0.1')).principal.role, 'owner');
   assert.match(platform.auth.authenticate(req('192.168.1.5')).error, /only from this machine/);
+  // Through a proxy on this machine (trusted or not), which connects from loopback too: what it
+  // adds gives it away. The command line's own requests beside a trusted proxy still work.
+  const via = (headers, trust) => {
+    const r = req('127.0.0.1', headers);
+    return { ...r, client: clientOf(r, trust) };
+  };
+  for (const [header, value] of [['x-forwarded-for', '203.0.113.9'], ['x-forwarded-proto', 'https'], ['forwarded', 'for=203.0.113.9'], ['x-real-ip', '203.0.113.9'], ['x-forwarded-host', 'overlays.example.com'], ['via', '1.1 caddy']]) {
+    for (const trust of [['127.0.0.1'], []]) assert.match(platform.auth.authenticate(via({ [header]: value }, trust)).error, /only from this machine/, `${header}, ${trust.length ? 'a trusted proxy' : 'a proxy not trusted'}`);
+  }
+  assert.equal(platform.auth.authenticate(via({}, ['127.0.0.1'])).principal.kind, 'local', 'the command line beside a trusted proxy');
   assert.match(platform.auth.authenticate({ headers: { authorization: 'Bearer skp_cli_nope' }, socket: { remoteAddress: '127.0.0.1' } }).error, /doesn't match/);
   assert.match(platform.auth.authenticate({ headers: { authorization: 'Basic abc' }, socket: {} }).error, /Bearer/);
   await platform.stop();
@@ -494,8 +645,11 @@ test('skp setup, user, token and audit drive the running platform', async (t) =>
   const audit = JSON.parse((await cli(['audit', '--limit', '20', '--json'], env)).stdout);
   // (Resetting two-factor that was off changes nothing, so it isn't recorded.)
   assert.deepEqual(audit.items.map((e) => e.action).reverse(), ['setup', 'user.create', 'user.role', 'user.password', 'login', 'token.create', 'token.revoke', 'user.delete']);
-  assert.ok(audit.items.filter((e) => e.action.startsWith('user.') || e.action.startsWith('token.')).every((e) => e.actor === 'local'));
-  assert.match((await cli(['audit', '--action', 'token'], env)).stdout, /token\.revoke\s+local/);
+  // Made from the command line: cli:<user> (07 §7.12), as the commands that open the data do.
+  const fromCli = audit.items.filter((e) => e.action.startsWith('user.') || e.action.startsWith('token.'));
+  assert.equal(fromCli.length, 6);
+  assert.ok(fromCli.every((e) => e.actor === cliActor()), JSON.stringify(fromCli.map((e) => e.actor)));
+  assert.match((await cli(['audit', '--action', 'token'], env)).stdout, new RegExp(`token\\.revoke\\s+${cliActor().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   // Without the platform's local token (another config directory): told why.
   const lost = await cli(['user', 'list'], { ...env, SKP_CONFIG_DIR: path.join(path.dirname(config.configDir), 'elsewhere') });
   assert.equal(lost.code, 1);

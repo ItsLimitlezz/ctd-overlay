@@ -5,16 +5,20 @@ import http from 'node:http';
 import https from 'node:https';
 import { clientOf } from '../net.js';
 
-const BASE_HEADERS = {
+// On every answer the platform writes, the API's included (03 §3.4, 07 §7.10).
+export const BASE_HEADERS = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'same-origin',
   'cache-control': 'no-store',
 };
-// The admin UI and the API (07 §7.10); overlay pages, template files, media and the SDK set their
-// own (04 §4.8).
+// The admin UI and the API (07 §7.10), set before any route runs, so an answer a route writes
+// itself (a preview image) has them too; overlay pages, template files, media and the SDK set
+// their own (04 §4.8).
 const ADMIN_HEADERS = {
   'content-security-policy': "default-src 'self'; frame-ancestors 'none'; object-src 'none'; frame-src 'self'",
   'cross-origin-opener-policy': 'same-origin',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'same-origin',
 };
 const HSTS = 'max-age=31536000';
 const overlayFacing = (rawUrl) => /^\/(o|sdk|media)\//.test(rawUrl || '');
@@ -92,11 +96,12 @@ const favicon = ({ res }) => {
 // { status, title, detail } for a client this platform doesn't serve (lan and public modes), or
 // nothing.
 export function createHttpServer({ log, crash, routes = [], tls, trustProxy = [], admit }) {
-  const router = createRouter([
+  const served = [
     { method: 'GET', path: '/healthz', handler: healthz },
     { method: 'GET', path: '/favicon.ico', handler: favicon },
     ...routes,
-  ]);
+  ];
+  const router = createRouter(served);
 
   const onRequest = (req, res) => {
     req.client = clientOf(req, trustProxy);
@@ -145,8 +150,14 @@ export function createHttpServer({ log, crash, routes = [], tls, trustProxy = []
   });
 
   server.keepAliveTimeout = 5000;
+  // A slow client gets 30 s to send its headers. The whole request may take longer: Node's
+  // requestTimeout can't be set per route, and an upload (600 MiB of media, a 100 MiB package)
+  // must get through on a slow link, so it is only a backstop here. The tighter limits are where
+  // bodies are read: readBytes() has a deadline, and a streamed upload one for silence (api.js).
   server.headersTimeout = 30000;
-  server.requestTimeout = 60000;
+  server.requestTimeout = UPLOAD_MS;
+  // The routes served, as { method, path } (the OpenAPI test holds the document to them).
+  server.routes = Object.freeze(served.map(({ method, path }) => ({ method, path })));
   return server;
 }
 
@@ -184,28 +195,35 @@ async function handle(req, res, router) {
   await match.route.handler({ req, res, params: match.params, url });
 }
 
-// `headers` go on the error's response. A 413 closes the connection: the rest of the body is
-// never read, so the connection can't carry another request (and Node would otherwise read and
-// discard the whole body to keep it alive).
+// `headers` go on the error's response; `code` is its problem type (too-large, too-slow). A 413 or
+// 408 closes the connection: the rest of the body is never read, so the connection can't carry
+// another request (and Node would otherwise read and discard the whole body to keep it alive).
 export class BodyError extends Error {
-  constructor(status, message, headers = {}) {
+  constructor(status, message, headers = {}, code = 'too-large') {
     super(message);
+    this.name = 'BodyError';
     this.status = status;
     this.headers = headers;
+    this.code = code;
   }
 }
 
 const tooLarge = (message) => new BodyError(413, message, { connection: 'close' });
 
-// Reads a request body as text, refusing more than `limit` bytes (413) without buffering the rest.
-// On overflow it only stops reading: destroying the request would also destroy the socket, and
-// the 413 would never arrive.
-export function readBody(req, limit) {
-  return readBytes(req, limit).then((b) => b.toString('utf8'));
+// How long a whole request may take (the server's backstop), and how long a body read here may
+// take to arrive (408 past it): a JSON body or a log entry in a minute, as before uploads.
+export const UPLOAD_MS = 30 * 60 * 1000;
+export const BODY_MS = 60 * 1000;
+
+// Reads a request body as text, refusing more than `limit` bytes (413) without buffering the rest,
+// or one that takes longer than `ms` to arrive (408). On either it only stops reading: destroying
+// the request would also destroy the socket, and the answer would never arrive.
+export function readBody(req, limit, options) {
+  return readBytes(req, limit, options).then((b) => b.toString('utf8'));
 }
 
 // The same, as bytes (an upload).
-export function readBytes(req, limit) {
+export function readBytes(req, limit, { ms = BODY_MS } = {}) {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length']);
     if (declared > limit) {
@@ -214,21 +232,29 @@ export function readBytes(req, limit) {
     }
     const chunks = [];
     let size = 0;
+    const stop = (err) => {
+      clearTimeout(timer);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.pause();
+      reject(err);
+    };
     const onData = (chunk) => {
       size += chunk.length;
-      if (size > limit) {
-        req.off('data', onData);
-        req.off('end', onEnd);
-        req.pause();
-        reject(tooLarge(`The body is over the ${limit}-byte limit.`));
-        return;
-      }
+      if (size > limit) return stop(tooLarge(`The body is over the ${limit}-byte limit.`));
       chunks.push(chunk);
     };
-    const onEnd = () => resolve(Buffer.concat(chunks));
+    const onEnd = () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks));
+    };
+    const timer = setTimeout(() => stop(new BodyError(408, `The body took longer than ${Math.round(ms / 1000)} s to arrive. Send it again, on a faster connection if you can.`, { connection: 'close' }, 'too-slow')), ms);
     req.on('data', onData);
     req.on('end', onEnd);
-    req.on('error', reject);
+    req.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 

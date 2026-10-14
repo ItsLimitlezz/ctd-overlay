@@ -10,17 +10,20 @@ It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/
 - [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
 - [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
 
-**Status:** steps 1–9 of the plan, plus 8b (template updates from GitHub releases). The server
-keeps its data in SQLite, routes live data through the bus, and serves overlays to OBS browser
-sources over Server-Sent Events with a polling fallback. Every overlay page gets the runtime SDK
-(`SK`, [04 §4.4](docs/standard/04-templates.md)): the server clock, state and events, scenes and
-transitions, element lifecycle on deadlines, actions, alerts, chat and music helpers, and a mock
-show (`?mock=1`). Templates install from `.skp` or `.zip` packages, URLs or GitHub releases, with
-validation, settings and upgrades, and can follow a repository for updates; media uploads are
-converted for OBS. Shows put overlays together: one take changes every member, triggers land on
-the same frame, timed scenes return on the server, and REC starts by itself. Bundled: the
-D/PRTMNT TAKEOVER show package, a viewer-count widget and a diagnostic template. Next is step 10:
-the timeline, so a show runs from its schedule.
+**Status:** steps 1–13 of the plan, plus 8b (template updates from GitHub releases); step 13 is
+in review. The server keeps its data in SQLite, routes live data through the bus, and serves
+overlays to OBS browser sources over Server-Sent Events with a polling fallback. Every overlay
+page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)): the server clock,
+state and events, scenes and transitions, element lifecycle on deadlines, actions, alerts, chat
+and music helpers, and a mock show (`?mock=1`). Templates install from `.skp` or `.zip` packages,
+URLs or GitHub releases, with validation, settings and upgrades, and can follow a repository for
+updates; media uploads are converted for OBS. Shows put overlays together: one take changes every
+member, triggers land on the same frame, timed scenes return on the server, and REC starts by
+itself; the show's cues fire on the server's clock from its schedule. Sign-in has roles, API
+tokens, two-factor codes and an audit log; overlay URLs carry keys, secrets are encrypted at rest,
+and the platform can serve the local network or the internet over HTTPS. Everything goes through
+the API v1, described at `/api/v1/openapi.json`. Bundled: the D/PRTMNT TAKEOVER show package, a
+viewer-count widget and a diagnostic template. Next is step 14: the admin UI.
 
 ## Try it in OBS
 
@@ -42,18 +45,6 @@ npm run diag
 starts eight diagnostic overlays on port 4949, for checking the transport: each shows whether it
 is streaming or polling, how many updates arrived, and the server clock. Add `?debug=1` to any
 overlay URL for the SDK's status panel.
-
-To watch one overlay react without going live, post a sample event to it (08 §8.5; from this
-machine only, until sign-in exists):
-
-```bash
-curl -X POST http://127.0.0.1:4950/api/v1/overlays/takeover-h/simulate -H "content-type: application/json" -d "{\"kind\":\"viewers\",\"value\":2500}"
-```
-
-Kinds: `chat`, `follow`, `subscription`, `gift`, `raid`, `cheer`, `tip`, `track`, `viewers`,
-`viewers-clear`, `media.play` (with a `/media/…` `url`), `media.stop`, `reset`. Simulated state
-(a viewer count, a track) shows on that overlay only, and goes back to the real value after a
-minute or at `reset`.
 
 ## Run it
 
@@ -85,8 +76,21 @@ config folder decrypts the secrets in the data folder: back it up separately.
 ### The API
 
 Everything the admin UI does goes through `/api/v1`, described at `/api/v1/openapi.json`.
-Sign in, or send an API token (`Authorization: Bearer skp_pat_…`); a Stream Deck button that
-must fire once sends `Idempotency-Key`.
+Sign in, or send an API token (`Authorization: Bearer skp_pat_…`, from `skp token create`,
+below); a Stream Deck button that must fire once sends `Idempotency-Key`.
+
+To watch one overlay react without going live, post a sample event to it (08 §8.5) with a token
+that may control overlays (`npm run skp -- token create --name Simulate --scopes
+overlays:control`, shown once):
+
+```bash
+curl -X POST http://127.0.0.1:4848/api/v1/overlays/<slug>/simulate -H "authorization: Bearer skp_pat_…" -H "content-type: application/json" -d "{\"kind\":\"viewers\",\"value\":2500}"
+```
+
+Kinds: `chat`, `follow`, `subscription`, `gift`, `raid`, `cheer`, `tip`, `track`, `viewers`,
+`viewers-clear`, `media.play` (with a `/media/…` `url`), `media.stop`, `reset`. Simulated state
+(a viewer count, a track) shows on that overlay only, and goes back to the real value after a
+minute or at `reset`.
 
 ### Accounts
 
@@ -97,14 +101,15 @@ There is no default password. On first start the platform prints a **setup code*
 npm run skp -- setup --code ABCD-EFGH-IJKL --username juan
 ```
 
-It asks for a password (12 characters or more; a few words make a good one). Then add the people
-who run the show: `skp user add ana --role operator` (operators run scenes, cues and the lineup
-but never see credentials; `admin` also installs templates and reads the audit log; `viewer`
-only looks). A Stream Deck or a bot gets an API token: `skp token create --name "Stream Deck"
---scopes overlays:control`, shown once. `skp audit` shows who did what. These commands work on
-the platform's own machine without signing in: the platform writes a local token to its config
-folder for them, which is also how the owner resets a forgotten password
-(`skp user password juan`).
+Make it from the platform's machine or its local network: in public mode, setup from the
+internet is refused. It asks for a password (12 characters or more; a few words make a good
+one). Then add the people who run the show: `skp user add ana --role operator` (operators run
+scenes, cues and the lineup but never see credentials; `admin` also installs templates and reads
+the audit log; `viewer` only looks). A Stream Deck or a bot gets an API token: `skp token create
+--name "Stream Deck" --scopes overlays:control`, shown once. `skp audit` shows who did what (the
+command line's changes as `cli:<your user>`). These commands work on the platform's own machine
+without signing in: the platform writes a local token to its config folder for them, which is
+also how the owner resets a forgotten password (`skp user password juan`).
 
 ## Templates
 
@@ -132,8 +137,8 @@ installs.
 `overlay upgrade <slug> --to <version> [--dry-run] [--yes]` moves an overlay to a newer version of
 its template; its OBS URL never changes. The plan lists every setting that changes, and an
 upgrade that drops anything the overlay uses needs `--yes`. `overlay revert <slug>` goes back to
-the version and settings it had before. Each change is recorded in `operations.log` in the data
-folder.
+the version and settings it had before. Each change is recorded in the audit log: `skp audit`
+shows it, with the platform running.
 
 ### Updating templates remotely
 
@@ -171,8 +176,8 @@ show carries the night: its date, timezone, go-live time and lineup. Times are w
 poster (`01:00` after midnight belongs to the same night, until the show's day boundary,
 `12:00` by default), and the server turns them into instants, clock changes included.
 
-These commands drive the running platform, so start it first (`npm start`, or `npm run demo`,
-which already has a show; add `--port 4950` for the demo's port):
+These commands drive the running platform, so start it first (`npm start`; the demo, whose
+config folder is a temporary one, takes its own commands in its console instead):
 
 ```bash
 npm run skp -- show create --name "Saturday TAKEOVER" --overlays main-h,main-v --date 2026-10-17 --timezone America/Toronto --go-live 22:30 --lineup lineup.json

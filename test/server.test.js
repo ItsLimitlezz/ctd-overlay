@@ -155,6 +155,38 @@ test('a body over the limit gets its 413, then the connection closes (chunked or
   assert.equal((await fetch(`${url}/healthz`)).status, 200);
 });
 
+test('a body that takes too long to arrive gets its 408, then the connection closes; the whole request has a backstop long enough for an upload', async (t) => {
+  const routes = [{
+    method: 'POST',
+    path: '/body',
+    handler: async ({ req, res }) => {
+      let text;
+      try { text = await readBody(req, 8192, { ms: 300 }); } catch (err) { return sendProblem(res, err.status, 'Refused', err.message, { headers: err.headers }); }
+      sendJson(res, 200, { bytes: Buffer.byteLength(text) });
+    },
+  }];
+  const { platform, url } = await start(t, { routes });
+  assert.deepEqual(await (await fetch(`${url}/body`, { method: 'POST', body: 'x'.repeat(100) })).json(), { bytes: 100 });
+  // 100 of the 1000 bytes it declares, then nothing.
+  const slow = exchange(platform.port, `POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n${'x'.repeat(100)}`);
+  const reply = await Promise.race([slow, new Promise((resolve) => setTimeout(() => resolve({ status: 'no answer' }), 3000))]);
+  assert.equal(reply.status, 'HTTP/1.1 408 Request Timeout');
+  assert.deepEqual([reply.headers.connection, reply.closed], ['close', true]);
+  // Node's requestTimeout can't be set per route: it must let 600 MiB through on a slow link.
+  assert.ok(platform.server.requestTimeout >= 30 * 60 * 1000);
+  assert.equal(platform.server.headersTimeout, 30000, 'headers still arrive in 30 s or not at all');
+});
+
+test('the admin UI\'s and the API\'s headers are on every answer, a route\'s own included; the routes served are listed', async (t) => {
+  const routes = [{ method: 'GET', path: '/api/picture', handler: ({ res }) => { res.writeHead(200, { 'content-type': 'image/png' }); res.end(); } }];
+  const { platform, url } = await start(t, { routes });
+  const res = await fetch(`${url}/api/picture`);
+  assert.deepEqual(['x-content-type-options', 'referrer-policy', 'content-security-policy'].map((h) => Boolean(res.headers.get(h))), [true, true, true]);
+  assert.equal(res.headers.get('referrer-policy'), 'same-origin');
+  assert.ok(platform.server.routes.some((r) => r.method === 'GET' && r.path === '/api/picture'));
+  assert.ok(platform.server.routes.some((r) => r.method === 'GET' && r.path === '/healthz'));
+});
+
 test('route close hooks run when the server closes', async (t) => {
   let closed = 0;
   const routes = [{ method: 'GET', path: '/x', handler: ({ res }) => res.end(), close: () => { closed++; } }];

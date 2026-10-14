@@ -4,18 +4,19 @@
 //   GET  /api/v1/system/health    status, with what is degraded
 //   GET  /api/v1/system/info      version, exposure, store, capabilities (ffmpeg …)
 //   GET  /api/v1/events           Server-Sent Events of what the platform publishes (?types=alert.*,custom.*)
-//   POST /api/v1/events           { type, data }: publish a custom.* or x-<vendor>.* event (02 §2.7)
+//   POST /api/v1/events           { type, data }: publish a custom.* or x-<vendor>.* event (02 §2.7),
+//                                 60 a second per principal, a budget of its own (03 §3.5)
 //   GET  /api/v1/state · GET /api/v1/state/:key   current state
 //   PUT  /api/v1/state/:key       { value }: set a custom.* or x-<vendor>.* key (null removes it)
 import { ApiError } from './api.js';
+import { BASE_HEADERS } from './server.js';
 import { compilePatterns, isCustom, KEY } from '../bus/names.js';
-import { frame } from '../overlays/sse.js';
+import { createSseWriter } from '../overlays/sse.js';
 
 export const PUBLISH_PER_SECOND = 60; // 03 §3.5
 
 export function systemRoutes({ api, bus, store, media, templates, overlays, shows, config, version, heartbeatMs = 15000, now = Date.now }) {
   const started = now();
-  const publishes = new Map(); // principal → { second, count }
   const streams = new Set();
   const r = (def) => api.route({ tag: 'System', ...def });
 
@@ -41,34 +42,49 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
     } }),
     r({ method: 'GET', path: '/api/v1/system/info', summary: 'Version, exposure, store and capabilities', run: info }),
 
-    r({ method: 'GET', path: '/api/v1/events', scope: 'events:read', tag: 'Live', summary: 'Server-Sent Events of what the platform publishes (?types=)', run: ({ url, req, res }) => {
+    r({ method: 'GET', path: '/api/v1/events', scope: 'events:read', tag: 'Live', summary: 'Server-Sent Events of what the platform publishes (?types=)', query: ['types'], produces: 'text/event-stream', run: ({ url, req, res, still }) => {
       let wants = () => true;
       const types = url.searchParams.get('types');
       if (types) {
         try { wants = compilePatterns(types.split(',').map((s) => s.trim()).filter(Boolean), 'type'); } catch (err) { throw new ApiError(422, 'invalid', `"types" is a list like alert.*,custom.*: ${err.message}.`); }
       }
-      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+      res.writeHead(200, { ...BASE_HEADERS, 'content-type': 'text/event-stream; charset=utf-8', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.write(': connected\n\n');
+      // A client that stops reading gets a queue, not the server's memory: past its cap the stream
+      // is cut (overlays/sse.js), destroyed, as a stalled socket never flushes an end.
+      const writer = createSseWriter(res, { onOverflow: () => res.destroy() });
+      // The stream outlives the request that opened it: whoever opened it must still be signed in
+      // with events:read (not signed out, expired, revoked or removed since). Checked at each
+      // heartbeat, and before an event when the last check is a second old.
+      let checkedAt = now();
+      const holds = (force) => {
+        if (!force && now() - checkedAt < 1000) return true;
+        checkedAt = now();
+        if (still()) return true;
+        stop();
+        if (res.writableNeedDrain) res.destroy();
+        else res.end();
+        return false;
+      };
       const off = bus.subscribeAll((env) => {
-        if (wants(env.type)) res.write(frame(env));
+        if (wants(env.type) && holds()) writer.send(env);
       });
-      const beat = setInterval(() => res.write(': heartbeat\n\n'), heartbeatMs);
+      const beat = setInterval(() => {
+        if (holds(true)) writer.comment('heartbeat');
+      }, heartbeatMs);
       beat.unref?.();
       const stream = { end: () => res.end() };
       streams.add(stream);
-      req.on('close', () => {
+      function stop() {
         off();
+        writer.close();
         clearInterval(beat);
         streams.delete(stream);
-      });
+      }
+      req.on('close', stop);
     } }),
-    r({ method: 'POST', path: '/api/v1/events', scope: 'events:publish', tag: 'Live', summary: 'Publish a custom.* or x-<vendor>.* event', body: { fields: ['type', 'data'], limit: 64 * 1024 }, run: ({ body, who }) => {
+    r({ method: 'POST', path: '/api/v1/events', scope: 'events:publish', tag: 'Live', summary: 'Publish a custom.* or x-<vendor>.* event', body: { fields: ['type', 'data'], limit: 64 * 1024 }, perSecond: PUBLISH_PER_SECOND, status: 202, run: ({ body, who }) => {
       if (typeof body.type !== 'string' || !isCustom(body.type)) throw new ApiError(422, 'invalid', '"type" must be custom.<name> or x-<vendor>.<name> (02 §2.7).');
-      const key = `${who.kind}:${who.tokenId || who.user?.id || 'local'}`;
-      const second = Math.floor(now() / 1000);
-      let w = publishes.get(key);
-      if (!w || w.second !== second) publishes.set(key, (w = { second, count: 0 }));
-      if (++w.count > PUBLISH_PER_SECOND) throw new ApiError(429, 'rate-limited', `At most ${PUBLISH_PER_SECOND} events a second.`, { headers: { 'retry-after': '1' } });
       try {
         const env = bus.publish(body.type, body.data ?? {}, { src: { connector: 'api', app: who.label } });
         return { status: 202, body: { id: env.id, type: env.type } };

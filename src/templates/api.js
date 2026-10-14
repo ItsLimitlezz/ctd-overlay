@@ -2,8 +2,8 @@
 //
 //   GET    /api/v1/templates                      installed templates, one entry per id (?category=)
 //   GET    /api/v1/templates/:id                  its manifest (newest version), versions, previews
-//   GET    /api/v1/templates/:id/versions         its installed versions, newest first
-//   GET    /api/v1/templates/:id/versions/:version/previews/:file   a preview image
+//   GET    /api/v1/templates/:id/versions         its installed versions, newest first ({ items, next })
+//   GET    /api/v1/templates/:id/versions/:version/previews/<path>   a preview image (its path in previews/)
 //   POST   /api/v1/templates                      install: a .skp/.zip as the body, or { "url" }
 //                                                 (an https URL or a GitHub repository, 04 §4.13)
 //   DELETE /api/v1/templates/:id                  uninstall every version, or ?version= one
@@ -14,12 +14,11 @@ import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ApiError } from '../http/api.js';
-import { packageFromZip, validatePackage } from './package.js';
+import { packageFromZip, previewType, validatePackage } from './package.js';
 import { fetchPackage, parseSource } from './sources.js';
 import { bufferSource } from './zip.js';
 
 const PACKAGE_LIMIT = 100 * 1024 * 1024; // 07 §7.11
-const PREVIEW_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif' };
 
 export function templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }) {
   const tag = 'Templates';
@@ -31,7 +30,10 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
     const m = versions[0].manifest;
     return { id, name: m.name, category: m.category, description: m.description, latest: versions[0].version, versions: versions.map(versionView) };
   }
-  const previewsOf = (t) => (t.manifest.previews || []).map((p) => `/api/v1/templates/${t.id}/versions/${t.version}/${p}`);
+  // The URLs of a version's previews, each part encoded (a space, # or % in a name); only those the
+  // route serves (a version installed before previews had to be images in previews/ may list others).
+  const previewsOf = (t) => (t.manifest.previews || []).filter(previewType)
+    .map((p) => `/api/v1/templates/${encodeURIComponent(t.id)}/versions/${encodeURIComponent(t.version)}/${p.split('/').map(encodeURIComponent).join('/')}`);
   const sourceView = (doc) => ({ id: doc.id, ...doc.data });
   const record = (who, req, action, details) => audit.record({ action, actor: who.label, ip: req.client?.ip, ...details });
 
@@ -84,13 +86,20 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
       const newest = templates.versions(params.id)[0];
       return { ...s, manifest: newest.manifest, previews: previewsOf(newest) };
     } }),
-    r({ method: 'GET', path: '/api/v1/templates/:id/versions', scope: 'templates:read', summary: 'A template\'s installed versions, newest first', run: ({ params }) => summary(params.id).versions }),
-    r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version/previews/:file', scope: 'templates:read', summary: 'A preview image', run: async ({ params, res }) => {
+    r({ method: 'GET', path: '/api/v1/templates/:id/versions', scope: 'templates:read', summary: 'A template\'s installed versions, newest first', run: ({ params, url }) => {
+      // Paged like every list (03 §3.1). Newest first is SemVer order, not string order, so a
+      // version's place in the list is its key.
+      const versions = summary(params.id).versions;
+      const place = new Map(versions.map((v, i) => [v, String(i).padStart(6, '0')]));
+      return api.paginate(versions, url, (v) => place.get(v));
+    } }),
+    r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version/previews/*', scope: 'templates:read', summary: 'A preview image (its path in previews/)', run: async ({ params, res }) => {
       const t = templates.get(params.id, params.version);
-      const rel = `previews/${params.file}`;
-      const type = PREVIEW_TYPES[path.extname(params.file).toLowerCase()];
+      // Only a path the manifest lists as a preview (validated: inside the package) and installed.
+      const rel = `previews/${params['*']}`;
+      const type = previewType(rel);
       if (!t || !type || !(t.manifest.previews || []).includes(rel) || !t.files?.has(rel)) throw new ApiError(404, 'not-found', 'No such preview.');
-      const data = await readFile(path.join(t.dir, 'previews', params.file));
+      const data = await readFile(path.join(t.dir, ...rel.split('/')));
       res.writeHead(200, {
         'content-type': type,
         'cache-control': 'private, max-age=31536000, immutable',
