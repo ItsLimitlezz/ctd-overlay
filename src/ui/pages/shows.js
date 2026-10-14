@@ -400,7 +400,7 @@ export async function detail(view, ctx) {
     mount(head,
       pageHead(show.name, {
         crumbs: [{ label: 'Shows', href: '#/shows' }],
-        actions: [h('a.btn', { href: '#/live' }, 'Open in Live'), more].filter(Boolean),
+        actions: [h('a.btn', { href: `#/live?show=${encodeURIComponent(show.id)}` }, 'Open in Live'), more].filter(Boolean),
       }),
       h('p.row',
         show.live ? badge('Live now', 'ok') : badge('Not live'),

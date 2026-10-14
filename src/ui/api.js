@@ -35,10 +35,11 @@ function noteServerDate(header, sentAt, receivedAt) {
   skew = Math.abs(estimate) < 1500 ? 0 : estimate;
 }
 
-// request(method, path, { body, ifMatch, raw, contentType, query, signal }):
+// request(method, path, { body, ifMatch, raw, contentType, query, headers, signal }):
 //   body     JSON-encoded unless raw (a Blob, File or ArrayBuffer, sent as is with contentType)
 //   ifMatch  a resource ({ id, rev }) or an ETag string
 //   query    an object added to the path's query string (undefined values left out)
+//   headers  more request headers (e.g. x-skp-filename on an upload)
 // Resolves with the parsed JSON (or undefined for an empty answer); rejects with ApiProblem.
 export async function request(method, path, opts = {}) {
   const { body, ifMatch, raw, contentType, query, signal } = opts;
@@ -49,7 +50,7 @@ export async function request(method, path, opts = {}) {
     const s = qs.toString();
     if (s) url += (url.includes('?') ? '&' : '?') + s;
   }
-  const headers = { accept: 'application/json, application/problem+json' };
+  const headers = { accept: 'application/json, application/problem+json', ...(opts.headers || {}) };
   if (!SAFE.has(method) && csrf) headers['x-skp-csrf'] = csrf;
   const tag = typeof ifMatch === 'string' ? ifMatch : etagOf(ifMatch);
   if (tag) headers['if-match'] = tag;

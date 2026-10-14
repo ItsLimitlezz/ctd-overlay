@@ -147,7 +147,7 @@ img { max-width: 100%; }
   .nav a { min-height: 48px; }
 }
 
-.main { max-width: 1200px; margin: 0 auto; padding: var(--pad) max(var(--pad), env(safe-area-inset-right)) calc(var(--pad) * 4) max(var(--pad), env(safe-area-inset-left)); outline: none; }
+.main { overflow-wrap: break-word; max-width: 1200px; margin: 0 auto; padding: var(--pad) max(var(--pad), env(safe-area-inset-right)) calc(var(--pad) * 4) max(var(--pad), env(safe-area-inset-left)); outline: none; }
 .main.narrow { max-width: 440px; padding-top: 10vh; }
 .loading { color: var(--muted); }
 
@@ -181,6 +181,7 @@ img { max-width: 100%; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .empty { text-align: center; color: var(--muted); padding: calc(var(--pad) * 2) var(--pad); }
 .empty h2 { color: var(--text); }
+.row.center { justify-content: center; }
 hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
 
 /* ---- buttons ----------------------------------------------------------------------------- */
@@ -236,6 +237,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
 .field .error { color: var(--danger); font-size: 0.875rem; }
 .field.check { flex-direction: row; align-items: center; gap: 10px; }
 .field.check > label { font-weight: 400; }
+.field.check > input { flex: none; }
+label.field.check { min-height: var(--tap); cursor: pointer; }
 input[type="text"], input[type="password"], input[type="number"], input[type="url"], input[type="search"],
 input[type="date"], input[type="time"], input[type="datetime-local"], input[type="email"], select, textarea {
   width: 100%; min-height: var(--tap); padding: 8px 12px;
@@ -305,7 +308,9 @@ th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
 .preview.h { aspect-ratio: 16 / 9; }
 .preview.v { aspect-ratio: 9 / 16; max-height: 70vh; margin: 0 auto; }
 .preview.sq { aspect-ratio: 1 / 1; }
-.preview iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; pointer-events: none; }
+/* The overlay page is light; a frame whose colour scheme differs from its page's gets an opaque
+   backdrop, which would hide the checkerboard behind transparent scenes in a dark admin UI. */
+.preview iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; pointer-events: none; color-scheme: light; }
 .preview .tap {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px;
   width: 100%; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600; cursor: pointer;
@@ -313,6 +318,9 @@ th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
 .preview .tap span { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px; }
 .preview .label { position: absolute; left: 8px; top: 8px; z-index: 2; }
 .thumb { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-sm); background: var(--surface-2); display: block; }
+.thumb.contain { object-fit: contain; }
+.thumb.icon { display: flex; align-items: center; justify-content: center; }
+.main.dropping { outline: 3px dashed var(--accent); outline-offset: -3px; }
 
 /* ---- tabs -------------------------------------------------------------------------------- */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: var(--gap); overflow-x: auto; }

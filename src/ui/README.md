@@ -34,7 +34,8 @@ export async function detail(view, ctx) {
 ```
 
 `ctx` is `{ params, query, session, system, can(scope), navigate(path, { replace }), setTitle(t),
-refreshSession(), applyPreferences(prefs), applySystem(settings) }`. `ctx.session` is
+refreshSession(), signedOut(), applyPreferences(prefs), applySystem(settings) }` (`signedOut()`
+after a deliberate sign-out: back to sign-in without the "session ended" error). `ctx.session` is
 `GET /api/v1/auth/session`: `{ user: { id, username, role, preferences, totp… }, role, scopes,
 csrf, expiresAt }`.
 
@@ -88,7 +89,8 @@ link back) and show it in the page.
 - `toast(messageOrError, { kind, ms })`.
 - `dialog({ title, body, actions })`, `confirm({ title, consequence, confirmLabel, danger })`,
   `prompt({ title, intro, fields: [{ name, label, type, value, hint, required, options }], submitLabel })`.
-- `menu(label, [{ label, onSelect, danger, disabled }], { buttonClass })`.
+- `menu(label, [{ label, onSelect, danger, disabled }], { buttonClass, ariaLabel })` (ariaLabel
+  tells a list of "More" buttons apart: "More for clip.mp4").
 - `run(button, asyncFn, { done, onError })`.
 - `copy(text, message)`, `copyField(value, { label, copied })`.
 - `preview(url, { width, height, label, eager, title })` → element with `.unload()`, `.reload(url?)`;
@@ -103,11 +105,12 @@ link back) and show it in the page.
 Classes (styles.css): `.card .card-head .grid .grid.wide .stack .row .spread .muted .small
 .btn(.primary|.danger|.ghost|.small|.block|.active) .pad (big console buttons) .list .table-wrap
 .badge(.ok|.warn|.danger|.accent) .dot(.ok|.warn|.danger) .chips .chip .notice(.warn|.danger|.ok)
-.countdown .kv .copy-field .preview .thumb .tabs .inline-form .form-actions .field .empty`.
+.countdown .kv .copy-field .preview .thumb(.contain|.icon) .tabs .inline-form .form-actions .field
+.empty .row.center .main.dropping`. A `.card` inside a `.grid` has no top margin.
 
 ## The API client (api.js)
 
-- `get/post/put/patch/del(path, body?, { ifMatch, query, raw, contentType, signal })` → JSON;
+- `get/post/put/patch/del(path, body?, { ifMatch, query, raw, contentType, headers, signal })` → JSON;
   throws `ApiProblem { status, code, message (the detail), body }`.
 - `all(path, { query })` — every item of a paged list.
 - `etagOf(resource)`, `seg(value)`, `serverNow()`.
@@ -126,8 +129,11 @@ const form = schemaForm({
   onChange,        // (values, { live }) — live is true for x-skp-preview: "live" fields while typing
   mediaList,       // async () => [{ url, name, type }] for media fields (may be undefined)
 });
-form.el;           // the form's element (no submit button: the page adds Save/Reset)
-form.values();     // the current values, only fields the user set (empty → left out)
-form.validate();   // [] or [{ path, message }]; marks the fields
-form.reset(values) // show these values
+form.el;           // the form's element, a <div> (no submit button: the page adds Save/Reset;
+                   // put it in a <form> if Enter should save)
+form.values();     // the current values, only fields the user set (empty → left out); may hold
+                   // invalid ones: validate() first
+form.validate();   // [] or [{ path, message }] (JSON pointers, '/' for the 24 KiB limit); marks
+                   // the fields and opens their sections
+form.reset(values, resolved) // show these values (and, given resolved, update the placeholders)
 ```

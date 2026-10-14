@@ -119,6 +119,13 @@ function context(route, params) {
       await loadSession();
       updateShell();
     },
+    // After a deliberate sign-out: forget the session, without the "session ended" error.
+    signedOut: () => {
+      state.session = null;
+      api.setCsrf(undefined);
+      updateShell();
+      navigate('/login', { replace: true });
+    },
     signedIn: async (next = '/live') => {
       await loadSession();
       await loadSystem();

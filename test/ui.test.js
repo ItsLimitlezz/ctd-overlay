@@ -200,7 +200,9 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
     for (const route of sections) {
       const before = page.problems.length;
       await page.eval(`location.hash = ${JSON.stringify(`#${route}`)}`);
-      await page.waitFor(`location.hash.startsWith(${JSON.stringify(`#${route}`)}) && !document.querySelector("[data-view] > .loading")`, 15000);
+      // A page may settle on its canonical address (a show by name opens as /shows/<id>).
+      const section = `#/${route.split('/')[1]}`;
+      await page.waitFor(`location.hash.startsWith(${JSON.stringify(section)}) && !document.querySelector("[data-view] > .loading")`, 15000);
       await new Promise((r) => setTimeout(r, 400));
       const state = await page.eval('({ text: document.querySelector("[data-view]").innerText, h1: document.querySelectorAll("[data-view] h1").length, sideways: document.documentElement.scrollWidth > innerWidth + 1 })');
       assert.doesNotMatch(state.text, /This page could not load/, `${route} at ${width}px: ${state.text.slice(0, 300)}`);
@@ -217,7 +219,7 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
 
   // A theme chosen in Settings applies at once and follows the user.
   await ui('PUT', '/auth/preferences', { theme: 'dark', accent: '#ff8800' });
-  await page.goto(`${platform.url}/#/live`);
+  await page.goto(`${platform.url}/?reload=1#/live`); // a new document: a hash alone wouldn't load
   await page.waitFor('document.documentElement.dataset.theme === "dark"', 10000);
   assert.equal(await page.eval('document.documentElement.style.getPropertyValue("--accent")'), '#ff8800');
 

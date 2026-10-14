@@ -191,10 +191,11 @@ function device(ua) {
   return browser || os || s.split(/[\s/;(]/)[0].slice(0, 40) || 'Unknown device';
 }
 
-// Signed out (logout, or this device's session ended): start the app again at the sign-in page.
-// A reload rather than ctx.refreshSession(): that reads the session, gets a 401, and the app
-// then says "Your session ended. Sign in again." as for an unexpected sign-out.
+// Signed out (logout, or this device's session ended): the app forgets the session and shows the
+// sign-in page, without the "Your session ended" error an unexpected sign-out gets.
+let signedOut;
 function leave() {
+  if (signedOut) return signedOut();
   history.replaceState(null, '', '#/login');
   location.reload();
 }
@@ -222,6 +223,7 @@ function load(panel, build) {
 let refocus; // the tab a click or an arrow key chose: focused again once the route has re-rendered
 
 export async function settings(view, ctx) {
+  signedOut = ctx.signedOut;
   const list = [
     { id: 'appearance', label: 'Appearance', build: appearanceTab },
     { id: 'account', label: 'Account', build: accountTab },

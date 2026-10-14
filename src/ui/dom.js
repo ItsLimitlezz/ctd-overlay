@@ -122,9 +122,10 @@ export function prompt({ title, intro, fields, submitLabel = 'Save' }) {
 }
 
 // ---- menus ---------------------------------------------------------------------------------
-// menu('More', [{ label, onSelect, danger }]) — a disclosure menu. Destructive actions live in
-// one, never as a top-level button a thumb can hit mid-show (08 §8.1, H20).
-export function menu(label, items, { buttonClass = 'btn' } = {}) {
+// menu('More', [{ label, onSelect, danger }], { ariaLabel }) — a disclosure menu. Destructive
+// actions live in one, never as a top-level button a thumb can hit mid-show (08 §8.1, H20).
+// ariaLabel tells a list of "More" buttons apart ("More for clip.mp4").
+export function menu(label, items, { buttonClass = 'btn', ariaLabel } = {}) {
   const det = h('details.menu');
   const list = h('div.menu-list', { role: 'menu' });
   for (const item of items.filter(Boolean)) {
@@ -133,7 +134,7 @@ export function menu(label, items, { buttonClass = 'btn' } = {}) {
       onclick: () => { det.open = false; item.onSelect(); },
     }, item.label));
   }
-  det.append(h('summary', { class: buttonClass, 'aria-haspopup': 'menu' }, label), list);
+  det.append(h('summary', { class: buttonClass, 'aria-haspopup': 'menu', 'aria-label': ariaLabel }, label), list);
   det.addEventListener('keydown', (e) => { if (e.key === 'Escape') { det.open = false; det.querySelector('summary').focus(); } });
   // Close on a click elsewhere, listening only while open (no listener left behind per menu).
   const outside = (e) => { if (!det.contains(e.target)) det.open = false; };
@@ -210,6 +211,8 @@ export function preview(url, { width = 1920, height = 1080, label, eager, title 
   const phone = isPhone();
   const shape = width > height ? 'h' : width < height ? 'v' : 'sq';
   const box = h('div.preview', { class: shape });
+  // A tall preview capped at 70vh keeps its shape: narrower, not clipped.
+  if (height > width) box.style.maxWidth = `calc(70vh * ${width / height})`;
   if (label) box.append(h('span.badge.label', label));
   const srcOf = (raw) => {
     const u = new URL(raw, location.origin);
