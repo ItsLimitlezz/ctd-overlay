@@ -166,8 +166,8 @@ test('a template previews with sample data before any overlay uses it (08 §8.2)
   // Its files, through its build.
   const css = /\/o\/[^"']+\/t\/[0-9a-f]+\/[^"']+/.exec(page.body);
   if (css) assert.equal((await fetch(`${platform.url}${css[0].replace(/&amp;/g, '&')}`)).status, 200);
-  // No live data: there is no overlay behind it.
-  for (const p of ['snapshot', 'poll', 'stream']) assert.equal((await ui('GET', `/o/${encodeURIComponent(slug)}/${p}`)).status, 404, p);
+  // No live data: there is no overlay behind it, so these answer as for any unknown slug (03 §3.4).
+  for (const p of ['snapshot', 'poll', 'stream']) assert.equal((await ui('GET', `/o/${encodeURIComponent(slug)}/${p}`)).status, 401, p);
   // A version that isn't installed, or a slug shaped like a preview's without a template.
   assert.equal((await ui('GET', `/o/${encodeURIComponent(`~p.${DIAG.id}@9.9.9`)}`)).status, 404);
   assert.equal((await ui('GET', `/o/${encodeURIComponent('~p.nope@1.0.0')}`)).status, 404);

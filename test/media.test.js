@@ -703,7 +703,9 @@ test('skp media remove refuses a file an overlay uses, and names the overlay', a
   const file = path.join(root, 'poster.png');
   writeFileSync(file, SAMPLES.png);
   const doc = JSON.parse((await cli(['media', 'add', file, '--json'], env)).stdout);
-  const data = openData(loadConfig({ argv: [], env }), { log: memoryLogger().log, purpose: 'test' });
+  // As the platform opens it: an overlay's key is stored encrypted, with the master key the
+  // platform makes on its first start.
+  const data = openData(loadConfig({ argv: [], env }), { log: memoryLogger().log });
   try {
     const settings = { type: 'object', properties: { poster: { type: 'string', 'x-skp-widget': 'media' } } };
     data.templates.install(packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version: '1.0.0', settings } }));

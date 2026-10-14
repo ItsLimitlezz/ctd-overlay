@@ -124,12 +124,44 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
-**2026-10-13.** From building the admin UI (plan step 14):
+**2026-10-14.** From building the admin UI (plan step 14):
 
 1. Per-user appearance, `PUT /auth/preferences`, and the installation's name and logo,
    `GET/PUT /system/settings`. *(03 §3.4, 08 §8.6)*
 2. A template previews with sample data before any overlay uses it, at
    `/o/~p.{templateId}@{version}`, for someone signed in. *(03 §3.4, 08 §8.2)*
+
+**2026-10-13.** From the review of plan steps 11–13:
+
+1. Setup is refused from outside this machine and its network in every mode (behind a trusted
+   proxy, the client it forwards). Over HTTPS only the `__Host-` cookie counts. The password
+   asked for again counts toward login protection. The owner's password and two-factor change
+   only with the current password or from the command line. Recovery codes still work when the
+   TOTP secret can't be decrypted. *(07 §7.2–7.4, 03 §3.4)*
+2. The local token is refused on any request with a forwarding header, and a trusted proxy
+   **MUST** send `X-Forwarded-For` and `X-Forwarded-Proto`; an `X-Forwarded-For` entry may carry
+   a port, and one that isn't an address ends the walk. The command line reaches lan, public and
+   TLS installs, never makes a master key, and `skp key rotate` finishes a rotation that stopped.
+   IPv4-mapped addresses in any notation and addresses in the URL are checked as private; only
+   192.0.0.0/24 and 192.0.2.0/24 of 192.0.0.0/16 are. *(07 §7.3, §7.7, §7.8, §7.11, 10 §10.3,
+   §10.5)*
+3. `If-Match` is `*` or a list of tags, compared strongly (a session must name one); users carry
+   ETags. Idempotency keys are per principal and cover the query; a repeat still being answered
+   is a `409`; a streamed upload ignores the key. Statuses are spelled out, with `problems`,
+   `plan` and `findings`. `POST /events` has a budget of its own (60/s); an IPv6 client counts by
+   its /64. The stream of `GET /events` ends when its sign-in does, and a client 1000 events
+   behind is cut off. Bodies have time limits. *(03 §3.1–3.5, 07 §7.5, §7.11)*
+4. Overlays: `keyRequired: false` needs `system:admin`; rotating or requiring the key ends open
+   streams, and a new key is never replayed. A `PATCH` saves all its fields or none; upgrade
+   flags are booleans; simulate refuses unknown fields; a deleted overlay leaves its show.
+   Without its key, an unknown slug answers like a known one (`401`). *(03 §3.4, 07 §7.6)*
+5. A file a lineup, a cue still to play or a plan uses can't be deleted either. Previews are
+   images in `previews/` (subfolders allowed); `GET /templates/{id}/versions` is a list;
+   `POST /templates` takes the package as the raw body, not multipart. *(03 §3.4, 04 §4.1,
+   §4.11)*
+6. A lineup slot's `startAt`, `clockGap` and `clockOverlap` are taken and ignored on a write; a
+   plan keeps `overlaySettings` by overlay, through a rename. The stream cap counts a proxied
+   client by the address forwarded. *(09 §9.1, §9.6, 01 §1.5)*
 
 **2026-10-13.** From the API conventions (plan step 13):
 

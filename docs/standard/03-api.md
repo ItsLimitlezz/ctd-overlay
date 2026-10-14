@@ -14,9 +14,9 @@ admin API: anything the UI can do, an authorized client can do.
 | Time | ISO 8601 UTC in resource bodies (`2026-08-29T05:00:00Z`); epoch ms only in live envelopes. |
 | Names | `camelCase` fields; plural resource paths. |
 | Pagination | Cursor based: `?limit=50&cursor=…` → `{ "items": [], "next": "…" }`. Max limit 200. |
-| Concurrency | Mutable resources return `ETag`. Requests authenticated by session (the admin UI) **MUST** send `If-Match` on `PATCH` and `PUT`: without it the platform answers `428`, and with a stale tag `412`. Token-authenticated clients **SHOULD** send it and **MAY** omit it, accepting last-write-wins. Commands (taking a scene, firing actions, triggers and cue overrides, alert queue controls) take no `If-Match`. Two operators editing one overlay can't silently overwrite each other. |
-| Idempotency | `POST` accepts `Idempotency-Key`; a repeat within 24 h returns the original result (with `Idempotent-Replayed: true`), and the same key on another request is a `422`. Required for anything a hardware button might fire twice. Answers that hold a secret (a session, a new token) are never kept for replay. |
-| Unknown fields | A write takes the fields its resource has; any other is refused (`422`, `unknown-field`), never silently dropped (07 §7.11). |
+| Concurrency | Mutable resources return `ETag`. Requests authenticated by session (the admin UI) **MUST** send `If-Match` on `PATCH` and `PUT`: without it the platform answers `428`, and with a stale tag `412`. Token-authenticated clients **SHOULD** send it and **MAY** omit it, accepting last-write-wins. Commands (taking a scene, firing actions, triggers and cue overrides, alert queue controls) take no `If-Match`. Two operators editing one overlay can't silently overwrite each other. `If-Match: *` matches any existing resource (from a token; a session must name the tag it read, else `428`). A list matches when one of its tags is current. Tags compare strongly: a weak tag (`W/"…"`) never matches, so the admin UI sends `"<id>-r<rev>"` built from the resource's `id` and `rev`. |
+| Idempotency | `POST` accepts `Idempotency-Key`; a repeat within 24 h returns the original result (with `Idempotent-Replayed: true`). Required for anything a hardware button might fire twice. Keys are per principal. The request is its method, path, query and body (an upload by its bytes); the same key on another request is a `422`, and a repeat while the first is still being answered is a `409`. A streamed upload (`POST /media`) ignores the key: its body can't be compared before it is read. Answers that hold a secret (a session, a new token, an overlay's new key) are never kept for replay. |
+| Unknown fields | A write takes the fields its resource has, and a field of a fixed shape (a template reference: `id`, `version`; lineup slots; cue actions, sequence steps, recipes) the fields of that shape; any other is refused (`422`, `unknown-field`), never silently dropped (07 §7.11). Free-form values (settings, checked against the template's schema; event data; state values) are not field-checked. |
 
 ## 3.2 Errors
 
@@ -34,6 +34,20 @@ RFC 9457 problem details, `application/problem+json`:
 
 `detail` **MUST** say what happened and what to do — it is shown to operators verbatim.
 Stack traces **MUST NOT** appear in responses.
+
+Statuses, besides those of sign-in (`401`, `403`), `If-Match` (`412`, `428`) and rate limits
+(`429`):
+- `409`: a conflict with what is there (in use, busy, exists, version exists, a confirmation
+  needed).
+- `413`: a body over its limit. `408`: a body too slow to arrive.
+- `422`: anything else about the request.
+- `500`: the platform failed (it is logged).
+- `502` / `504`: a download failed upstream.
+- `503`: the platform is shutting down or read-only, or a service it downloads from is
+  rate-limiting it.
+
+Settings that don't fit carry `problems: [{ path, message }]`; an upgrade refusal carries
+`plan`; a package lint carries `findings`.
 
 ## 3.3 Authentication modes
 
@@ -55,7 +69,8 @@ Session cookies **MUST NOT** authorize `/o/*`, and overlay keys **MUST NOT** aut
 
 The command line on the platform's own machine signs in with a **local token** (`skp_cli_…`)
 that the platform writes at each start to its config directory, readable by its own user only.
-It acts as the owner and is accepted only from a loopback address.
+It acts as the owner and is accepted only from a loopback address, never through a proxy
+(07 §7.8). Its changes are recorded as `cli:<user>` (07 §7.12).
 
 ## 3.4 Resources
 
@@ -65,37 +80,37 @@ It acts as the owner and is accepted only from a loopback address.
 | `GET /setup` · `POST /setup` | First-run: create the owner (07 §7.2). Disabled once an owner exists. |
 | `POST /auth/login` · `POST /auth/logout` | Session start/end |
 | `GET /auth/session` | Current user, role, CSRF token |
-| `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | Your active sessions (device, IP, last seen), and revoking one |
+| `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | Your active sessions, newest first (device, IP, last seen), and revoking one |
 | `POST /auth/password` | `{ current, password }`: ends your other sessions |
 | `POST /auth/totp/enroll` · `POST /auth/totp/verify` · `DELETE /auth/totp` | Two-factor |
 | `PUT /auth/preferences` | Your admin UI look (08 §8.6): `{ theme: system\|light\|dark, accent: "#rrggbb"\|null, density: comfortable\|compact }`, any of them; in `GET /auth/session`'s `user.preferences` |
-| `GET/POST /users` · `PATCH/DELETE /users/{id}` | Accounts and roles |
+| `GET/POST /users` · `PATCH/DELETE /users/{id}` | Accounts and roles (users have an ETag: a session sends `If-Match`). The owner's own password and two-factor change only with the current password, above, or from the command line (07 §7.3) |
 | `GET/POST /tokens` · `DELETE /tokens/{id}` | API tokens (secret shown once) |
 
 ### Templates
 | Method · Path | Purpose |
 |---|---|
 | `GET /templates` | Installed templates (filter `?category=`) |
-| `POST /templates` | Install: upload `.skp` package (multipart) or `{ "url": "…" }` |
+| `POST /templates` | Install: the `.skp` package as the raw body (`application/octet-stream`, its file name in `X-Skp-Filename` if you like), or JSON `{ "url": "…" }` |
 | `GET /templates/{id}` | Manifest, versions, preview images |
-| `GET /templates/{id}/versions` | Installed versions |
+| `GET /templates/{id}/versions` | Installed versions, newest first (a list: `{ items, next }`) |
 | `DELETE /templates/{id}` | Uninstall every installed version, or one with `?version=` (refused while an overlay pins it; templates that ship with the platform can't be uninstalled) |
 | `POST /templates/validate` | Lint a package without installing (04 §4.11) |
-| `GET /templates/{id}/versions/{version}/previews/{file}` | A preview image |
+| `GET /templates/{id}/versions/{version}/previews/{path}` | A preview image: its path inside `previews/` (subfolders allowed), each part URL-encoded, as `GET /templates/{id}` lists it |
 | `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13) |
 
 ### Overlays
 | Method · Path | Purpose |
 |---|---|
 | `GET/POST /overlays` | List · create from a template |
-| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings/bindings/slug · delete |
-| `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate` |
+| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's) · delete (the overlay also leaves its show) |
+| `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate`. `dryRun`, `confirm` and `runMigrate` are `true` or `false`; anything else is a `422` |
 | `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
-| `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL**; UI must confirm |
+| `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL** and ends streams opened with the old key; UI must confirm; never replayed for an `Idempotency-Key` (its answer holds the key) |
 | `GET /overlays/{id}/url` | Production URL(s) per canvas |
 | `PUT /overlays/{id}/scene` | `{ "scene": "brb", "transition": "fade" }` |
 | `POST /overlays/{id}/actions/{name}` | Fire a template action (04 §4.6) |
-| `POST /overlays/{id}/simulate` | Inject sample events into this overlay only (08 §8.5) |
+| `POST /overlays/{id}/simulate` | Inject sample events into this overlay only (08 §8.5): `kind` and that kind's options (`name`, `text`, `roles`, `months`, `count`, `viewers`, `bits`, `title`, `artist`, `value`, `url`, `mediaId`); any other field is refused |
 | `GET /overlays/{id}/alerts` · `POST /overlays/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | Alert queue of an overlay outside a show (05 §5.5) |
 
 ### Shows & timeline
@@ -123,7 +138,7 @@ It acts as the owner and is accepted only from a loopback address.
 ### Live data
 | Method · Path | Purpose |
 |---|---|
-| `GET /events` | SSE of everything the token may read (`?types=chat.*,alert.*`) |
+| `GET /events` | SSE of everything the token may read (`?types=chat.*,alert.*`). It ends when whoever opened it may no longer read (signed out, session ended or expired, token revoked or expired, user removed), checked at each heartbeat and before events at most once a second. A client 1000 events behind is cut off and reconnects |
 | `POST /events` | Publish a custom event (scope `events:publish`, §2.7) |
 | `GET /state` · `GET /state/{key}` | Current state |
 | `PUT /state/{key}` | Set a `custom.*` / `x-*` key (scope `state:write`) |
@@ -131,7 +146,7 @@ It acts as the owner and is accepted only from a loopback address.
 ### Media, webhooks, system
 | Method · Path | Purpose |
 |---|---|
-| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads (raw body, `?name=`), identified by content and transcoded when ffmpeg is present (10 §10.2); a delete is refused while an overlay's settings point to the file |
+| `POST /media` · `GET /media` · `DELETE /media/{id}` | Uploads (raw body, `?name=`), identified by content and transcoded when ffmpeg is present (10 §10.2). A delete is refused (`409`, `in-use`) while anything points to the file: an overlay's settings (or the version kept for revert), a show's lineup (an act's logo), a cue that will still play it (armed, or set at a time of the show, which is armed again each night, or a sequence that fired with a `media.play` step not yet done and not past the restart grace of 09 §9.4), or a plan not yet activated (its lineup or overlay settings). `usedBy` names them: overlay slugs, and phrases such as "lineup of show Night", "cue at 23:00 in show Night", "plan for 2026-10-24 of show Night" |
 | `GET/POST /webhooks` · `DELETE /webhooks/{id}` · `GET /webhooks/{id}/deliveries` | Outbound webhooks (06 §6.10) |
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
@@ -148,8 +163,11 @@ It acts as the owner and is accepted only from a loopback address.
 | `GET /o/{slug}/snapshot` · `/stream` · `/poll` | required | Live data (01 §1.5) |
 | `POST /o/{slug}/log` | required | `SK.log` and runtime errors for the template log: `{ "entries": [{ "level", "msg", "context"? }] }`, at most 20 per request and 64 KiB, 30 entries a minute per overlay; answers `204` |
 | `GET /o/{slug}/t/{build}/*` | no | The pinned template version's files (04 §4.5) |
-| `GET /media/{fileId}/{name}` | no | Uploaded media that settings or `media.play` point to (07 §7.6); answers byte ranges, for video seeking |
+| `GET /media/{fileId}/{name}` | no | Uploaded media that settings, show lineups or `media.play` point to (07 §7.6); answers byte ranges, for video seeking |
 | `GET /sdk/v1/sk.js` · `/sdk/v1/mock.js` | no | The runtime SDK, and its sample data for `?mock=1` (08 §8.5) |
+
+Without its key, a known slug and an unknown one answer alike: `401`, problem type
+`https://skp.dev/errors/overlay-key`.
 
 These responses send `Referrer-Policy: no-referrer`. Template files and media never change at a
 given URL, so they send `Cache-Control: public, max-age=31536000, immutable`. Everything else
@@ -158,13 +176,16 @@ sends `Cache-Control: no-store`.
 ## 3.5 Rate limits
 
 Every authenticated response carries `RateLimit-Limit`, `RateLimit-Remaining` and
-`RateLimit-Reset`. Defaults: 600 requests/min per token; 10 login attempts/15 min per IP and per
-account; `POST /events` 60/s per token. Over limit returns `429` with `Retry-After`.
+`RateLimit-Reset`. Defaults: 600 requests/min per token (a user's sessions count together; per
+address when nobody is signed in, an IPv6 address by its /64); 10 login attempts/15 min per IP
+and per account; `POST /events` 60/s per token, a budget of its own that doesn't count toward the
+600/min, whose `RateLimit-*` headers describe that second. Over limit returns `429` with
+`Retry-After`.
 
 ## 3.6 Example: a Stream Deck button
 
 ```http
-POST /api/v1/shows/show_sat/scene HTTP/1.1
+PUT /api/v1/shows/show_sat/scene HTTP/1.1
 Authorization: Bearer skp_pat_6vZ…
 Idempotency-Key: 2b7c1d4e-brb-press-0412
 Content-Type: application/json

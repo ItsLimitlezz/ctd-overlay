@@ -33,7 +33,9 @@ function parseKey(text, where) {
   return key;
 }
 
-// Writes a key file atomically, readable by its owner only.
+// Writes a key file atomically, readable by its owner only (POSIX: on Windows the mode doesn't
+// apply, and the file takes the config directory's permissions, owner-only in the default
+// %LOCALAPPDATA%; config.js warns about a config directory outside the user's profile).
 export function writeKeyFile(file, key) {
   const tmp = `${file}.tmp-${process.pid}`;
   const fd = openSync(tmp, 'w', 0o600);
@@ -56,12 +58,14 @@ export function loadMasterKey(config, { log, create = true } = {}) {
     source = 'SKP_MASTER_KEY';
   } else if (config.masterKeyFile) {
     file = config.masterKeyFile;
+    finishRotation(file, log);
     let text;
     try { text = readFileSync(file, 'utf8'); } catch (err) { throw new SecretsError(`Can't read the master key file ${file} (${err.code || err.message}).`); }
     key = parseKey(text, file);
     source = 'SKP_MASTER_KEY_FILE';
   } else {
     file = path.join(config.configDir, KEY_FILE);
+    finishRotation(file, log);
     if (existsSync(file)) {
       key = parseKey(readFileSync(file, 'utf8'), file);
     } else if (create) {
@@ -69,7 +73,7 @@ export function loadMasterKey(config, { log, create = true } = {}) {
       writeKeyFile(file, key);
       log?.warn(`Made a new master key in ${file}. It decrypts the secrets in the data directory: back it up, separately from the data (a backup of the data alone can't be decrypted).`, { file });
     } else {
-      throw new SecretsError(`There is no master key in ${config.configDir}.`);
+      throw new SecretsError(`There is no master key in ${config.configDir}. If the platform gets its key from SKP_MASTER_KEY or SKP_MASTER_KEY_FILE, set the same here; the platform makes one in the config directory only when it starts without either.`);
     }
     source = 'file';
   }
@@ -117,13 +121,25 @@ function setPath(o, p, value) {
 // `skp key rotate` (07 §7.7), with the platform stopped: a new master key, every secret
 // re-encrypted with it in one transaction, then the new key in place and the old one kept as
 // master.key.<id>.retired (delete it once backups made with it are gone). Refused when the key
-// comes from SKP_MASTER_KEY: the environment can't be rewritten from here.
+// comes from SKP_MASTER_KEY: the environment can't be rewritten from here. resumed: it finished,
+// with its key, a rotation that had stopped part way.
 export function rotateMasterKey(config, store, { log } = {}) {
   const current = loadMasterKey(config, { log, create: false });
   if (current.source === 'SKP_MASTER_KEY') throw new SecretsError('The master key comes from SKP_MASTER_KEY; rotate it there: decrypting needs both keys, so use a key file (SKP_MASTER_KEY_FILE) to rotate.');
-  const next = randomBytes(32);
   const nextFile = `${current.file}.next`;
-  writeKeyFile(nextFile, next);
+  // A rotation that stopped after its commit and before its renames left its key here, maybe the
+  // only copy of the key the secrets are under now: never overwrite it, finish that rotation with
+  // it. (The ring decrypts each secret whichever key it is under; all end up under this one.)
+  let next;
+  const resumed = existsSync(nextFile);
+  if (resumed) {
+    let text;
+    try { text = readFileSync(nextFile, 'utf8'); } catch (err) { throw new SecretsError(`Can't read ${nextFile} (${err.code || err.message}), left by a key rotation that stopped part way: it may hold the key the secrets are under. Make it readable, then rotate again.`); }
+    next = parseKey(text, nextFile);
+  } else {
+    next = randomBytes(32);
+    writeKeyFile(nextFile, next);
+  }
   const oldSecrets = createSecrets({ key: current.key, ring: current.ring });
   const newSecrets = createSecrets({ key: next });
   let count = 0;
@@ -139,7 +155,20 @@ export function rotateMasterKey(config, store, { log } = {}) {
   });
   renameSync(current.file, `${current.file}.${current.kid}.retired`);
   renameSync(nextFile, current.file);
-  return { from: current.kid, to: keyId(next), reencrypted: count, retired: `${current.file}.${current.kid}.retired` };
+  return { from: current.kid, to: keyId(next), reencrypted: count, retired: `${current.file}.${current.kid}.retired`, resumed };
+}
+
+// A rotation that stopped between its two renames: the secrets are under master.key.next, and
+// there is no master.key. Put the next key in its place (making a new one would decrypt nothing).
+function finishRotation(file, log) {
+  const nextFile = `${file}.next`;
+  if (existsSync(file) || !existsSync(nextFile)) return;
+  try {
+    renameSync(nextFile, file);
+  } catch (err) {
+    throw new SecretsError(`A key rotation stopped part way: ${file} is missing and ${nextFile} holds the key. Rename it to ${path.basename(file)} (${err.code || err.message}).`);
+  }
+  log?.warn(`A key rotation had stopped part way: ${path.basename(nextFile)} is the master key now, in ${file}.`, { file });
 }
 
 // encrypt(plain, aad) and decrypt(text, aad) with the current key (and the ring, to decrypt).

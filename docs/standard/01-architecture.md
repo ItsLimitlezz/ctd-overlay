@@ -139,11 +139,12 @@ browser's queue: a seventh overlay's stream, its snapshot, its polls, even its p
 to polling doesn't help once the pool is full.
 
 So over HTTP/1.1 the platform **MUST** hold at most **four** streams per client (remote address
-plus `User-Agent`), which leaves two connections for page loads, snapshots and polls. A stream
-request beyond that gets `429` with problem type `https://skp.dev/errors/use-polling` and
-`Retry-After: 60`; the client polls at once and retries the stream after that time. The 5 s open
-timeout in step 3 still covers a pool that something else has filled. HTTP/2 (over TLS)
-multiplexes everything on one connection and needs no cap. Implementations **SHOULD** be tested
+plus `User-Agent`; behind a trusted proxy, the address it forwarded, 07 §7.8), which leaves two
+connections for page loads, snapshots and polls. A stream request beyond that gets `429` with
+problem type `https://skp.dev/errors/use-polling` and `Retry-After: 60`; the client polls at
+once and retries the stream after that time. The 5 s open timeout in step 3 still covers a pool
+that something else has filled. HTTP/2 (over TLS) multiplexes everything on one connection and
+needs no cap. Implementations **SHOULD** be tested
 with eight overlay sources in one OBS instance.
 
 The server **MUST** keep each overlay's replay buffer for at least **120 seconds or 500

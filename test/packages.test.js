@@ -84,6 +84,16 @@ test('manifest problems are errors with a code and a JSON pointer', () => {
   assert.deepEqual(check({ files: { 'template.json': `﻿${json}` } }).errors, []);
 });
 
+test('a preview is an image in previews/, at any depth, of a type the API serves (04 §4.1)', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+  const preview = (p) => check({ manifest: { previews: [p] }, files: { [p]: svg } });
+  for (const p of ['shots/a.svg', 'previews/a.bmp', 'previews/a', 'template.css']) {
+    assert.deepEqual(codes(preview(p)), ['preview-invalid /previews/0'], p);
+  }
+  assert.match(preview('shots/a.svg').errors[0].message, /must be an image \(PNG, JPEG, WebP, GIF, SVG or AVIF\) in previews\//);
+  for (const p of ['previews/sub/a b.svg', 'previews/A.PNG', 'previews/x#1.jpeg', 'previews/100%.webp']) assert.deepEqual(preview(p).errors, [], p);
+});
+
 test('scenes, actions, transitions, consumes and fonts are checked', () => {
   const scenes = (list, extra = {}) => check({ manifest: { scenes: list, ...extra } });
   assert.deepEqual(codes(scenes([{ id: 'a', label: 'A' }, { id: 'a', label: 'A2' }])), ['duplicate-id /scenes/1/id']);

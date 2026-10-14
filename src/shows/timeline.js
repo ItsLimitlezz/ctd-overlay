@@ -56,10 +56,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const PLAN_RETRY_MS = 5 * 60 * 1000; // a plan whose show is on air looks again this often
 const PLAN_AHEAD_DAYS = 3 * 366;
 const LATER = { 'connector.action': 'step 16, with connectors', webhook: 'step 20, with webhooks' };
+// What each type of action and a sequence's step take (a recipe: DEFAULT_RECIPE's fields), and
+// nothing else: an unknown field is refused, never dropped (03 §3.1, 07 §7.11), so a misspelt
+// "transiton" isn't a cue that quietly fades.
+const ACTION_FIELDS = { 'show.scene': ['scene', 'transition'], 'overlay.action': ['name', 'args'], 'show.slot': ['slot'], 'media.play': ['mediaId'], 'media.stop': ['mediaId'], sequence: ['steps'] };
+const STEP_FIELDS = ['offsetMs', 'action'];
 const ACTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
 const SCENE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const MEDIA_ID = /^med_[0-9A-Z]{26}$/;
 const CUE_ID = /^cue_[0-9A-Z]{26}$/;
+const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
 const MAX_DELAY = 2 ** 31 - 1;
 
@@ -84,6 +90,11 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
   }
   const cuesOf = (showId) => [...list('cues')].filter((c) => c.data.showId === showId);
   const bad = (msg) => { throw new ShowError(msg, 'invalid'); };
+  // The API's own refusal of an unknown field (http/api.js), for a field of a fixed shape.
+  const known = (value, fields, what, whose) => {
+    const extra = Object.keys(value).filter((k) => !fields.includes(k));
+    if (extra.length) throw new ShowError(`Unknown field${extra.length > 1 ? 's' : ''} in ${what}: ${extra.join(', ')}. ${whose} takes ${fields.join(', ')}.`, 'unknown-field');
+  };
   const arm = (doc) => armed.set(doc.id, { showId: doc.data.showId, at: doc.data.at, order: doc.data.order || 0 });
   function stopSteps(id) {
     for (const h of stepTimers.get(id) || []) timers.clearTimeout(h);
@@ -119,6 +130,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       ...(d.generated ? { generated: true } : {}),
       ...(d.edited ? { edited: true } : {}),
       ...(d.firedAt ? { firedAt: new Date(d.firedAt).toISOString() } : {}),
+      ...(d.action?.type === 'sequence' && Number.isInteger(d.stepsDone) ? { stepsDone: d.stepsDone } : {}),
       ...(d.error ? { error: d.error } : {}),
     };
   }
@@ -127,6 +139,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     if (!action || typeof action !== 'object' || Array.isArray(action)) bad('"action" must be an object with a "type".');
     const { type } = action;
     if (Object.hasOwn(LATER, type)) throw new ShowError(`"${type}" cues arrive in ${LATER[type]}.`, 'not-yet');
+    if (Object.hasOwn(ACTION_FIELDS, type)) known(action, ['type', ...ACTION_FIELDS[type]], depth ? 'a step\'s "action"' : '"action"', `An action of type ${type}`);
     switch (type) {
       case 'show.scene':
         if (typeof action.scene !== 'string' || !SCENE_ID.test(action.scene)) bad('a show.scene cue needs "scene", a scene id.');
@@ -155,8 +168,9 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       case 'sequence': {
         if (depth > 0) bad('a sequence can\'t hold another sequence.');
         if (!Array.isArray(action.steps) || !action.steps.length || action.steps.length > MAX_STEPS) bad(`a sequence needs "steps": 1 to ${MAX_STEPS}.`);
-        const steps = action.steps.map((s) => {
+        const steps = action.steps.map((s, i) => {
           if (!s || !Number.isInteger(s.offsetMs) || s.offsetMs < 0 || s.offsetMs > 60 * 60 * 1000) bad('each step needs "offsetMs", 0 to an hour.');
+          known(s, STEP_FIELDS, `step ${i + 1}`, 'A step');
           return { offsetMs: s.offsetMs, action: cleanAction(s.action, depth + 1) };
         });
         return { type, steps: steps.sort((a, b) => a.offsetMs - b.offsetMs) };
@@ -396,6 +410,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
   function cleanRecipe(recipe) {
     if (recipe === null) return null;
     if (recipe !== undefined && (typeof recipe !== 'object' || Array.isArray(recipe))) bad('"recipe" is an object, or null to stop generating.');
+    if (recipe) known(recipe, Object.keys(DEFAULT_RECIPE), '"recipe"', 'A recipe');
     const r = { ...DEFAULT_RECIPE };
     for (const key of Object.keys(DEFAULT_RECIPE)) if (recipe?.[key] !== undefined) r[key] = recipe[key];
     if (typeof r.titleCard !== 'boolean' || typeof r.headliner !== 'boolean') bad('"titleCard" and "headliner" are true or false.');
@@ -543,6 +558,16 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
   function dayOf(plan, show) {
     return showDay(plan.date, { timezone: show.timezone, dayBoundary: plan.changes.dayBoundary || show.dayBoundary });
   }
+  // A plan keeps its overlay settings by overlay id, which never changes: an overlay renamed before
+  // the day still gets them, and a new one that took the old slug doesn't. They are shown by each
+  // overlay's slug now; one deleted since, by the slug it had when the plan was saved (kept beside
+  // the ids, `overlaySlugs`), unless another overlay has that slug now: then by its id, so the label
+  // never names an overlay it isn't. (Plans saved before were keyed by slug, and still are.)
+  const slugOf = (key, saved) => {
+    if (!OVERLAY_ID.test(key)) return key;
+    const was = saved?.[key];
+    return store.get('overlays', key)?.data.slug || (was && !overlays.resolve(was) ? was : key);
+  };
   function planView(doc) {
     const d = doc.data;
     let activateAt = d.activateAt;
@@ -552,7 +577,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       rev: doc.rev,
       date: d.date,
       ...d.changes,
-      ...(d.overlaySettings ? { overlaySettings: d.overlaySettings } : {}),
+      ...(d.overlaySettings ? { overlaySettings: Object.fromEntries(Object.entries(d.overlaySettings).map(([k, v]) => [slugOf(k, d.overlaySlugs), v])) } : {}),
       activateAt: new Date(activateAt).toISOString(),
       ...(d.activatedAt ? { activatedAt: new Date(d.activatedAt).toISOString() } : {}),
       ...(d.error ? { error: d.error } : {}),
@@ -569,19 +594,23 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     for (const k of PLAN_FIELDS) if (input[k] !== undefined) picked[k] = input[k];
     const changes = shows.validate(show.id, picked); // refused as the show would refuse it
     let overlaySettings;
+    let overlaySlugs;
     if (input.overlaySettings !== undefined) {
       if (!input.overlaySettings || typeof input.overlaySettings !== 'object' || Array.isArray(input.overlaySettings)) bad('"overlaySettings" maps overlay slugs to their settings.');
+      overlaySettings = {};
+      overlaySlugs = {};
       for (const [slug, settings] of Object.entries(input.overlaySettings)) {
         if (!show.members.includes(slug)) bad(`"${slug}" isn't one of the show's overlays.`);
-        const r = overlays.resolve(slug);
+        const r = overlays.resolve(slug); // a member: it resolves
         const problems = !settings || typeof settings !== 'object' || Array.isArray(settings) ? [{ path: '', message: 'must be an object' }]
           : jsonBytes(settings) > SAVED_BYTES ? [{ path: '', message: `is over ${SAVED_BYTES / 1024} KiB` }]
             : r?.template ? validateSettings(r.template.manifest, settings) : [];
         if (problems.length) bad(`The settings for "${slug}" don't fit its template: ${problems.map((p) => `${p.path} ${p.message}`.trim()).join('; ')}.`);
+        overlaySettings[r.doc.id] = settings;
+        overlaySlugs[r.doc.id] = slug; // its label, should it be deleted before the day
       }
-      overlaySettings = input.overlaySettings;
     }
-    const plan = { showId: show.id, date: input.date, changes, ...(overlaySettings ? { overlaySettings } : {}) };
+    const plan = { showId: show.id, date: input.date, changes, ...(overlaySettings ? { overlaySettings, overlaySlugs } : {}) };
     const day = dayOf(plan, show);
     if (day.end <= now()) bad('That date is over; a plan is for a show still to come.');
     if (day.start - now() > PLAN_AHEAD_DAYS * DAY_MS) bad('A plan is for the next three years at most.');
@@ -633,12 +662,14 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     const marked = store.put('show_plans', planId, { ...d, activatedAt: now() });
     const warnings = [];
     try {
-      for (const [slug, settings] of Object.entries(d.overlaySettings || {})) {
-        if (!before.members.includes(slug)) {
+      for (const [key, settings] of Object.entries(d.overlaySettings || {})) {
+        const id = OVERLAY_ID.test(key) ? key : overlays.resolve(key)?.doc.id;
+        const slug = slugOf(key, d.overlaySlugs);
+        if (!id || !before.overlays.includes(id)) {
           warnings.push(`${slug}: no longer one of the show's overlays; its settings were left alone`);
           continue;
         }
-        try { overlays.updateSettings(slug, settings); } catch (err) { warnings.push(`${slug}: ${err.message}`); }
+        try { overlays.updateSettings(id, settings); } catch (err) { warnings.push(`${slug}: ${err.message}`); }
       }
       if (before.recStartedAt !== undefined) shows.rec(d.showId, 'reset');
       if (before.currentSlot !== undefined) shows.setSlot(d.showId, null);
@@ -725,6 +756,8 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     override,
     build,
     plans: { list: listPlans, add: addPlan, remove: removePlan },
+    // How late a step or cue still plays after a restart (H5): media still has a use until then.
+    graceMs: GRACE_MS,
     tick,
     // Ticks every second (09 §9.4), from now. Sequences cut short by a stop go on once the
     // overlays' pages are back, plans are armed, and old plans and nights' cues are pruned hourly.

@@ -606,7 +606,7 @@ export async function detail(view, ctx) {
   // -- remove: one version, or every one (H20: menu, then a confirmation naming the consequence)
   async function usedBy(version) {
     try {
-      const fresh = arr(await api.get(`${apiOf(t.id)}/versions`));
+      const fresh = await api.all(`${apiOf(t.id)}/versions`);
       return [...new Set(fresh.filter((v) => version === undefined || v.version === version).flatMap((v) => arr(v.overlays)))];
     } catch {
       return [];
