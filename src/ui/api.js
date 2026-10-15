@@ -1,6 +1,7 @@
 // The admin UI's only way to the platform: the public API (03), signed in with the session cookie.
-// A change sends the session's CSRF token (07 §7.3), and an edit of a resource sends If-Match
-// with the ETag it was read with (H16), so a change made meanwhile is a 412, never overwritten.
+// A change sends the session's CSRF token (07 §7.3; renewed once if another tab replaced it), and
+// an edit of a resource sends If-Match with the ETag it was read with (H16), so a change made
+// meanwhile is a 412, never overwritten.
 
 export class ApiProblem extends Error {
   constructor(status, body) {
@@ -13,10 +14,32 @@ export class ApiProblem extends Error {
 }
 
 let csrf;
+let userId; // whose session the token belongs to
 const listeners = new Set();
-export const setCsrf = (token) => { csrf = token; };
+const changedListeners = new Set();
+const endedListeners = new Set();
+// setCsrf(token, user id): the session's token, and whose session it is.
+export const setCsrf = (token, user) => { csrf = token; userId = user; };
 // onUnauthenticated(fn): told when a request finds the session gone (a 401), so the app can sign in again.
 export const onUnauthenticated = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+// onSessionChanged(fn): told (with the new session) when another tab of this browser signed someone
+// else in, so the app reads who it is now and redraws for them.
+export const onSessionChanged = (fn) => { changedListeners.add(fn); return () => changedListeners.delete(fn); };
+// onSessionEnded(fn): told when the session this tab worked in is over (signed out here, found gone,
+// or replaced by someone else's), so what belongs to it (an upload queue) is dropped, not carried
+// into the next person's session.
+export const onSessionEnded = (fn) => { endedListeners.add(fn); return () => endedListeners.delete(fn); };
+const tell = (set, value) => {
+  for (const fn of [...set]) {
+    try { fn(value); } catch (err) { console.error(err); }
+  }
+};
+// After a deliberate sign-out: forget the token, and tell what belonged to the session.
+export function endSession() {
+  csrf = undefined;
+  userId = undefined;
+  tell(endedListeners);
+}
 
 // The ETag of a resource the API answered with ({ id, rev }), for If-Match.
 export const etagOf = (resource) => (resource && resource.id && Number.isInteger(resource.rev) ? `"${resource.id}-r${resource.rev}"` : undefined);
@@ -40,6 +63,7 @@ function noteServerDate(header, sentAt, receivedAt) {
 //   ifMatch  a resource ({ id, rev }) or an ETag string
 //   query    an object added to the path's query string (undefined values left out)
 //   headers  more request headers (e.g. x-skp-filename on an upload)
+//   signal   an AbortSignal: aborting rejects with the AbortError itself (not an ApiProblem)
 // Resolves with the parsed JSON (or undefined for an empty answer); rejects with ApiProblem.
 export async function request(method, path, opts = {}) {
   const { body, ifMatch, raw, contentType, query, signal } = opts;
@@ -78,10 +102,33 @@ export async function request(method, path, opts = {}) {
   }
   if (!res.ok) {
     const problem = new ApiProblem(res.status, data);
-    if (res.status === 401 && !path.startsWith('/api/v1/auth/login') && !path.startsWith('/api/v1/setup')) for (const fn of listeners) fn(problem);
+    if (res.status === 401 && !path.startsWith('/api/v1/auth/login') && !path.startsWith('/api/v1/setup')) {
+      tell(endedListeners);
+      tell(listeners, problem);
+    }
+    if (res.status === 403 && problem.code === 'csrf' && !SAFE.has(method) && !opts.csrfRetried) return retryWithNewToken(method, path, opts);
     throw problem;
   }
   return data;
+}
+
+// A change refused for its CSRF token was sent with a token that is no longer the session's:
+// another tab of this browser signed in, changed the password or turned two-factor on or off, and
+// each of those starts a new session (a new token) in the cookie this tab shares. The server
+// refused the change before doing anything, so it is safe to read the session again and send it
+// once more with the new token. If the new session is someone else's, the change is not sent for
+// them: the app is told, and redraws for whoever is signed in now.
+async function retryWithNewToken(method, path, opts) {
+  const session = await get('/api/v1/auth/session'); // a 401 here: signed out, the app is told
+  const now = session?.user?.id;
+  if (userId && now && now !== userId) {
+    tell(endedListeners);
+    setCsrf(session.csrf, now);
+    tell(changedListeners, session);
+    throw new ApiProblem(403, { type: 'https://skp.dev/errors/csrf', detail: `${session.user.username || 'Someone else'} signed in on this browser, in another tab, so nothing was changed. The page now shows their account.` });
+  }
+  setCsrf(session?.csrf, now ?? userId);
+  return request(method, path, { ...opts, csrfRetried: true });
 }
 
 export const get = (path, opts) => request('GET', path, opts);

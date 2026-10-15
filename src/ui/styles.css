@@ -12,6 +12,7 @@
   --surface: #ffffff;
   --surface-2: #eef1f4;
   --border: #d3d9df;
+  --input-border: #7d8792; /* a field's edge: 3:1 against the page and cards (WCAG 1.4.11) */
   --text: #14191e;
   --muted: #56616c;
   --ok: #1d7a3a;
@@ -41,6 +42,7 @@
   --surface: #151b21;
   --surface-2: #1d252d;
   --border: #2c3640;
+  --input-border: #66737f;
   --text: #e8edf2;
   --muted: #9aa7b3;
   --ok: #4cc777;
@@ -61,6 +63,7 @@
     --surface: #151b21;
     --surface-2: #1d252d;
     --border: #2c3640;
+    --input-border: #66737f;
     --text: #e8edf2;
     --muted: #9aa7b3;
     --ok: #4cc777;
@@ -87,7 +90,8 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+/* A control focused by Tab, or scrolled to, stops below the sticky header, not under it (2.4.11). */
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--nav-h) + 8px); }
 body {
   margin: 0;
   background: var(--bg);
@@ -238,16 +242,20 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
 .field.check { flex-direction: row; align-items: center; gap: 10px; }
 .field.check > label { font-weight: 400; }
 .field.check > input { flex: none; }
+/* The words of a checkbox are its target too: the row is a finger tall. */
+.field.check > label { display: flex; align-items: center; min-height: var(--tap); cursor: pointer; }
 label.field.check { min-height: var(--tap); cursor: pointer; }
 input[type="text"], input[type="password"], input[type="number"], input[type="url"], input[type="search"],
 input[type="date"], input[type="time"], input[type="datetime-local"], input[type="email"], select, textarea {
   width: 100%; min-height: var(--tap); padding: 8px 12px;
   background: var(--surface); color: var(--text); font: inherit;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  border: 1px solid var(--input-border); border-radius: var(--radius-sm);
 }
+/* Placeholders show values in effect (the settings form): as readable as other secondary text. */
+::placeholder { color: var(--muted); opacity: 1; }
 textarea { min-height: 96px; resize: vertical; }
 textarea.code { font-family: var(--mono); font-size: 0.9rem; }
-input[type="color"] { width: 64px; height: var(--tap); padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+input[type="color"] { width: 64px; height: var(--tap); padding: 2px; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background: var(--surface); }
 input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; accent-color: var(--accent); }
 input[type="range"] { width: 100%; accent-color: var(--accent); min-height: var(--tap); }
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
@@ -288,6 +296,8 @@ th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
   display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px;
   border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 0.9rem;
 }
+/* A chip that is a link is a target: a finger tall on a touch screen. */
+@media (pointer: coarse) { a.chip { min-height: var(--tap); } }
 .notice { border-left: 4px solid var(--accent); background: var(--surface-2); padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: var(--gap); }
 .notice.warn { border-left-color: var(--warn); }
 .notice.danger { border-left-color: var(--danger); }
@@ -337,7 +347,7 @@ dialog {
 }
 dialog::backdrop { background: var(--scrim); }
 dialog .dialog-body { padding: calc(var(--pad) * 1.25); }
-dialog .dialog-body > :last-child { margin-bottom: 0; }
+dialog .dialog-body > :last-child, dialog .dialog-body > :last-child > :last-child { margin-bottom: 0; }
 dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25); margin: 0; }
 .toasts {
   position: fixed; z-index: 50; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
@@ -348,7 +358,11 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
   box-shadow: var(--shadow); display: flex; gap: 12px; align-items: center;
 }
 .toast.error { background: var(--danger); color: var(--danger-text); }
-.toast button { margin-left: auto; background: none; border: 0; color: inherit; font: inherit; font-weight: 700; cursor: pointer; min-height: 32px; }
+/* Dismiss: a 44 px target, reaching into the toast's padding so the toast stays slim. */
+.toast button {
+  margin: -10px -12px -10px auto; flex: none; min-width: var(--tap); min-height: var(--tap);
+  background: none; border: 0; border-radius: var(--radius-sm); color: inherit; font: inherit; font-weight: 700; cursor: pointer;
+}
 
 /* ---- the sign-in pages ------------------------------------------------------------------- */
 .auth-card h1 { font-size: 1.4rem; }

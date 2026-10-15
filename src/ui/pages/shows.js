@@ -108,7 +108,10 @@ function toggle(text, checked, { disabled, onChange } = {}) {
 }
 
 // The overlays a show has, as toggles. An overlay is in one show at most (01 §1.3): one in
-// another show can't be picked here.
+// another show can't be picked here. values() are the overlays' ids: a name can change elsewhere
+// (a rename doesn't change the show's ETag), an id can't. An overlay known only by name (the list
+// failed to load) goes by its name.
+const overlayRef = (o) => o.id || o.slug;
 function overlayPicker(overlays, { members = [], showName, disabled } = {}) {
   const mine = (o) => members.includes(o.id) || members.includes(o.slug);
   const items = overlays.map((o) => {
@@ -123,7 +126,7 @@ function overlayPicker(overlays, { members = [], showName, disabled } = {}) {
     items.length
       ? h('div.row', items.map((i) => i.el))
       : h('p.muted', 'There are no overlays yet. ', h('a', { href: '#/templates' }, 'Make one from a template'), ', then add it here.'));
-  return { el, values: () => items.filter((i) => i.input.checked).map((i) => i.o.slug) };
+  return { el, values: () => items.filter((i) => i.input.checked).map((i) => overlayRef(i.o)) };
 }
 
 // What the day boundary means for this show, in words (H7).
@@ -379,6 +382,8 @@ export async function detail(view, ctx) {
   const tz = () => show.timezone;
   let readAt = Date.now();
   let gone = false;
+  let tabsEl; // the tabs, and the poll of the head: set at the end
+  let stop;
 
   // The show as the server has it now (forms keep the copy they were made from, for If-Match).
   async function fresh(force = false) {
@@ -417,6 +422,17 @@ export async function detail(view, ctx) {
         : notice('This show has no overlays yet: pick them under Details, so its scenes, lineup and timeline reach the stream.', 'warn'));
   }
 
+  // Deleted elsewhere (a change found it gone, or a read did): say so in the page, not with the
+  // server's words about an id, and stop what the page runs. A change that was refused says so too.
+  function showGone({ changing = false } = {}) {
+    if (gone) return;
+    gone = true;
+    stop?.();
+    tabsEl?.destroy();
+    if (changing) toast(`"${show.name}" was deleted meanwhile (someone else, or another tab): nothing was saved.`, { kind: 'error' });
+    missing(view, show.name);
+  }
+
   async function deleteShow() {
     const ok = await confirm({
       title: `Delete "${show.name}"?`,
@@ -425,11 +441,15 @@ export async function detail(view, ctx) {
     });
     if (!ok) return;
     try {
-      await api.del(base());
+      // As it was read (H16): a show edited meanwhile is looked at again before it goes.
+      await api.del(base(), { ifMatch: show });
       toast(`Deleted the show "${show.name}"`);
       ctx.navigate('/shows');
     } catch (err) {
-      toast(err);
+      if (err.status === 404) { toast(`"${show.name}" was already deleted.`); ctx.navigate('/shows'); return; }
+      if (err.status !== 412) { toast(err); return; }
+      await fresh(true).catch(() => {});
+      toast('The show changed since you opened it: this is the latest. Delete it again if you still want to.', { kind: 'error', ms: 10000 });
     }
   }
 
@@ -439,7 +459,11 @@ export async function detail(view, ctx) {
     mount(panel, h('p.loading', 'Loading…'));
     Promise.all([fresh(), loadAll('/api/v1/overlays')]).then(([, overlays]) => {
       if (alive) drawDetails(panel, overlays);
-    }).catch((err) => { if (alive) mount(panel, notice(err.message, 'danger')); });
+    }).catch((err) => {
+      if (!alive) return;
+      if (err.status === 404) showGone();
+      else mount(panel, notice(err.message, 'danger'));
+    });
     return () => { alive = false; };
   }
 
@@ -455,8 +479,8 @@ export async function detail(view, ctx) {
     // The overlays: those that failed to load are the show's own, by name.
     const known = overlays.length ? overlays : (formShow.members || []).map((slug) => ({ slug, show: formShow.name }));
     const serverMembers = [...(formShow.overlays || []), ...(formShow.members || [])];
-    const initialMembers = known.filter((o) => serverMembers.includes(o.id) || serverMembers.includes(o.slug)).map((o) => o.slug);
-    const picker = overlayPicker(known, { members: v.overlays || serverMembers, showName: formShow.name, disabled });
+    const initialMembers = known.filter((o) => serverMembers.includes(o.id) || serverMembers.includes(o.slug)).map(overlayRef);
+    const picker = overlayPicker(known, { members: v.overlays || serverMembers, showName: formShow.name, disabled }); // kept: ids, as values() gives them
     const b = formShow.dayBoundary || '12:00';
     const save = h('button.btn.primary', { type: 'button' }, 'Save details');
 
@@ -482,6 +506,7 @@ export async function detail(view, ctx) {
       try {
         show = await api.patch(base(), patch, { ifMatch: formShow });
       } catch (err) {
+        if (err.status === 404) { showGone({ changing: true }); return; }
         if (err.status !== 412) throw err;
         // Edited meanwhile (H16; live control doesn't count): re-read it. If what this form edits
         // is as it was, the edit was elsewhere (the lineup tab, another user's members): the edits
@@ -523,7 +548,11 @@ export async function detail(view, ctx) {
       if (!alive) return;
       const images = media.filter((m) => m?.status === 'ready' && m.kind === 'image').map((m) => ({ value: m.url, label: m.name || m.url }));
       drawLineup(panel, images);
-    }).catch((err) => { if (alive) mount(panel, notice(err.message, 'danger')); });
+    }).catch((err) => {
+      if (!alive) return;
+      if (err.status === 404) showGone();
+      else mount(panel, notice(err.message, 'danger'));
+    });
     return () => { alive = false; };
   }
 
@@ -634,6 +663,7 @@ export async function detail(view, ctx) {
       try {
         show = await api.patch(base(), { lineup }, { ifMatch: formShow });
       } catch (err) {
+        if (err.status === 404) { showGone({ changing: true }); return; }
         if (err.status !== 412) throw err;
         // Edited meanwhile (H16; live control doesn't count): if the lineup itself is as it was,
         // the edit was elsewhere (the details), and the edits stay to save again; otherwise the
@@ -831,10 +861,13 @@ export async function detail(view, ctx) {
       });
       if (!ok) return;
       try {
-        await api.del(`${base()}/cues/${api.seg(cue.id)}`);
+        // As it was read (H16): a cue that fired or was changed meanwhile is looked at again first.
+        await api.del(`${base()}/cues/${api.seg(cue.id)}`, { ifMatch: cue });
         toast(`Deleted the cue "${nameOf(cue)}"`);
       } catch (err) {
-        toast(err);
+        if (err.status === 412) toast('This cue changed since you opened it (it may have fired): this is the latest. Delete it again if you still want to.', { kind: 'error', ms: 10000 });
+        else if (err.status === 404) toast(`The cue "${nameOf(cue)}" was already deleted.`);
+        else toast(err);
       }
       reload();
     }
@@ -1087,30 +1120,28 @@ export async function detail(view, ctx) {
   // ---- the page ------------------------------------------------------------------------------
   drawHead();
   const wanted = ctx.query.get('tab');
-  const tabsEl = tabs([
+  tabsEl = tabs([
     { id: 'details', label: 'Details', render: detailsTab },
     { id: 'lineup', label: 'Lineup', render: lineupTab },
     { id: 'timeline', label: 'Timeline', render: timelineTab },
     { id: 'plans', label: 'Plans', render: plansTab },
   ], {
     selected: TAB_IDS.includes(wanted) ? wanted : 'details',
-    // The tab in the address, so a reload comes back to it (no navigation: replaceState).
-    onChange: (id) => { if (!gone) history.replaceState(null, '', `#/shows/${api.seg(show.id)}?tab=${id}`); },
+    // The tab in the address, so a reload comes back to it (no navigation: replaceState). Not
+    // once the user has gone to another page while this one loaded: the address is theirs.
+    onChange: (id) => { if (!gone && ctx.alive()) history.replaceState(null, '', `#/shows/${api.seg(show.id)}?tab=${id}`); },
   });
   mount(view, head, tabsEl);
 
   // The head (live or not, the name) stays current; a show deleted elsewhere says so.
   let first = true;
-  const stop = every(15000, async () => {
+  stop = every(15000, async () => {
     if (first) { first = false; return; }
     try {
       await fresh(true);
     } catch (err) {
       if (err.status !== 404) throw err;
-      gone = true;
-      stop();
-      tabsEl.destroy();
-      missing(view, show.name);
+      showGone();
     }
   });
   return () => {

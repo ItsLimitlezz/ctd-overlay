@@ -10,6 +10,7 @@ import { ago, badge, bytes, confirm, copy, dialog, empty, every, h, isPhone, men
 // The most one file can be (src/media/library.js, 07 §7.11). Checked before sending: over it the
 // server stops reading mid-upload, and the browser sees a dropped connection, not the reason.
 const MAX_BYTES = 600 * 1024 * 1024;
+const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/; // an overlay's name (src/overlays/registry.js)
 
 // What the file picker offers: what the server takes (src/media/sniff.js). The server decides by
 // the file's content, not its name, so a dropped file goes up whatever it is called.
@@ -46,9 +47,21 @@ const looksLikeVideo = (file) => /^video\//.test(file.type || '') || /\.(mov|mp4
 // ---- uploads -------------------------------------------------------------------------------
 // Uploads run here, one file at a time, rather than in the page: leaving Media while a long clip
 // uploads or converts doesn't drop it, and coming back shows it still going.
-const uploads = { queue: [], current: undefined, done: 0, total: 0, failures: [], listeners: new Set() };
+const uploads = { queue: [], current: undefined, abort: undefined, done: 0, total: 0, failures: [], listeners: new Set() };
 let hasFfmpeg; // capabilities.ffmpeg, once known
 let filter = 'all'; // the list's filter, kept while the app is open
+
+// The queue is the signed-in person's: when their session ends (signed out, found gone, someone
+// else signed in), what is still waiting is dropped and the file going up is stopped, so the next
+// person to sign in on this browser neither uploads their files nor sees their names.
+let session = 0; // which session the queue belongs to: a loop of an earlier one stops
+api.onSessionEnded(() => {
+  session += 1;
+  uploads.abort?.abort();
+  Object.assign(uploads, { queue: [], current: undefined, abort: undefined, done: 0, total: 0, failures: [] });
+  window.removeEventListener('beforeunload', holdPage);
+  tell('finished');
+});
 
 function tell(type, detail = {}) {
   for (const fn of [...uploads.listeners]) {
@@ -69,7 +82,8 @@ function refuse(message) {
 
 // What the server would refuse anyway, said before sending hundreds of MB for nothing.
 function precheck(file) {
-  if (file.size > MAX_BYTES) return `Couldn't upload ${shortName(file.name)}: it is ${bytes(file.size)}, and the most one file can be is ${bytes(MAX_BYTES)}. Trim or compress it, then upload it again.`;
+  // "Larger than", not its size: rounded, a file just over the limit would read as the limit itself.
+  if (file.size > MAX_BYTES) return `Couldn't upload ${shortName(file.name)}: it is larger than ${bytes(MAX_BYTES)}, the most one file can be. Trim or compress it, then upload it again.`;
   if (file.size === 0) return `Couldn't upload ${shortName(file.name)}: the file is empty.`;
   return undefined;
 }
@@ -116,31 +130,39 @@ function uploadedText(file, item) {
 
 async function pump() {
   if (uploads.current) return;
+  const mine = session;
   window.addEventListener('beforeunload', holdPage);
   try {
-    while (uploads.queue.length) {
+    while (uploads.queue.length && mine === session) {
       const file = uploads.queue.shift();
       uploads.current = file;
+      uploads.abort = new AbortController();
       tell('progress');
       try {
-        const item = await api.post('/api/v1/media', undefined, { raw: file, contentType: file.type || 'application/octet-stream', query: { name: file.name } });
+        const item = await api.post('/api/v1/media', undefined, { raw: file, contentType: file.type || 'application/octet-stream', query: { name: file.name }, signal: uploads.abort.signal });
+        if (mine !== session) break; // signed out meanwhile: not a word about it to whoever is next
         toast(uploadedText(file, item));
         tell('added', { item });
       } catch (err) {
+        if (mine !== session) break;
         refuse(`Couldn't upload ${shortName(file.name)}. ${reasonOf(err)}`);
-        // Signed out, or not allowed: the rest would fail the same way.
-        if ((err?.status === 401 || err?.status === 403) && uploads.queue.length) {
+        // Not allowed: the rest would fail the same way.
+        if (err?.status === 403 && uploads.queue.length) {
           const n = uploads.queue.splice(0).length;
           uploads.failures.push(`${n} more ${n === 1 ? 'file was' : 'files were'} not uploaded.`);
         }
       } finally {
-        uploads.done += 1;
+        if (mine === session) uploads.done += 1;
       }
     }
   } finally {
-    uploads.current = undefined;
-    window.removeEventListener('beforeunload', holdPage);
-    tell('finished');
+    // An ended session has already reset all of this (and maybe a new batch started since).
+    if (mine === session) {
+      uploads.current = undefined;
+      uploads.abort = undefined;
+      window.removeEventListener('beforeunload', holdPage);
+      tell('finished');
+    }
   }
 }
 
@@ -271,7 +293,9 @@ export async function list(view, ctx) {
 
   const remove = async (item, more) => {
     const name = String(item.name || 'this file');
-    const yes = await confirm({ title: `Delete ${shortName(name)}?`, consequence: 'Overlays using this file will show nothing in its place.', confirmLabel: 'Delete' });
+    // The platform refuses to delete a file in use (and says what uses it), so what breaks is only
+    // a copy of its URL kept elsewhere.
+    const yes = await confirm({ title: `Delete ${shortName(name)}?`, consequence: 'It is gone for good, and its URL stops working wherever it was copied. A file an overlay, a lineup, a cue or a plan still uses is not deleted: you are told what uses it.', confirmLabel: 'Delete' });
     if (!yes) return;
     let deleted = false;
     let failed;
@@ -314,7 +338,9 @@ export async function list(view, ctx) {
           Number.isFinite(item.size) ? ` · ${bytes(item.size)}` : '',
           when ? [' · ', h('time', { datetime: when, title: new Date(when).toLocaleString() }, `uploaded ${ago(when)}`)] : ''),
         original ? h('p.muted.small.truncate', { title: original }, `${item.kind === 'image' ? 'Converted to JPEG' : 'Converted for OBS'} from ${original}`) : null,
-        users.length ? h('p.small', 'Used by ', users.map((slug, i) => [i ? ', ' : '', h('a', { href: `#/overlays/${api.seg(slug)}` }, slug)])) : null),
+        // An overlay (named by its slug) is a link to it; a lineup, a cue or a plan ("lineup of
+        // show Night") is said in words.
+        users.length ? h('p.small', 'Used by ', users.map((who, i) => [i ? ', ' : '', SLUG.test(String(who)) ? h('a', { href: `#/overlays/${api.seg(who)}` }, who) : String(who)])) : null),
       item.status === 'processing' ? h('p.small.muted', 'Still being converted for OBS. It can be used once that\'s done.') : null,
       item.status === 'failed' ? h('div.notice.danger', item.error || 'This upload didn\'t finish. Delete it and upload the file again.') : null,
       item.note ? h('div.notice.warn', plainNote(item.note)) : null,
