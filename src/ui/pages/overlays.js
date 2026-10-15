@@ -135,13 +135,6 @@ function previewRow(boxes) {
   return row;
 }
 
-// Cards in a .grid: `.card + .card` (styles.css) would push every card after the first down.
-function gridCard(...children) {
-  const el = h('div.card', ...children);
-  el.style.marginTop = '0';
-  return el;
-}
-
 // A setting's value in plain words, for the upgrade plan.
 function shown(v) {
   if (v === undefined || v === null || v === '') return 'empty';
@@ -153,17 +146,22 @@ function shown(v) {
   return `"${s.length > 60 ? `${s.slice(0, 57)}…` : s}"`;
 }
 
-// A setting's name from its path ("/look"), as the form shows it.
-function settingName(manifest, path) {
+// A setting's name from its path ("/look"), as the form shows it: from the first of the manifests
+// that has the setting (an upgrade's new version, then the old one for a setting it drops).
+function settingName(manifests, path) {
   const parts = String(path || '').split('/').slice(1).map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
-  let schema = settingsSchemaOf(manifest);
-  const names = [];
-  for (const p of parts) {
-    const f = isObj(schema?.properties) && has(schema.properties, p) ? deref(manifest, schema.properties[p]) : undefined;
-    names.push(f?.title || p);
-    schema = f;
+  for (const manifest of manifests.filter(Boolean)) {
+    let schema = settingsSchemaOf(manifest);
+    const names = [];
+    for (const p of parts) {
+      const f = isObj(schema?.properties) && has(schema.properties, p) ? deref(manifest, schema.properties[p]) : undefined;
+      if (!f) break;
+      names.push(f.title || p);
+      schema = f;
+    }
+    if (names.length === parts.length) return names.join(' › ') || 'Settings';
   }
-  return names.join(' › ') || 'Settings';
+  return parts.join(' › ') || 'Settings';
 }
 
 // The URL of an overlay's first canvas, copied (the list's "Copy URL").
@@ -244,7 +242,7 @@ export async function list(view, ctx) {
     const version = o.template?.version;
     const newer = tpl?.latest && version && compareVersions(tpl.latest, version) > 0;
     const copyBtn = h('button.btn', { type: 'button', 'aria-label': `Copy the URL of ${o.slug}`, onclick: () => copyFirstUrl(copyBtn, o) }, 'Copy URL');
-    return gridCard(
+    return h('div.card',
       h('div.card-head', h('h2.truncate', h('a', { href: overlayHref(o.slug) }, o.slug)), badge(st.label, st.kind)),
       h('p', tpl?.name || o.template?.id || 'Unknown template', h('span.muted', version ? ` · version ${version}` : ''), newer ? [' ', badge('Update available', 'accent')] : null),
       h('p.muted', o.show ? ['In the show ', h('a', { href: showHref(showId.get(o.show) || o.show) }, o.show)] : 'Not in a show'),
@@ -266,15 +264,21 @@ async function load(slug, ctx) {
     if (err.status === 404) return { missing: true };
     throw err;
   }
-  const tid = overlay.template?.id;
-  const [urls, template, shows, formModule] = await Promise.all([
+  const { id: tid, version: tversion } = overlay.template || {};
+  const readTemplates = typeof tid === 'string' && ctx.can('templates:read');
+  const templatePath = readTemplates ? `/api/v1/templates/${api.seg(tid)}` : undefined;
+  const [urls, pinned, versions, shows, formModule] = await Promise.all([
     api.get(`/api/v1/overlays/${api.seg(overlay.id)}/url`).then((r) => ({ list: Array.isArray(r?.urls) ? r.urls : [] }), (error) => ({ list: [], error })),
-    tid && ctx.can('templates:read') ? api.get(`/api/v1/templates/${api.seg(tid)}`).catch(() => undefined) : undefined,
+    // The version the overlay is pinned to (04 §4.10): its settings, scenes and canvases.
+    templatePath && typeof tversion === 'string' ? api.get(`${templatePath}/versions/${api.seg(tversion)}`).catch(() => undefined) : undefined,
+    // Every installed version, newest first: what it can upgrade to ([] when none is installed,
+    // undefined when that couldn't be read).
+    templatePath ? api.all(`${templatePath}/versions`).catch((err) => (err?.status === 404 ? [] : undefined)) : undefined,
     overlay.show && ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
     // Written separately (README "Settings form"); the page works without it.
     import('../schema-form.js').catch(() => undefined),
   ]);
-  return { overlay, urls, template, showId: shows.find((s) => s.name === overlay.show)?.id, formModule };
+  return { overlay, urls, pinned, versions, showId: shows.find((s) => s.name === overlay.show)?.id, formModule };
 }
 
 export async function detail(view, ctx) {
@@ -320,17 +324,25 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const ref = () => `/api/v1/overlays/${api.seg(overlay.id)}`;
   const canWrite = ctx.can('overlays:write');
   const canControl = ctx.can('overlays:control');
-  const tpl = data.template;
   const pinned = overlay.template || {};
-  // The API gives the newest version's manifest: exact when the overlay is on it.
-  const manifest = tpl?.manifest;
-  const exact = !!manifest && tpl.latest === pinned.version;
-  const tplName = tpl?.name || manifest?.name || pinned.id || 'Unknown template';
+  // The manifest of the version the overlay is on (none when that version isn't installed).
+  const manifest = data.pinned?.manifest;
+  const tplName = manifest?.name || pinned.id || 'Unknown template';
   const scenes = Array.isArray(manifest?.scenes) ? manifest.scenes.filter((s) => s && s.id) : [];
   const st = statusOf(overlay);
   const ok = overlay.status === 'ok';
-  const versions = Array.isArray(tpl?.versions) ? tpl.versions : [];
+  const versionsKnown = Array.isArray(data.versions);
+  const versions = versionsKnown ? data.versions : [];
   const newer = versions.filter((v) => compareVersions(v.version, pinned.version) > 0);
+  // Another version's manifest (an upgrade's), read once.
+  const manifests = new Map();
+  const manifestOf = (version) => {
+    if (version === pinned.version && manifest) return Promise.resolve(manifest);
+    if (!manifests.has(version)) {
+      manifests.set(version, api.get(`/api/v1/templates/${api.seg(pinned.id)}/versions/${api.seg(version)}`).then((t) => t?.manifest, () => undefined));
+    }
+    return manifests.get(version);
+  };
   const stale = () => {
     toast('It changed since you opened it: here it is as it is now. Make your change again.', { kind: 'error' });
     return reload('It changed since you opened it (someone else, or another tab, saved it). This is it as it is now: make your change again.');
@@ -458,9 +470,6 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     box.style.flex = `${r} 1 ${Math.round(r * 220)}px`;
     box.style.maxWidth = `min(100%, calc(${isPhone() ? 50 : 70}vh * ${r}))`;
     box.style.margin = '0';
-    // A frame whose color-scheme differs from its page's gets an opaque (white) backdrop: with the
-    // admin in dark, transparent scenes would show white instead of the checkerboard.
-    box.style.colorScheme = 'light';
     box.dataset.src = previewUrl(c);
     cleanups.push(() => box.unload());
     return box;
@@ -586,11 +595,12 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     const resetMenu = canWrite && schema ? menu('More', [{ label: 'Reset to defaults…', danger: true, onSelect: resetDefaults }], { buttonClass: 'btn ghost' }) : null;
     const parts = [h('div.card-head', h('h2', 'Settings'), resetMenu ? h('div.actions', resetMenu) : null)];
     if (!manifest) {
-      parts.push(h('p.muted', 'The settings can\'t be shown: this overlay\'s template isn\'t installed.'));
+      parts.push(h('p.muted', overlay.status === 'template-missing'
+        ? 'The settings can\'t be shown: the template version this overlay uses isn\'t installed.'
+        : 'The settings could not be read. Reload the page to try again.'));
     } else if (!schema) {
       parts.push(h('p.muted', 'This template has no settings.'));
     } else {
-      if (!exact) parts.push(notice(`This overlay is on version ${pinned.version}; the form shows the settings of ${tpl.latest}, the newest installed. A setting ${pinned.version} doesn't have is refused when you save: upgrade first (Version) to use it.`, 'warn'));
       if (!canWrite) parts.push(h('p.muted', 'Your role can see these settings but not change them.'));
       const make = data.formModule?.schemaForm;
       if (typeof make === 'function') {
@@ -676,8 +686,8 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   }
 
   // ---- version (04 §4.10) ----------------------------------------------------------------
-  const describe = (c, m) => {
-    const name = `"${settingName(m, c.path)}"`;
+  const describe = (c, ms) => {
+    const name = `"${settingName(ms, c.path)}"`;
     switch (c.change) {
       case 'removed': return `${name}: your value (${shown(c.from)}) is dropped; the new version doesn't have this setting.`;
       case 'invalid': return `${name}: your value (${shown(c.from)}) doesn't fit the new version, so it goes back to ${shown(c.to)}.`;
@@ -690,8 +700,8 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       default: return `${name} changes.`;
     }
   };
-  function planBody(plan, migrateBox) {
-    const m = plan.to === tpl?.latest ? manifest : undefined;
+  function planBody(plan, migrateBox, target) {
+    const ms = [target, manifest];
     const changes = Array.isArray(plan.changes) ? plan.changes : [];
     const gone = plan.removed || {};
     const list = (ids) => (ids || []).join(', ');
@@ -702,7 +712,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       gone.actions?.length ? notice(`Actions this version doesn't have: ${list(gone.actions)}. Buttons and cues that fire them won't work.`, 'warn') : null,
       gone.canvases?.length ? notice(`Canvases this version doesn't have: ${list(gone.canvases)}. OBS sources using them show the default canvas.`, 'warn') : null,
       h('h3', 'Settings'),
-      changes.length ? h('ul', changes.map((c) => h('li', describe(c, m)))) : h('p.muted', 'No setting changes.'),
+      changes.length ? h('ul', changes.map((c) => h('li', describe(c, ms)))) : h('p.muted', 'No setting changes.'),
       plan.migrated === true ? h('p.muted', 'The version\'s update script carried your settings over.') : null,
       migrateBox ? [
         h('h3', 'Update script'),
@@ -713,14 +723,22 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   async function upgrade(button, version) {
     let runMigrate = false;
     for (;;) {
-      const plan = await run(button, () => api.post(`${ref()}/upgrade`, { version, dryRun: true, ...(runMigrate ? { runMigrate: true } : {}) }));
+      // The plan, and the new version's manifest to name its settings as its form does.
+      const plan = await run(button, async () => {
+        const [out] = await Promise.all([
+          api.post(`${ref()}/upgrade`, { version, dryRun: true, ...(runMigrate ? { runMigrate: true } : {}) }),
+          manifestOf(version),
+        ]);
+        return out;
+      });
       if (!plan) return;
+      const target = await manifestOf(plan.to || version);
       // Ticked, the dialog's button says it shows the plan again rather than upgrading.
       const box = plan.migrated === 'skipped' ? h('input', { type: 'checkbox', onchange: () => {
         const primary = box.closest('dialog')?.querySelector('.form-actions .btn.primary');
         if (primary) primary.textContent = box.checked ? 'Continue' : 'Upgrade';
       } }) : null;
-      const go = await dialog({ title: `Upgrade to version ${version}?`, body: planBody(plan, box), actions: [{ label: 'Cancel', value: false }, { label: 'Upgrade', value: true, kind: 'primary' }] });
+      const go = await dialog({ title: `Upgrade to version ${version}?`, body: planBody(plan, box, target), actions: [{ label: 'Cancel', value: false }, { label: 'Upgrade', value: true, kind: 'primary' }] });
       if (!go) return;
       if (box?.checked) { runMigrate = true; continue; } // show what the script does first
       const out = await run(button, () => api.post(`${ref()}/upgrade`, { version, confirm: true, ...(runMigrate ? { runMigrate: true } : {}) }));
@@ -733,8 +751,8 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const versionPanel = h('div.card.stack', h('h2', 'Version'));
   {
     const rows = [
-      h('dt', 'Template'), h('dd', tpl ? h('a', { href: `#/templates/${encodeURIComponent(pinned.id)}` }, tplName) : tplName),
-      h('dt', 'Version'), h('dd', pinned.version || 'Unknown', tpl ? h('span.muted', newer.length ? ' · a newer version is installed' : versions.some((v) => v.version === pinned.version) ? ' · the newest installed' : '') : null),
+      h('dt', 'Template'), h('dd', versions.length ? h('a', { href: `#/templates/${encodeURIComponent(pinned.id)}` }, tplName) : tplName),
+      h('dt', 'Version'), h('dd', pinned.version || 'Unknown', versions.length ? h('span.muted', newer.length ? ' · a newer version is installed' : versions.some((v) => v.version === pinned.version) ? ' · the newest installed' : '') : null),
     ];
     if (overlay.previous?.template) rows.push(h('dt', 'Before the last change'), h('dd', `Version ${overlay.previous.template.version}${overlay.previous.at ? ` (changed ${ago(overlay.previous.at)})` : ''}`));
     versionPanel.append(h('dl.kv', rows));
@@ -757,7 +775,8 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       } }, `Go back to version ${back}…`);
       versionPanel.append(h('div.row', revert));
     }
-    if (!tpl) versionPanel.append(h('p.muted', 'No version of this template is installed.'));
+    if (!versionsKnown) versionPanel.append(h('p.muted', 'The installed versions could not be read. Reload the page to try again.'));
+    else if (!versions.length) versionPanel.append(h('p.muted', 'No version of this template is installed.'));
   }
 
   // ---- the page --------------------------------------------------------------------------
