@@ -5,6 +5,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { alertSpec, createAlertQueue } from './alerts/queue.js';
+import { alertRoutes } from './alerts/routes.js';
 import { createAudit } from './auth/audit.js';
 import { createAuth } from './auth/index.js';
 import { createHasher } from './auth/passwords.js';
@@ -212,6 +213,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...authRoutes({ api, auth, audit }),
       ...showRoutes({ api, shows, timeline }),
       ...simulateRoutes({ api, overlays, bus, log: log.child('simulate'), holdMs: simulateHoldMs }),
+      ...alertRoutes({ api, alerts: data.alerts, overlays, shows }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
       ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
