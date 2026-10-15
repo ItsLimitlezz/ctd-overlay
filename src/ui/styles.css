@@ -375,6 +375,15 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
 .steps { margin: 0 0 var(--gap); padding-left: 1.4em; }
 .steps > li + li { margin-top: 6px; }
 
+/* Streams (Live): a stream's status packed tight; "Fed by"'s connections under "Only these". */
+.stream-status.stack > * + * { margin-top: 8px; }
+.stream-status p { margin: 0; }
+.fed-by-list { padding-left: 32px; }
+.fed-by-list .field { margin-bottom: 0; }
+.stream-card { display: flex; flex-direction: column; }
+.stream-card > .open { margin-top: auto; padding-top: var(--gap); }
+.overlay-preview { max-width: 720px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }

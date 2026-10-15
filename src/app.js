@@ -32,6 +32,7 @@ import { createSecrets, loadMasterKey, SecretsError } from './secrets.js';
 import { createShows } from './shows/registry.js';
 import { createTimeline } from './shows/timeline.js';
 import { showRoutes } from './shows/routes.js';
+import { createStreams } from './streams.js';
 import { migrate } from './store/migrate.js';
 import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
@@ -199,6 +200,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const auth = createAuth({ store, audit, secrets, log: log.child('auth'), now: clock.now, hasher: createHasher(scrypt ? { params: { r: 8, p: 1, ...scrypt } } : {}), configDir: config.configDir });
   const guard = createGuard({ auth, hosts });
   const api = createApi({ guard, hosts, store, log: log.child('api'), now: clock.now, ...(rateLimit ? { perMinute: rateLimit } : {}) });
+  // Each show's and overlay's stream status (what feeds it, whether it is on air), worked out on read.
+  const streams = createStreams({ bus, connections: connectors, store });
   const server = createHttpServer({
     log: log.child('http'),
     crash,
@@ -211,12 +214,12 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...mediaRoutes({ media }),
       // The API (03): every route on its conventions (http/api.js).
       ...authRoutes({ api, auth, audit }),
-      ...showRoutes({ api, shows, timeline }),
+      ...showRoutes({ api, shows, timeline, streams }),
       ...simulateRoutes({ api, overlays, bus, log: log.child('simulate'), holdMs: simulateHoldMs }),
       ...alertRoutes({ api, alerts: data.alerts, overlays, shows }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
-      ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
+      ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, streams, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
       ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }),
       // A file is in use while an overlay, a lineup, a cue or a plan points to it (03 §3.4).
       ...mediaApiRoutes({ api, media, overlays, shows, timeline, audit, now: clock.now }),

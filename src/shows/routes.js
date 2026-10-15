@@ -24,6 +24,10 @@
 //
 // Reading needs timeline:read; changing a show, its cues or plans timeline:write; taking scenes,
 // triggers, the slot, REC and cue overrides overlays:control (07 §7.5, 03 §3.3).
+//
+// A show as answered carries `stream` (src/streams.js): the connections its members are fed by,
+// whether it is on air on each platform and its viewers, worked out on each read. `live` stays what
+// it was: REC is running (recStartedAt), which is not the same as being on air on a platform.
 const READ = 'timeline:read';
 const WRITE = 'timeline:write';
 const CONTROL = 'overlays:control';
@@ -41,26 +45,28 @@ export function showResource(s) {
 }
 const cueKey = (c) => `${c.at}|${String(c.order).padStart(2, '0')}|${c.id}`;
 
-export function showRoutes({ api, shows, timeline }) {
+export function showRoutes({ api, shows, timeline, streams }) {
   const tag = 'Shows';
   const showRev = (p) => {
     const s = shows.get(p.ref);
     return { id: s.id, rev: s.rev };
   };
+  // The show with its stream status (not part of its ETag: worked out, like live).
+  const answer = (s) => (streams ? { ...showResource(s), stream: streams.ofShow(s) } : showResource(s));
   const r = (def) => api.route({ tag, ...def });
   return [
-    r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows', paged: true, run: ({ url }) => api.paginate(shows.list().map(showResource), url) }),
-    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, status: 201, run: ({ body, who }) => ({ status: 201, body: showResource(shows.create(body, { actor: who.label })) }) }),
-    r({ method: 'GET', path: '/api/v1/shows/:ref', scope: READ, summary: 'A show, by id or name', run: ({ params }) => showResource(shows.get(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: { fields: SHOW_FIELDS }, resource: showRev, run: ({ params, body, ifRev }) => showResource(shows.update(params.ref, body, { ifRev })) }),
+    r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows, each with its stream status (what feeds it, on air or not, viewers)', paged: true, run: ({ url }) => api.paginate(shows.list().map(answer), url) }),
+    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, status: 201, run: ({ body, who }) => ({ status: 201, body: answer(shows.create(body, { actor: who.label })) }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref', scope: READ, summary: 'A show, by id or name, with its stream status', run: ({ params }) => answer(shows.get(params.ref)) }),
+    r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: { fields: SHOW_FIELDS }, resource: showRev, run: ({ params, body, ifRev }) => answer(shows.update(params.ref, body, { ifRev })) }),
     r({ method: 'DELETE', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Delete a show', resource: showRev, run: ({ params }) => shows.remove(params.ref) }),
-    r({ method: 'PUT', path: '/api/v1/shows/:ref/scene', scope: CONTROL, command: true, summary: 'Take a scene on every member', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => showResource(shows.take(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label })) }),
+    r({ method: 'PUT', path: '/api/v1/shows/:ref/scene', scope: CONTROL, command: true, summary: 'Take a scene on every member', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => answer(shows.take(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label })) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/triggers/:name', scope: CONTROL, command: true, summary: 'Fire an action on every member that has it', body: { fields: ['args'] }, run: ({ params, body, who }) => {
       const out = shows.trigger(params.ref, params.name, { args: body.args ?? {}, actor: who.label });
       return { ...out, startAt: iso(out.startAt) };
     } }),
-    r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null', body: { fields: ['slot'] }, run: ({ params, body }) => showResource(shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot)) }),
-    r({ method: 'POST', path: '/api/v1/shows/:ref/rec', scope: CONTROL, command: true, summary: 'Start or reset REC', body: { fields: ['action'] }, run: ({ params, body }) => showResource(shows.rec(params.ref, body.action)) }),
+    r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null', body: { fields: ['slot'] }, run: ({ params, body }) => answer(shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot)) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/rec', scope: CONTROL, command: true, summary: 'Start or reset REC', body: { fields: ['action'] }, run: ({ params, body }) => answer(shows.rec(params.ref, body.action)) }),
     // The timeline (09 §9.3–9.6).
     r({ method: 'GET', path: '/api/v1/shows/:ref/cues', scope: READ, summary: 'The show\'s cues, in time order', paged: true, run: ({ params, url }) => api.paginate(timeline.list(params.ref), url, cueKey) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/cues', scope: WRITE, summary: 'Add a cue', body: { fields: ['at', 'action', 'label'] }, status: 201, run: ({ params, body, who }) => ({ status: 201, body: timeline.add(params.ref, body, { actor: who.label }) }) }),

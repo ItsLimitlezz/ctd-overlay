@@ -1,7 +1,7 @@
 // The admin UI in a real browser, quickly: node scripts/ui-smoke.js [routes…] [--phone] [--shots <dir>]
 //
 // Starts a throwaway platform (its own temporary data directory) with the TAKEOVER overlays, a
-// show and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
+// show (and an overlay outside it) and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
 // (default: every section), printing per route the page's text and every console error,
 // uncaught exception and CSP violation. --phone uses a 390 × 844 viewport; --shots saves a PNG
 // per route there. Exits 1 if any route had a problem.
@@ -19,7 +19,7 @@ import { launchBrowser } from '../test/cdp.js';
 import { fakeConnector } from '../test/fixtures/connectors/fake.js';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { phone: { type: 'boolean' }, shots: { type: 'string' }, wait: { type: 'string', default: '1500' } } });
-const routes = positionals.length ? positionals : ['/live', '/overlays', '/overlays/takeover', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/media', '/settings'];
+const routes = positionals.length ? positionals : ['/live', '/live?show=<show>', '/live?show=<show>&overlay=takeover', '/live?overlay=solo', '/overlays', '/overlays/takeover', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/media', '/settings'];
 
 const root = mkdtempSync(path.join(tmpdir(), 'skp-ui-'));
 const config = loadConfig({ argv: ['--port', '0', '--data-dir', path.join(root, 'data'), '--config-dir', path.join(root, 'config')], env: {} });
@@ -32,6 +32,8 @@ await platform.auth.createOwner({ code: platform.auth.setupCode, ...OWNER }, { i
 const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
 platform.overlays.create({ slug: 'takeover', template: TEMPLATE, settings: {} });
 platform.overlays.create({ slug: 'event', template: TEMPLATE, settings: { look: 'event' } });
+// An overlay outside the show: a stream of its own on Live.
+platform.overlays.create({ slug: 'solo', template: TEMPLATE, settings: {} });
 const MIN = 60000;
 const pad = (n) => String(n).padStart(2, '0');
 const local = (t) => { const d = new Date(t); return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}` }; };
@@ -47,7 +49,7 @@ platform.shows.take(show.id, 'auto', { transition: 'cut', actor: 'smoke' });
 platform.bus.setState('viewers.total', 1159);
 const fake = platform.connectors.create({ connector: 'fake', name: 'Test service', config: { behaviour: 'push', clientId: 'smoke-client' }, secrets: { clientSecret: 'smoke-secret-value' } });
 platform.connectors.create({ connector: 'ctd-multistream', name: 'Multi-Stream (NAS)', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: 'ctd_pat_0123456789abcdefghijklmnop' } });
-const routeOf = (r) => r.replace('<fake>', fake.id);
+const routeOf = (r) => r.replace('<fake>', fake.id).replace('<show>', show.id);
 
 let failed = false;
 const browser = await launchBrowser();

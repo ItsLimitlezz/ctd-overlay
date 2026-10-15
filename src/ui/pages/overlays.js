@@ -1,8 +1,10 @@
 // Overlays (08 §8.3, §8.5): every overlay as a card, and one overlay's page: previews at each
-// canvas, its URL for OBS, the settings form, scenes outside a show, the Simulate panel, template
-// versions (upgrade, go back), and the More menu (rename, the key, delete).
+// canvas, its URL for OBS, the settings form and what feeds it ("Fed by": every connection or only
+// some), scenes outside a show, the Simulate panel, template versions (upgrade, go back), and the
+// More menu (rename, the key, delete).
 import * as api from '../api.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
+import { connectionChip, fedByForm, fedByWords } from '../streams.js';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SLUG_HELP = 'Use lower-case letters, digits and dashes, starting with a letter or digit (63 at most).';
@@ -15,8 +17,9 @@ const STATUS = {
 const statusOf = (o) => STATUS[o?.status] || { label: 'Unknown', kind: 'warn' };
 const TABS = ['settings', 'scenes', 'test', 'version'];
 
-// What the Simulate panel sends (src/overlays/simulate.js), in plain words.
-const SIMULATIONS = [
+// What the Simulate panel sends (src/overlays/simulate.js), in plain words. Live's overlay panel
+// sends the same.
+export const SIMULATIONS = [
   { kind: 'chat', label: 'Chat message', what: 'chat', done: () => 'Chat message sent.' },
   { kind: 'follow', label: 'Follow', what: 'follows', done: () => 'Follow sent.' },
   { kind: 'subscription', label: 'Subscription', what: 'subscriptions', done: () => 'Subscription sent.' },
@@ -267,7 +270,7 @@ async function load(slug, ctx) {
   const { id: tid, version: tversion } = overlay.template || {};
   const readTemplates = typeof tid === 'string' && ctx.can('templates:read');
   const templatePath = readTemplates ? `/api/v1/templates/${api.seg(tid)}` : undefined;
-  const [urls, pinned, versions, shows, formModule] = await Promise.all([
+  const [urls, pinned, versions, shows, formModule, health] = await Promise.all([
     api.get(`/api/v1/overlays/${api.seg(overlay.id)}/url`).then((r) => ({ list: Array.isArray(r?.urls) ? r.urls : [] }), (error) => ({ list: [], error })),
     // The version the overlay is pinned to (04 §4.10): its settings, scenes and canvases.
     templatePath && typeof tversion === 'string' ? api.get(`${templatePath}/versions/${api.seg(tversion)}`).catch(() => undefined) : undefined,
@@ -277,8 +280,10 @@ async function load(slug, ctx) {
     overlay.show && ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
     // Written separately (README "Settings form"); the page works without it.
     import('../schema-form.js').catch(() => undefined),
+    // The connections to choose from for "Fed by" (operators read them here, by name and status).
+    api.get('/api/v1/system/health').then((r) => ({ list: Array.isArray(r?.connections) ? r.connections : [] }), (error) => ({ list: [], error })),
   ]);
-  return { overlay, urls, pinned, versions, showId: shows.find((s) => s.name === overlay.show)?.id, formModule };
+  return { overlay, urls, pinned, versions, showId: shows.find((s) => s.name === overlay.show)?.id, formModule, health };
 }
 
 export async function detail(view, ctx) {
@@ -643,6 +648,40 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     mount(settingsPanel, parts);
   }
 
+  // ---- fed by (01 §1.3) ------------------------------------------------------------------
+  // Which connections feed it: every one (made later too), or only some, so two streams at once
+  // each show their own chat, alerts and viewers. Saved with If-Match like the settings (H16).
+  const fedByPanel = h('section.card.stack#fed-by', h('h2', 'Fed by'));
+  {
+    const binding = overlay.connections === 'all' ? 'all' : Array.isArray(overlay.connections) ? overlay.connections : 'all';
+    const bound = Array.isArray(overlay.bound) ? overlay.bound : [];
+    fedByPanel.append(
+      h('p', `Now: ${fedByWords(binding, bound)}`),
+      bound.length ? h('div.chips', bound.map(connectionChip)) : null);
+    if (data.health?.error) fedByPanel.append(notice(`The connections could not be read: ${data.health.error.message}`, 'warn'));
+    if (!canWrite) {
+      fedByPanel.append(h('p.muted', 'Your role can see what feeds this overlay but not change it.'));
+    } else {
+      const saveFed = h('button.btn.primary', { type: 'button', disabled: true, onclick: () => saveFedBy() }, 'Save connections');
+      const fedForm = fedByForm({ connections: data.health?.list, value: binding, legend: 'Connections it shows', onChange: () => { saveFed.disabled = !fedForm.changed(); } });
+      const nameOf = (id) => data.health?.list.find((c) => c.id === id)?.name || id;
+      async function saveFedBy() {
+        const next = fedForm.value();
+        await run(saveFed, async () => {
+          try {
+            overlay = await api.patch(ref(), { connections: next }, { ifMatch: overlay });
+          } catch (err) {
+            if (await outdated(err)) return;
+            throw err;
+          }
+          toast(`"${overlay.slug}" is fed by ${next === 'all' ? 'every connection' : next.length ? next.map(nameOf).join(', ') : 'no connection'} now.`);
+          await reload();
+        });
+      }
+      fedByPanel.append(fedForm.el, h('div.form-actions', saveFed));
+    }
+  }
+
   // ---- scenes (an overlay outside a show) ------------------------------------------------
   const scenesPanel = h('div.card.stack', h('h2', 'Scenes'));
   if (overlay.show) {
@@ -801,7 +840,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // ---- the page --------------------------------------------------------------------------
   const panels = { settings: settingsPanel, scenes: scenesPanel, test: testPanel, version: versionPanel };
   const tabList = tabs([
-    { id: 'settings', label: 'Settings', render: (p) => { p.append(panels.settings); } },
+    { id: 'settings', label: 'Settings', render: (p) => { p.append(panels.settings, fedByPanel); } },
     { id: 'scenes', label: 'Scenes', render: (p) => { p.append(panels.scenes); } },
     { id: 'test', label: 'Test', render: (p) => { p.append(panels.test); } },
     { id: 'version', label: 'Version', render: (p) => { p.append(panels.version); } },

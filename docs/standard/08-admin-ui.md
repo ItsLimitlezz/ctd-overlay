@@ -7,7 +7,7 @@ uses only the public API (03).
 
 | Section | Job |
 |---|---|
-| **Live** | The show-night console: previews, take scenes, fire actions and cues, pause alerts, connection health. The default landing page once set up. |
+| **Live** | The show-night console: every stream running and whether it is on air, then one show's or overlay's previews, scenes, actions, cues, alerts and connection health. The default landing page once set up. |
 | **Overlays** | Every overlay: preview, settings form, bindings, URL with "Copy" and "Add to OBS". |
 | **Templates** | The gallery: installed templates, install new, versions. |
 | **Shows** | Shows, member overlays, lineup, timeline, planned dates. |
@@ -40,13 +40,28 @@ The path a non-technical user takes: **browse → preview → use → copy into 
   in lite mode.
 - Settings form generated from the template's schema (04 §4.3), grouped, with live preview.
 - Bindings: which connections feed this overlay: *All connections, including new ones* (the
-  default), or *Only these*, from the connections' names and status (`bound`, 03 §3.4).
+  default), or *Only these*, from the connections' names and status (`bound`, 03 §3.4). A show's
+  page sets the same for every member at once (one change per overlay, each with its If-Match).
 - The URL, with **Copy**, **Add to OBS** (when OBS is connected, creates the browser source at
   the right size), and the exact browser-source size to set.
 - A clear note that the URL never changes when settings, theme or template version change.
 
 ## 8.4 Live console
 
+Several streams can run at once: a stream is a show, or an overlay outside a show, and each is fed
+by the connections its overlays are bound to (§8.3), so two shows bound to two connections (two
+CTD Multi-Stream servers, say) are two streams.
+
+- Live opens on **every stream**: a card per show and per overlay outside a show, with its
+  on-air state in words (**On air**, **Offline**, or **Unknown** when no connection says), each
+  platform ("Twitch · live · 214"), the viewers when a count is known, the connections that feed
+  it with their status, REC when it runs, and **Open**. Running streams (on air, or REC) come
+  first. It follows changes by polling and `system.connection` events. From the API: `stream` on
+  each show and overlay (03 §3.4).
+- A show's console starts with the same status; an overlay selector chooses the **whole show**
+  (below) or **one member**: its preview, its URLs for OBS with their sizes, its actions,
+  **Simulate**, what feeds it, and a link to its settings. Scenes stay the show's. The choice is
+  kept in the address. An overlay outside a show opens the same panel on its own, with its scenes.
 - Previews of the show's overlays (H and V).
 - Scene buttons for the show's scenes, labelled with the template's names for them, with the
   active one highlighted. Template extras (e.g. Headliner Intro) appear only when the active
