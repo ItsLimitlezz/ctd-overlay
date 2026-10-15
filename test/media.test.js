@@ -309,7 +309,9 @@ test('a conversion that runs past its time limit is stopped, and the video kept 
 test('at most two conversions run at once; the rest wait their turn', async (t) => {
   const dir = tempDir(t);
   const logFile = path.join(dir, 'ffmpeg.log');
-  fake(t, 'copy', { delay: 300, logFile });
+  // Each run lasts long enough that two started together overlap even when one process takes a
+  // second longer than the other to boot on a busy machine (the runs log their own start and end).
+  fake(t, 'copy', { delay: 1500, logFile });
   const { media } = library(t);
   // The most that ran at any one moment: a sweep over starts and ends (counting the runs that
   // overlap one run would count a run that overlaps its predecessor and its successor as three).
