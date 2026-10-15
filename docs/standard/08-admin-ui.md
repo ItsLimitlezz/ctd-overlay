@@ -39,7 +39,8 @@ The path a non-technical user takes: **browse → preview → use → copy into 
 - Live preview at each canvas, scaled, with a scene picker; on mobile, previews load on tap and
   in lite mode.
 - Settings form generated from the template's schema (04 §4.3), grouped, with live preview.
-- Bindings: which connections feed this overlay.
+- Bindings: which connections feed this overlay: *All connections, including new ones* (the
+  default), or *Only these*, from the connections' names and status (`bound`, 03 §3.4).
 - The URL, with **Copy**, **Add to OBS** (when OBS is connected, creates the browser source at
   the right size), and the exact browser-source size to set.
 - A clear note that the URL never changes when settings, theme or template version change.
@@ -54,7 +55,8 @@ The path a non-technical user takes: **browse → preview → use → copy into 
 - Timeline: next cue with a countdown in server time, "Trigger now" and "Skip", and the full
   cue list with done/upcoming state.
 - Alert queue controls: pause, skip, replay last.
-- Connection strip: one chip per connection with status colour and the viewer total.
+- Connection strip: one chip per connection with status colour and the viewer total, from
+  `GET /system/health` (operators can read it) and live `system.connection` events.
 - Everything works one-handed on a phone; tap targets at least 44 × 44 px.
 
 ## 8.5 Sample data and simulation
@@ -96,6 +98,20 @@ URI to paste (copied from this installation's configuration), the scopes being r
 why, and service-specific warnings written in plain language — for example *"Kick only sends
 chat to servers reachable from the internet. In LAN mode you'll get the viewer count but not
 chat."* or *"Spotify requires the app owner to have Premium."*
+
+- Warnings come first, before the steps; the redirect URI has a Copy button, and a note when
+  the page was opened at another address than the one the service sends back to.
+- The settings form is generated from the connector's fields; a secret is a password field that
+  is never filled in (leaving it empty keeps what is saved).
+- Signing in: a device code is shown large, with the address to open and a countdown; a redirect
+  goes to the service and back, and the connection's page always has **Finish sign-in**, to paste
+  the address landed on when that was another device (06 §6.4).
+- Each connection shows its status in words and colour, what it feeds (chat, alerts, viewer
+  count…), the values it sets now (a held one says so), its last event, quota and warnings, Test
+  and Turn on/off; Delete is in a menu, behind a confirmation that names the consequence
+  (*"Overlays showing its chat and viewer count stop showing them."*). Changes arrive live
+  (`system.connection`).
+- Operators (no `connections:read`) see each connection's status, from `GET /system/health`.
 
 ## 8.8 Accessibility and copy
 

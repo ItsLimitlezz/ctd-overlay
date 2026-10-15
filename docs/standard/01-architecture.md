@@ -83,7 +83,11 @@ Installation
   of every member overlay together — this is how a horizontal and a vertical feed stay in
   lockstep. An overlay outside a show has its own scene.
 - **Bindings** say which connections feed an overlay: e.g. a chat overlay bound to the Twitch,
-  Kick and YouTube connections receives all three merged. Unbound data never reaches it.
+  Kick and YouTube connections receives all three merged. Unbound data never reaches it. An
+  overlay is bound to `"all"` connections (including ones made later) or to a list of them;
+  `"all"` is the default, so an overlay shows a service's data as soon as it is connected.
+  Changing the bindings reaches open pages at once (what an unbound connection showed goes),
+  and never changes the URL.
 
 ## 1.4 Overlay URLs
 

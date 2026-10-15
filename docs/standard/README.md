@@ -35,7 +35,7 @@ Everything else in this standard follows from that sentence.
 | 03 | [API](03-api.md) | REST surface, auth modes, errors, streaming, versioning |
 | 04 | [Templates](04-templates.md) | Package format, manifest, runtime SDK, sandboxing |
 | 05 | [Animation](05-animation.md) | Lifecycle, sequencing, alert queues, sync, performance |
-| 06 | [Integrations](06-integrations.md) | Connector contract; Twitch, Kick, YouTube, Spotify, OBS; other apps |
+| 06 | [Integrations](06-integrations.md) | Connector contract; Twitch, Kick, YouTube, Spotify, OBS; other apps; CTD Multi-Stream |
 | 07 | [Security](07-security.md) | Login, sessions, tokens, secrets at rest, exposure modes |
 | 08 | [Admin UI](08-admin-ui.md) | Navigation, template gallery, previews, theming |
 | 09 | [Timeline](09-timeline.md) | Shows, scheduled cues, the time rules |
@@ -123,6 +123,32 @@ These are settled. An implementation that departs from one is not SKP-conformant
 ---
 
 ## Changes
+
+**2026-10-15.** From building the connector host and CTD Multi-Stream (plan steps 16, 16b):
+
+1. Bindings are `"all"` (every connection, made later too: the default) or a list; existing
+   overlays take `"all"`. A rebinding reaches open pages at once. *(01 §1.3, 03 §3.4)*
+2. Each connection keeps its own state; an overlay shows one value per key by one rule (the
+   core's, fresh over held, direct over relay, the older connection). `viewers.total` and
+   `viewers.stale` are worked out per overlay; `<key>.stale` marks a held value; the host does the
+   holding (120 s, then removed; a deliberate stop removes at once). `GET /state` is
+   installation-wide. *(02 §2.5, §2.5.0, §2.8)*
+3. `system.connection`'s payload, at most one a second per connection. `src.platform` may be
+   `facebook`, `x`, `instagram`, `tiktok`; a relayed chat message may carry `platform`,
+   `destinationId` and `kind`. *(02 §2.1, §2.3, §2.6, schemas)*
+4. The connections API in full: connectors with their setup guide, `secretFields` (secrets are
+   written, never read), sign-in (device or redirect), finishing a redirect by pasting the address
+   landed on, signing out, tests, actions; `GET /system/health` lists connections for anyone
+   signed in. *(03 §3.4)*
+5. The connector contract as built: `create(ctx)` per start, health pushed by the connector, the
+   context's holds, memory, quota and signal; the HTTP client's rules; the redirect URI (public
+   URL, else the loopback IP), `state` bound to whoever started it, single use, 10 minutes, no
+   `form_post`; the device flow's polling. CTD Multi-Stream is §6.11. *(06 §6.1, §6.3, §6.4,
+   §6.11)*
+6. What is encrypted with what associated data; the three kinds of destination connections
+   reach. *(07 §7.7, §7.11)*
+7. The setup screens, bindings on the overlay page and the Live strip's source. `connector.action`
+   cues name a connection or a connector. *(08 §8.3, §8.4, §8.7, 09 §9.3)*
 
 **2026-10-14.** From building the admin UI (plan step 14):
 

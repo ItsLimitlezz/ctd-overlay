@@ -14,14 +14,18 @@ import { parseArgs } from 'node:util';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createLogger } from '../src/log.js';
+import { BUILTIN } from '../src/connectors/registry.js';
 import { launchBrowser } from '../test/cdp.js';
+import { fakeConnector } from '../test/fixtures/connectors/fake.js';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { phone: { type: 'boolean' }, shots: { type: 'string' }, wait: { type: 'string', default: '1500' } } });
-const routes = positionals.length ? positionals : ['/live', '/overlays', '/overlays/takeover', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/media', '/settings'];
+const routes = positionals.length ? positionals : ['/live', '/overlays', '/overlays/takeover', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/media', '/settings'];
 
 const root = mkdtempSync(path.join(tmpdir(), 'skp-ui-'));
 const config = loadConfig({ argv: ['--port', '0', '--data-dir', path.join(root, 'data'), '--config-dir', path.join(root, 'config')], env: {} });
-const platform = await startPlatform(config, { log: createLogger({ level: 'error' }) });
+// The built-in connectors, and a test one signed in by a device code (no service behind it: its
+// sign-in shows as needed), so the Connections pages have something on them.
+const platform = await startPlatform(config, { log: createLogger({ level: 'error' }), connectors: { defs: [...BUILTIN, fakeConnector({ name: 'Test service', auth: 'device-code' }).def] } });
 const OWNER = { username: 'demo', password: 'stream-kit-demo-night' };
 await platform.auth.createOwner({ code: platform.auth.setupCode, ...OWNER }, { ip: '127.0.0.1' });
 
@@ -41,6 +45,9 @@ const show = platform.shows.create({
 }, { actor: 'smoke' });
 platform.shows.take(show.id, 'auto', { transition: 'cut', actor: 'smoke' });
 platform.bus.setState('viewers.total', 1159);
+const fake = platform.connectors.create({ connector: 'fake', name: 'Test service', config: { behaviour: 'push', clientId: 'smoke-client' }, secrets: { clientSecret: 'smoke-secret-value' } });
+platform.connectors.create({ connector: 'ctd-multistream', name: 'Multi-Stream (NAS)', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: 'ctd_pat_0123456789abcdefghijklmnop' } });
+const routeOf = (r) => r.replace('<fake>', fake.id);
 
 let failed = false;
 const browser = await launchBrowser();
@@ -50,7 +57,7 @@ try {
   await page.waitFor('document.querySelector("input[name=username]")', 10000);
   await page.eval(`fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(${JSON.stringify(OWNER)}) }).then((r) => r.status)`);
   if (values.shots) mkdirSync(values.shots, { recursive: true });
-  for (const route of routes) {
+  for (const route of routes.map(routeOf)) {
     const before = page.problems.length;
     await page.goto(`${platform.url}/?r=${Date.now()}#${route}`);
     try {

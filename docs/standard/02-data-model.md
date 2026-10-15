@@ -21,7 +21,7 @@ need to know which service a value came from unless they want to.
 | `id` | **MUST** be unique and sortable by creation time (ULID recommended). Doubles as the SSE cursor. |
 | `type` | **MUST** be a registered type (§2.6) or a namespaced custom type (§2.7). |
 | `ts` | Server epoch milliseconds at which the platform accepted the event. |
-| `src` | Where it came from. `platform` is the user-facing service name; `connection` identifies the account. Core-originated envelopes use `{ "connector": "core" }`. |
+| `src` | Where it came from. `platform` is the user-facing service name (`twitch`, `kick`, `youtube`, `facebook`, `x`, `instagram`, `tiktok`, `spotify`, `obs`, `custom`); `connection` identifies the account. Core-originated envelopes use `{ "connector": "core" }`. A relayed envelope (CTD Multi-Stream, 06 §6.11) names the platform it was relayed from. |
 | `data` | Type-specific payload, defined below. |
 
 Schema: [schemas/envelope.schema.json](schemas/envelope.schema.json).
@@ -144,9 +144,10 @@ without `display`.
 
 | Key | Value | Source |
 |---|---|---|
-| `viewers.total` | integer — sum across bound platforms | core |
+| `viewers.total` | integer — sum across bound platforms, worked out per overlay | core |
 | `viewers.<platform>` | integer | connector |
-| `viewers.stale` | `true` while a value is being held through an error | core |
+| `viewers.stale` | `true` while a `viewers.<platform>` the overlay shows is held through an error | core |
+| `<key>.stale` | `true` while the value shown for `<key>` is held through an error (§2.8) | core |
 | `stream.<platform>.live` | boolean | connector |
 | `stream.<platform>.title` | string | connector |
 | `stream.<platform>.startedAt` | epoch ms | connector |
@@ -162,6 +163,21 @@ without `display`.
 | `show.goLiveAt` | epoch ms — the instant the show's `goLive` resolves to (09 §9.2) | core |
 | `show.recStartedAt` | epoch ms | core |
 | `overlay.settings` | the overlay's resolved settings | core |
+
+### 2.5.0 One value from many connections
+Each connection keeps its own value for a key; two accounts on one platform, or a relay beside
+a direct connector, never overwrite each other. An overlay shows one value per key, chosen among
+the connections it is bound to (01 §1.3), by one rule:
+1. a value the core set itself (a demo, `PUT /state` from an app) wins;
+2. a fresh value wins over one held through an error (§2.8);
+3. a direct connection wins over a relay (CTD Multi-Stream, 06 §6.11);
+4. the older connection wins.
+
+`viewers.total` is the sum of the `viewers.<platform>` values the overlay shows, one per
+platform (two accounts on one platform count once), unless the core set `viewers.total` itself;
+a held value counts until it is removed. `GET /api/v1/state` and the `/events` stream show the
+same choice made with every connection. A change reaches an overlay only when the value it shows
+changes.
 
 ### 2.5.1 Track
 ```json
@@ -187,7 +203,7 @@ progress locally between updates; templates read `SK.music.progress()` and never
 | `show.trigger` | `{ "name": "titleCard", "args": { }, "startAt": 1791582412000, "durationMs": 7000 }` |
 | `show.cue.fired` | `{ "cueId": "cue_…", "action": "…" }` |
 | `media.play`, `media.stop` | `{ "mediaId": "…", "url": "/media/…" }`; a stop **MAY** leave out `url`, meaning whatever plays |
-| `system.connection` | connection health change (06 §6.3) |
+| `system.connection` | connection health change (06 §6.3): `{ "connection", "connector", "name", "status", "prev"?, "detail"?, "since", "lastEventAt"?, "quota"?, "warnings" }`, at most one a second per connection (the latest state). Operator-facing, never sent to an overlay. |
 | `system.notice` | `{ "level": "info" }` — operator-facing, never rendered on air |
 
 ## 2.7 Custom types
@@ -208,7 +224,12 @@ This is a hard rule (11 §H6). For any value displayed on air:
 - **Error** → hold the last good value for up to 120 s with `<key>.stale = true`, then remove
   the key.
 
-A connector **MUST NOT** publish `0` because a request failed.
+A connector **MUST NOT** publish `0` because a request failed. The connector host does the
+holding: when a connection fails (or its connector says a value can't be had now), every value it
+set is marked stale and kept 120 s, then removed unless the connector set it again. `<key>.stale`
+follows the value an overlay shows (§2.5.0): another connection's fresh value for the key shows
+instead, unmarked. A connection stopped on purpose (turned off, edited, deleted) takes its values
+away at once; nothing is held across a restart of the platform.
 
 ## 2.9 Size and rate limits
 

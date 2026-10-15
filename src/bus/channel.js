@@ -1,6 +1,11 @@
 // One channel per overlay: what that overlay is allowed to see, a replay buffer so a client
 // that reconnects resumes without gaps (01 §1.5), and its own state.changed rate limit
 // (02 §2.9). Channels keep buffering while no client is connected; that's the point.
+//
+// Bindings (01 §1.3): 'all' (every connection, including ones made later: the default) or a list
+// of connection ids. Events from a connection the overlay isn't bound to never reach it; for state
+// the bus works out the one value the bound connections show (bus/index.js resolve()), and the
+// channel sends a change only when that value moves.
 import { ULID_PATTERN } from '../ids.js';
 import { CHAT_TYPES, OPERATOR_ONLY, RUNTIME_KEYS, RUNTIME_TYPES, compilePatterns } from './names.js';
 
@@ -16,6 +21,7 @@ const ENVELOPE_OVERHEAD = 256; // id, type, ts and src around the data
 const CHAT_DEFAULT = 50;
 const CHAT_MAX = 200;
 const SIMULATOR = Object.freeze({ connector: 'simulator' });
+const CORE = Object.freeze({ connector: 'core' });
 
 export class Channel {
   #bus;
@@ -28,6 +34,10 @@ export class Channel {
   #lastEmit = new Map(); // key → { at, json }
   #pending = new Map(); // key → { timer, value, src }
   #closed = false;
+  #all = true; // bound to every connection
+  #bound = new Set(); // else these
+  #configured = false;
+  #allow = (owner) => owner === '' || this.#all || this.#bound.has(owner);
 
   constructor(bus, id, spec) {
     this.#bus = bus;
@@ -37,18 +47,39 @@ export class Channel {
   }
 
   // consumes: { state: [patterns], events: [patterns], chat: { recent, max } | undefined }
-  // connections: IDs of the connections bound to this overlay (01 §1.3); unbound data never
-  // reaches it.
-  configure({ consumes = {}, connections = [] } = {}) {
+  // connections: 'all' or the ids of the connections bound to this overlay (01 §1.3); unbound data
+  // never reaches it. A change of bindings sends the overlay every value that moved with it: a
+  // count from a connection no longer bound goes, one from a newly bound connection arrives.
+  configure({ consumes = {}, connections = 'all' } = {}) {
     this.wantsState = compilePatterns(consumes.state, 'state pattern');
     this.wantsEvent = compilePatterns(consumes.events, 'event pattern');
     this.chat = consumes.chat ? { recent: clamp(consumes.chat.recent ?? CHAT_DEFAULT, 0, CHAT_MAX) } : null;
     this.wantsAlerts = this.wantsEvent.patterns.some((p) => p === 'alert.*' || p.startsWith('alert.'));
-    this.connections = new Set(connections);
+    const all = connections === 'all';
+    const bound = new Set(Array.isArray(connections) ? connections : []);
+    const rebind = this.#configured && (all !== this.#all || (!all && (bound.size !== this.#bound.size || [...bound].some((c) => !this.#bound.has(c)))));
+    const before = rebind ? this.#busView() : undefined;
+    this.#all = all;
+    this.#bound = bound;
+    this.#configured = true;
+    if (!before) return;
+    const after = this.#busView();
+    for (const key of new Set([...before.keys(), ...after.keys()])) {
+      if (before.get(key) === after.get(key) || this.#sim.has(key)) continue;
+      const prev = before.get(key);
+      this.#offerState(changeData(key, after.has(key) ? JSON.parse(after.get(key)) : undefined, prev === undefined ? undefined : JSON.parse(prev)), CORE);
+    }
   }
 
+  // 'all', or the bound connections' ids.
+  get connections() { return this.#all ? 'all' : [...this.#bound]; }
+
   bound(src) {
-    return !src?.connection || this.connections.has(src.connection);
+    return !src?.connection || this.#all || this.#bound.has(src.connection);
+  }
+
+  consumesKey(key) {
+    return RUNTIME_KEYS.has(key) || this.wantsState(key);
   }
 
   accepts(env) {
@@ -56,13 +87,13 @@ export class Channel {
     const { type } = env;
     if (OPERATOR_ONLY.has(type)) return false;
     if (RUNTIME_TYPES.has(type)) return true;
-    if (type === 'state.changed') return RUNTIME_KEYS.has(env.data.key) || this.wantsState(env.data.key);
+    if (type === 'state.changed') return this.consumesKey(env.data.key);
     if (CHAT_TYPES.has(type)) return Boolean(this.chat);
     if (type === 'alerts.cut') return this.wantsAlerts;
     return this.wantsEvent(type);
   }
 
-  // Called by the bus for every envelope this channel accepts.
+  // Called by the bus for every event this channel accepts.
   offer(env) {
     if (this.#closed) return;
     if (env.type === 'state.changed') {
@@ -70,6 +101,27 @@ export class Channel {
       return this.#offerState(env.data, env.src, env);
     }
     this.#emit(env);
+  }
+
+  // What this overlay shows for keys now (JSON text, or undefined), simulations aside: the bus
+  // asks before a state change and hands it back to stateChanged() after.
+  peek(keys) {
+    return keys.map((k) => {
+      const v = this.#real(k);
+      return v === undefined ? undefined : JSON.stringify(v);
+    });
+  }
+
+  // After a state change: sends each of keys whose shown value moved from `before` (peek()).
+  stateChanged(keys, before, src = CORE) {
+    if (this.#closed) return;
+    keys.forEach((key, i) => {
+      const after = this.#real(key);
+      const text = after === undefined ? undefined : JSON.stringify(after);
+      if (text === before[i] || this.#sim.has(key)) return;
+      const from = this.#local.has(key) ? CORE : this.#bus.resolve(key, this.#allow)?.src ?? src;
+      this.#offerState(changeData(key, after, before[i] === undefined ? undefined : JSON.parse(before[i])), from);
+    });
   }
 
   // Simulated state (08 §8.5): this overlay sees `value` for `key` (undefined: absent) instead of
@@ -99,7 +151,7 @@ export class Channel {
       if (!held) continue;
       this.#bus.timers.clearTimeout(held.timer);
       this.#sim.delete(k);
-      if (!this.#closed) this.#offerState(changeData(k, this.visibleState(k)), { connector: 'core' }, undefined, true);
+      if (!this.#closed) this.#offerState(changeData(k, this.visibleState(k)), CORE, undefined, true);
     }
   }
 
@@ -107,8 +159,9 @@ export class Channel {
 
   // Channel-only state: never global, never sent to other overlays or API subscribers. Kept as a
   // JSON copy like bus state, and null after the round trip (NaN, Infinity, an invalid Date) is
-  // absent, never null (02 §2.2).
-  // A change that wouldn't fit in one envelope (02 §2.9) is refused before anything is kept.
+  // absent, never null (02 §2.2). Removed, the key shows the bus's value again, if any.
+  // A change that wouldn't fit in one envelope (02 §2.9) is refused before anything is kept. While
+  // the key is simulated nothing is sent: the end of the simulation sends what is real then.
   setLocalState(key, value) {
     const text = value === undefined ? undefined : JSON.stringify(value);
     let json = text === undefined ? undefined : JSON.parse(text);
@@ -121,7 +174,9 @@ export class Channel {
     }
     if (json === undefined) this.#local.delete(key);
     else this.#local.set(key, json);
-    this.#offerState(data, { connector: 'core' }, undefined, true);
+    if (this.#sim.has(key)) return;
+    const shown = json === undefined ? this.#busValue(key) : json;
+    this.#offerState(shown === json ? data : changeData(key, shown, prev), CORE, undefined, true);
   }
 
   // One state key as this overlay sees it (its own state first, then global state it consumes
@@ -130,16 +185,16 @@ export class Channel {
   // part of an overlay's settings, 08 §8.5).
   visibleState(key, { real = false } = {}) {
     if (!real && this.#sim.has(key)) return structuredClone(this.#sim.get(key).value);
-    if (this.#local.has(key)) return structuredClone(this.#local.get(key));
-    if (!(RUNTIME_KEYS.has(key) || this.wantsState(key))) return undefined;
-    const entry = this.#bus.stateEntry(key);
-    return entry && this.bound(entry.src) ? structuredClone(entry.value) : undefined;
+    const v = this.#real(key);
+    return v === undefined ? undefined : structuredClone(v);
   }
 
   snapshot() {
     const state = {};
-    for (const [key, entry] of this.#bus.stateEntries()) {
-      if ((RUNTIME_KEYS.has(key) || this.wantsState(key)) && this.bound(entry.src)) state[key] = structuredClone(entry.value);
+    for (const key of this.#bus.visibleKeys()) {
+      if (!this.consumesKey(key) || this.#local.has(key)) continue;
+      const e = this.#bus.resolve(key, this.#allow);
+      if (e) state[key] = structuredClone(e.value);
     }
     for (const [key, value] of this.#local) state[key] = structuredClone(value);
     for (const [key, { value }] of this.#sim) {
@@ -207,6 +262,29 @@ export class Channel {
     }
   }
 
+  // A key's value as the overlay shows it, simulations aside: its own state, else the bus's value
+  // from the connections bound to it, if it consumes the key.
+  #real(key) {
+    if (this.#local.has(key)) return this.#local.get(key);
+    return this.#busValue(key);
+  }
+
+  #busValue(key) {
+    if (!this.consumesKey(key)) return undefined;
+    return this.#bus.resolve(key, this.#allow)?.value;
+  }
+
+  // The bus's values this overlay shows (keys its own state doesn't cover), as JSON text.
+  #busView() {
+    const view = new Map();
+    for (const key of this.#bus.visibleKeys()) {
+      if (this.#local.has(key) || !this.consumesKey(key)) continue;
+      const e = this.#bus.resolve(key, this.#allow);
+      if (e) view.set(key, JSON.stringify(e.value));
+    }
+    return view;
+  }
+
   // local: channel-only state, which the channel always accepts.
   #offerState(data, src, env, local = false) {
     const { key } = data;
@@ -221,7 +299,10 @@ export class Channel {
     }
     if (!last || now - last.at >= COALESCE_MS) {
       this.#lastEmit.set(key, { at: now, json: JSON.stringify(data.value) });
-      this.#emit(env || this.#bus.envelope('state.changed', data, src));
+      // prev may be a value other than the one the bus measured (another connection's): past
+      // 64 KiB with it, the change goes without it (prev is optional).
+      const fits = env || data.prev === undefined || Buffer.byteLength(JSON.stringify(data)) + ENVELOPE_OVERHEAD <= MAX_ENVELOPE_BYTES;
+      this.#emit(env || this.#bus.envelope('state.changed', fits ? data : changeData(key, data.value), src));
       return;
     }
     // Inside the window: hold the latest value and send it when the window ends.
@@ -235,7 +316,7 @@ export class Channel {
     if (!pending || this.#closed) return;
     // What the channel accepts may have changed while the value waited (an upgrade that no longer
     // consumes the key, a connection unbound): judge it again.
-    if (!pending.local && !((RUNTIME_KEYS.has(key) || this.wantsState(key)) && this.bound(pending.src))) return;
+    if (!pending.local && !(this.consumesKey(key) && this.bound(pending.src))) return;
     const last = this.#lastEmit.get(key);
     const json = JSON.stringify(pending.value);
     if (last && last.json === json) return; // it changed back; the client already has this value

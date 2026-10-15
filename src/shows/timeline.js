@@ -55,11 +55,12 @@ const LAST_SLOT_MS = 2 * 60 * 60 * 1000; // now-playing for the last act runs th
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PLAN_RETRY_MS = 5 * 60 * 1000; // a plan whose show is on air looks again this often
 const PLAN_AHEAD_DAYS = 3 * 366;
-const LATER = { 'connector.action': 'step 16, with connectors', webhook: 'step 20, with webhooks' };
+const LATER = { webhook: 'step 20, with webhooks' };
 // What each type of action and a sequence's step take (a recipe: DEFAULT_RECIPE's fields), and
 // nothing else: an unknown field is refused, never dropped (03 §3.1, 07 §7.11), so a misspelt
 // "transiton" isn't a cue that quietly fades.
-const ACTION_FIELDS = { 'show.scene': ['scene', 'transition'], 'overlay.action': ['name', 'args'], 'show.slot': ['slot'], 'media.play': ['mediaId'], 'media.stop': ['mediaId'], sequence: ['steps'] };
+const ACTION_FIELDS = { 'show.scene': ['scene', 'transition'], 'overlay.action': ['name', 'args'], 'show.slot': ['slot'], 'media.play': ['mediaId'], 'media.stop': ['mediaId'], 'connector.action': ['connection', 'connector', 'name', 'args'], sequence: ['steps'] };
+const CONNECTOR_ACTION = /^[A-Za-z][A-Za-z0-9_.-]{0,39}$/;
 const STEP_FIELDS = ['offsetMs', 'action'];
 const ACTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
 const SCENE_ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -69,7 +70,8 @@ const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
 const MAX_DELAY = 2 ** 31 - 1;
 
-export function createTimeline({ store, shows, overlays, media, log, now = Date.now, timers = { setInterval, clearInterval, setTimeout, clearTimeout }, record = () => {} }) {
+// connectors: the connector host (connectors/host.js), which checks and runs connector.action cues.
+export function createTimeline({ store, shows, overlays, media, connectors, log, now = Date.now, timers = { setInterval, clearInterval, setTimeout, clearTimeout }, record = () => {} }) {
   const armed = new Map(); // cue id → { showId, at, order }: what the tick looks at
   const planTimers = new Map(); // plan id → timer
   const stepTimers = new Map(); // cue id → Set of timers for the later steps of its sequence
@@ -165,6 +167,24 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       case 'media.stop':
         if (action.mediaId !== undefined && (typeof action.mediaId !== 'string' || !MEDIA_ID.test(action.mediaId))) bad('"mediaId" is a media id (med_…).');
         return { type, ...(action.mediaId ? { mediaId: action.mediaId } : {}) };
+      case 'connector.action': {
+        // A connection's action (obs.setScene, 06 §6.9): named by the connection's id, or by its
+        // connector when one connection of it is on (09 §9.3's { connector: "obs", … }).
+        const ref = action.connection ?? action.connector;
+        if ((action.connection === undefined) === (action.connector === undefined) || typeof ref !== 'string') bad('a connector.action cue names "connection" (its id) or "connector" (when one connection of it is on), not both.');
+        if (typeof action.name !== 'string' || !CONNECTOR_ACTION.test(action.name)) bad('a connector.action cue needs "name", the action (setScene …).');
+        const args = action.args ?? {};
+        let size = Infinity;
+        try { size = Buffer.byteLength(JSON.stringify(args)); } catch { /* too deep to measure: too large */ }
+        if (!args || typeof args !== 'object' || Array.isArray(args) || size > 4096) bad('"args" must be an object of at most 4096 bytes.');
+        if (!connectors) throw new ShowError('Connections aren\'t available here.', 'not-yet');
+        try {
+          connectors.checkAction(ref, action.name);
+        } catch (err) {
+          bad(`${err.message}`);
+        }
+        return { type, ...(action.connection !== undefined ? { connection: action.connection } : { connector: action.connector }), name: action.name, ...(Object.keys(args).length ? { args } : {}) };
+      }
       case 'sequence': {
         if (depth > 0) bad('a sequence can\'t hold another sequence.');
         if (!Array.isArray(action.steps) || !action.steps.length || action.steps.length > MAX_STEPS) bad(`a sequence needs "steps": 1 to ${MAX_STEPS}.`);
@@ -176,7 +196,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
         return { type, steps: steps.sort((a, b) => a.offsetMs - b.offsetMs) };
       }
       default:
-        return bad(`"action.type" must be one of show.scene, overlay.action, show.slot, media.play, media.stop or sequence (${Object.keys(LATER).join(' and ')} come later).`);
+        return bad(`"action.type" must be one of show.scene, overlay.action, show.slot, media.play, media.stop, connector.action or sequence (${Object.keys(LATER).join(' and ')} comes later).`);
     }
   }
 
@@ -291,12 +311,22 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
     let saved = store.put('cues', doc.id, data);
     try {
       if (data.action.type === 'sequence') saved = runSteps(saved, { actor, manual });
-      else apply(doc.data.showId, doc.data.action, { actor, manual });
+      else later(doc.id, apply(doc.data.showId, doc.data.action, { actor, manual }));
       log.info('cue fired', { show: doc.data.showId, cue: doc.id, action: doc.data.action.type, manual, actor, lateMs: Math.max(0, now() - doc.data.at) });
     } catch (err) {
       saved = noteError(doc.id, err);
     }
     return view(saved);
+  }
+
+  // An action that finishes later (a connection's, which goes over the network): its failure is
+  // the cue's error when it comes. A cue is fired when its action starts; nothing waits for it.
+  function later(id, out, prefix = '') {
+    if (!out || typeof out.then !== 'function') return;
+    out.then(undefined, (err) => {
+      if (stopped) return;
+      try { noteError(id, err, prefix); } catch (e) { log.error('a cue\'s failure could not be recorded', { cue: id, err: e.message }); }
+    });
   }
 
   function noteError(id, err, prefix = '') {
@@ -325,7 +355,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
         continue;
       }
       cur = store.put('cues', cur.id, { ...cur.data, stepsDone: i + 1 });
-      try { apply(cur.data.showId, steps[i].action, { actor, manual }); } catch (err) { cur = noteError(cur.id, err, `step ${i + 1}: `); }
+      try { later(cur.id, apply(cur.data.showId, steps[i].action, { actor, manual }), `step ${i + 1}: `); } catch (err) { cur = noteError(cur.id, err, `step ${i + 1}: `); }
     }
     return cur;
   }
@@ -338,7 +368,7 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       const cur = store.get('cues', id);
       if (!cur || cur.data.removed || cur.data.status !== 'fired' || (cur.data.stepsDone || 0) !== i) return;
       const saved = store.put('cues', id, { ...cur.data, stepsDone: i + 1 });
-      try { apply(saved.data.showId, saved.data.action.steps[i].action, { actor, manual }); } catch (err) { noteError(id, err, `step ${i + 1}: `); }
+      try { later(id, apply(saved.data.showId, saved.data.action.steps[i].action, { actor, manual }), `step ${i + 1}: `); } catch (err) { noteError(id, err, `step ${i + 1}: `); }
       // The next one, now this one is done (its own timer may already be set).
       const next = store.get('cues', id);
       if (next && i + 1 < next.data.action.steps.length && !stepTimers.has(id)) runSteps(next, { actor, manual });
@@ -376,6 +406,9 @@ export function createTimeline({ store, shows, overlays, media, log, now = Date.
       case 'media.stop':
         shows.media(showId, 'stop', action.mediaId ? { mediaId: action.mediaId } : {});
         return;
+      case 'connector.action':
+        if (!connectors) throw new ShowError('Connections aren\'t available here.', 'not-yet');
+        return connectors.runAction(action.connection ?? action.connector, action.name, action.args || {}, { actor });
       default:
         throw new ShowError(`a cue of type ${action.type} can't fire yet`, 'not-yet');
     }

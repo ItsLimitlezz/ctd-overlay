@@ -156,6 +156,12 @@ encrypted with **AES-256-GCM** (random 96-bit nonce per record, record ID as ass
   with that key, and a `.next` left without its `master.key` is put in place the next time the
   key is read.
 - Decrypted secrets live only in connector memory.
+- What is encrypted, and with what associated data: an overlay's key (its id); a TOTP secret
+  (`totp:<user id>`); a connection's secret settings, as one value (`connection:<id>`); its
+  account's tokens (`tokens:<id>`); credentials the v0 importer keeps (their record's id). A
+  connection's settings, its secrets and tokens and what it keeps between starts are deleted
+  together. The API never answers a secret: a connection lists which secret settings hold a
+  value (`secretFields`), and the admin UI never fills a secret field in.
 
 ## 7.8 Exposure modes
 
@@ -233,6 +239,13 @@ requests carry none, so it works beside a proxy.
   enables them, to prevent server-side request forgery. That includes IPv4-mapped IPv6 in any
   notation, and addresses written directly in the URL; of 192.0.0.0/16 only 192.0.0.0/24 and
   192.0.2.0/24 are private.
+- Connections reach three kinds of destination (06 §6.1.1): **service** (the connector's own
+  API, HTTPS only); **lan** (an address the operator typed in a connection's settings, such as OBS
+  or CTD Multi-Stream: resolved once and connected to that address, plain HTTP only to private and
+  loopback addresses, never link-local, unspecified or multicast; a self-signed certificate is
+  trusted by its SHA-256 fingerprint, checked before any request is sent); **public** (the
+  internet, as above). An address with a user name or password in it is refused: those go in the
+  connection's secret settings. A redirect is never followed.
 
 ## 7.12 Audit log
 

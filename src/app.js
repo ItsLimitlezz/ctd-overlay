@@ -9,6 +9,9 @@ import { createAuth } from './auth/index.js';
 import { createHasher } from './auth/passwords.js';
 import { authRoutes, createGuard } from './auth/routes.js';
 import { createBus } from './bus/index.js';
+import { createConnectorHost } from './connectors/host.js';
+import { BUILTIN, createConnectorRegistry } from './connectors/registry.js';
+import { connectorRoutes } from './connectors/routes.js';
 import { createCrashLog } from './crashlog.js';
 import { createApi } from './http/api.js';
 import { close, createHttpServer, listen } from './http/server.js';
@@ -45,14 +48,18 @@ export class StartupError extends Error {
 }
 
 // Everything but HTTP, for the platform and for CLI commands that change the data directory:
-// { lock, store, bus, audit, templates, overlays, media, shows, timeline, sources, close() }. Holds the
-// data-directory lock until close(). ffmpeg, media, fetch, lookup and clock: test hooks
-// ([executable, ...args] in place of config.ffmpeg; options for the media library; what template
-// sources fetch and resolve with; { now, timers } for shows and the timeline, a server clock set
-// ahead, H19).
+// { lock, store, bus, audit, templates, overlays, media, shows, timeline, sources, connectors,
+// close() }. Holds the data-directory lock until close(). ffmpeg, media, fetch, lookup and clock:
+// test hooks ([executable, ...args] in place of config.ffmpeg; options for the media library; what
+// template sources fetch and resolve with; { now, timers } for shows, the timeline and connections,
+// a server clock set ahead, H19). connectors: test hooks for the connector host ({ defs, fetch,
+// lookup, endpoints, random, holdMs }: definitions in place of the built-in ones, what connections
+// fetch and resolve with, their services' base URLs, the backoff's dice, how long a value is held
+// through an error). The connector host is made
+// here (the timeline runs connector.action cues through it) but only the platform starts it.
 // readOnly: a look that changes nothing (a dry run): templates and media aren't touched, and shows
 // don't catch up what fell due while the platform was down (the platform does that when it starts).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {}, readOnly = false }) {
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {}, readOnly = false, connectors: connectorOptions = {} }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -96,8 +103,20 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure, readOnly });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg, readOnly });
     const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly });
+    let registry;
+    try {
+      registry = createConnectorRegistry(connectorOptions.defs ?? BUILTIN);
+    } catch (err) {
+      throw new StartupError(err.message);
+    }
+    const connectors = createConnectorHost({
+      store, bus, secrets, overlays, audit, log: log.child('connectors'), registry, ...clock,
+      fetch: connectorOptions.fetch, lookup: connectorOptions.lookup, endpoints: connectorOptions.endpoints, random: connectorOptions.random,
+      ...(connectorOptions.holdMs ? { holdMs: connectorOptions.holdMs } : {}),
+      exposure: config.exposure, publicUrl: config.publicUrl,
+    });
     const timeline = createTimeline({
-      store, shows, overlays, media, log: log.child('timeline'), ...clock,
+      store, shows, overlays, media, connectors, log: log.child('timeline'), ...clock,
       record: (action, details) => audit.record({ action, ...details }),
     });
     const sources = createTemplateSources({
@@ -106,7 +125,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
     return {
-      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources,
+      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors,
       close() {
         clearInterval(freshen);
         sources.stop();
@@ -134,9 +153,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // options.simulateHoldMs shortens how long simulated state lasts, options.clock ({ now, timers })
 // is the clock shows, the timeline and sign-in run on (and how long the machine's addresses are
 // kept), options.scrypt lowers the password hash's cost for tests ({ N }), options.rateLimit
-// replaces the API's requests a minute, and options.interfaces is what os.networkInterfaces()
-// would answer.
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit, interfaces } = {}) {
+// replaces the API's requests a minute, options.interfaces is what os.networkInterfaces() would
+// answer, and options.connectors goes to the connector host ({ defs, fetch, lookup, endpoints,
+// random }, openData).
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit, interfaces, connectors: connectorOptions } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
@@ -152,8 +172,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     }
   }
 
-  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock });
-  const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources } = data;
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock, connectors: connectorOptions });
+  const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors } = data;
   // In lan and public modes the machine's own names too, read again as its addresses change; a
   // container's are its own, not the host's: SKP_HOSTS names those. hosts(req): with the request,
   // a Host that isn't among them has them read again (http/local.js).
@@ -178,11 +198,13 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...simulateRoutes({ api, overlays, bus, log: log.child('simulate'), holdMs: simulateHoldMs }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
-      ...overlayApiRoutes({ api, overlays, templates, shows, audit, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
+      ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
       ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }),
       // A file is in use while an overlay, a lineup, a cue or a plan points to it (03 §3.4).
       ...mediaApiRoutes({ api, media, overlays, shows, timeline, audit, now: clock.now }),
-      ...systemRoutes({ api, bus, store, media, templates, overlays, shows, config, version: VERSION, heartbeatMs, now: clock.now }),
+      // Connections (06): their setup, sign-in, the OAuth callback and inbound webhooks.
+      ...connectorRoutes({ api, host: connectors, auth, hosts, log: log.child('connectors') }),
+      ...systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version: VERSION, heartbeatMs, now: clock.now }),
       ...routes,
     ],
   });
@@ -216,6 +238,10 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   timeline.start();
   // A setup code if there's no owner yet (in the log), and the command line's local token.
   auth.start();
+  // Connections, once the address a redirect URI names is known: the one this process listens at
+  // (127.0.0.1, never "localhost": services compare redirect URIs as text), unless SKP_PUBLIC_URL.
+  connectors.setOrigin(`${scheme}://${host}:${address.port}`);
+  connectors.start().catch((err) => log.error('connections could not start', { err }));
 
   let stopped = false;
   return {
@@ -230,6 +256,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     shows,
     timeline,
     sources,
+    connectors,
     crash,
     server,
     port: address.port,
@@ -244,6 +271,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       shows.stop();
       // A template check in progress is abandoned before the store closes.
       await sources.stop();
+      // Connections stop (their memory saved) before the bus and the store close.
+      await connectors.stop();
       // Conversions are stopped, and what they leave is cleared before the store closes.
       await media.close();
       data.close();

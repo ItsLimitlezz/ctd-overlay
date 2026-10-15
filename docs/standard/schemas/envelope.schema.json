@@ -20,7 +20,7 @@
       "properties": {
         "connector": { "type": "string" },
         "connection": { "type": "string" },
-        "platform": { "type": "string", "enum": ["twitch", "kick", "youtube", "spotify", "obs", "core", "simulator", "custom"] }
+        "platform": { "type": "string", "enum": ["twitch", "kick", "youtube", "facebook", "x", "instagram", "tiktok", "spotify", "obs", "core", "simulator", "custom"] }
       }
     },
     "data": { "type": "object" },

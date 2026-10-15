@@ -89,7 +89,7 @@ Action types:
 | `show.scene` | `{ "scene": "brb", "transition": "fade" }` on all member overlays |
 | `overlay.action` | fire a template action (`titleCard`, `nowPlaying`, `headliner`…) |
 | `show.slot` | set the current lineup slot: an act's name (which follows the act through lineup edits) or a position |
-| `connector.action` | e.g. `{ "connector": "obs", "name": "setScene", "args": { "scene": "Live" } }` |
+| `connector.action` | e.g. `{ "connector": "obs", "name": "setScene", "args": { "scene": "Live" } }`: a connection's action, named by `connection` (its id) or `connector` (when one connection of it is on); its failure (not connected, refused) is the cue's `error` |
 | `media.play` / `media.stop` | play an uploaded clip |
 | `webhook` | call an outbound webhook (06 §6.10) |
 | `sequence` | an ordered list of the above with offsets in ms |

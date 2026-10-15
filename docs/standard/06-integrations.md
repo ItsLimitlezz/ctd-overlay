@@ -14,29 +14,68 @@ then the specifics for each service in v1, then how other apps plug in.
 interface Connector {
   id: string                         // "twitch"
   name: string                       // "Twitch"
+  platform?: Platform                // its platform; platforms?: every one a relay speaks for
+  relay?: boolean                    // relays other platforms (a direct connection wins ties)
   capabilities: Capability[]         // see 6.2
-  credentials: CredentialSpec        // what the user must supply (client ID, secret, password…)
+  fields: JSONSchema                 // what the user supplies; writeOnly = a secret (client
+                                     // secret, password, token), x-skp-egress: 'lan' = an address
+                                     // they type, x-skp-reauth = changing it signs the account out
   auth: 'oauth-pkce' | 'oauth-code' | 'device-code' | 'client-credentials'
       | 'password' | 'none'
+  oauth?: { authorizeUrl?, tokenUrl, deviceUrl?, revokeUrl?, scopes: { scope, why }[], pkce? }
   requiresPublicUrl?: boolean        // true if the service pushes to us (webhooks)
-
-  start(ctx: ConnectorContext): Promise<void>
-  stop(): Promise<void>
-  health(): Health                    // see 6.3
+  guide: SetupGuide                  // 6.4, 08 §8.7
   actions?: Record<string, ActionSpec>
+
+  create(ctx: ConnectorContext): {   // one instance per start of a connection
+    start(): Promise<void>           // resolves once connected; its failure is caught (H11)
+    stop(): Promise<void>
+    test?(): Check | Check[]         // POST /connections/{id}/test
+    actions?: Record<string, (args) => Promise<unknown>>
+  }
 }
 
 interface ConnectorContext {
-  connection: Connection              // decrypted credentials + tokens, in memory only
-  publish(envelope: EnvelopeInput): void       // events
-  setState(key: string, value: unknown): void   // state; undefined = remove
+  connection: { id, name, config, secrets }    // decrypted, in memory only
+  publish(type, data, { platform?, dedupeKey? }): void  // events its capabilities allow (6.2)
+  setState(key: string, value: unknown): void  // state; undefined = remove
+  hold(keys?: string[]): void        // a value can't be had now: held 120 s, stale (02 §2.8)
+  setHealth({ status, detail, warnings, quota }): void  // connected | degraded | connecting
+  fail(err, { retryAfterMs?, retry? }): void   // give up this start: held, started again later
+  reauth(detail: string): void       // a credential the service refuses: needs-reauth
   saveTokens(tokens: TokenSet): Promise<void>  // persisted encrypted
-  http: HttpClient                    // timeouts, retries, 429 handling built in
-  log: Logger                         // redacts secrets
+  auth: { hasUser, accessToken(), appToken() } // renewed at 80 % and on a 401 (single flight)
+  http: HttpClient                    // timeouts, retries, 429 handling built in (6.1.1)
+  memory: { get, set }                // kept between starts (a cursor), at most 16 KiB
+  quota: { use(n), exhausted({ resetsAt, detail }) }
+  signal: AbortSignal                 // aborted when the instance stops
+  log: Logger                         // redacts secrets, its own included
   publicUrl?: string                  // SKP_PUBLIC_URL, when set
-  schedule(ms: number, fn: () => void): Cancel
+  schedule(ms, fn): Cancel · every(ms, fn): Cancel · wrap(fn): fn  // a throw fails the instance
 }
 ```
+
+The **connector host** runs each connection: it creates the instance, gives `start()` 30 s, and
+on any failure (a throw, a rejection, a hang, a timer that throws) stops it, holds its values
+(02 §2.8) and starts it again with backoff (01 §1.7), from 1 s; 60 s connected starts the count
+over, and a service's `Retry-After` or quota reset (at most a day) is waited out. A callback from
+an instance that has been stopped changes nothing. Settings that don't fit are an `error` with no
+retry until they change; a sign-in that is missing or refused is `needs-reauth`, never retried in
+a loop. An instance publishes at most 200 events a second that overlays play as they arrive (and
+5000 of moderation and backfill), and sends at most 20 requests. Past the limit a publish is
+refused with an error, which fails the instance, never dropped unnoticed; a connector reading a
+fast feed waits for room instead.
+
+#### 6.1.1 The HTTP client
+Retries only what is safe to send twice (`GET`, `HEAD`, `PUT`, `DELETE`, or a request marked
+idempotent), at most twice, on network errors, `500`/`502`/`503`/`504` and a `429` asking for
+30 s or less; never a `POST` or a token request. A `429` otherwise cools the service's origin
+down for its `Retry-After` (60 s without one): requests to it fail at once until then. Answers
+are capped (1 MiB by default), requests time out (10 s; a stream until its headers), and a
+redirect is an error. Destinations (07 §7.11): a service's own API over HTTPS; an address the
+operator typed (OBS, CTD Multi-Stream) on the local network, plain HTTP only to private
+addresses, never link-local, unspecified or multicast, a self-signed certificate trusted by its
+SHA-256 fingerprint, checked before the request is sent.
 
 A connector **MUST**:
 - never block the event loop or throw out of `start`; failures become `health.status = "error"`;
@@ -80,8 +119,11 @@ bind to it.
 ```
 
 `status` ∈ `disabled`, `connecting`, `connected`, `degraded` (partially working — e.g. Kick
-viewers OK but chat unavailable), `needs-reauth`, `error`. Every change publishes
-`system.connection`. The dashboard shows all connections at a glance.
+viewers OK but chat unavailable), `needs-reauth`, `error`. The connector sets `connected`,
+`degraded` and `connecting` with a detail; the host sets the rest. Every change publishes
+`system.connection` (at most one a second per connection, the latest state, 02 §2.6). The
+dashboard shows all connections at a glance; `GET /system/health` lists them for anyone signed
+in. A `detail` is shown as it is: the host takes the connection's secrets out of it.
 
 ## 6.4 Authorization flows
 
@@ -98,6 +140,27 @@ copied from the installation's configuration.
 
 OAuth requests **MUST** use `state` bound to the user's session and **MUST** use PKCE (S256)
 whenever the service supports it, even for confidential clients.
+
+How the platform does it:
+- **The redirect URI** is `SKP_PUBLIC_URL/oauth/callback/<connector>` when the public URL is set,
+  else the address the platform listens at, as a loopback IP (`http://127.0.0.1:<port>/…`, never
+  `localhost`: services compare redirect URIs as text). The setup screen shows it to copy, and
+  warns when the admin UI was opened at another address.
+- **`state`** is 32 random bytes, single use, valid 10 minutes, and bound to whoever started the
+  flow (a user, an API token, the command line); PKCE's verifier is 32 random bytes. The callback
+  is a `GET` with the code in the query (no `form_post`), answered `no-store`, `no-referrer`.
+- **The callback** finishes the flow only in a browser signed in as whoever started it, with
+  `connections:write`, then sends it to the connection's page (`?authorize=done|failed|denied`).
+  Anywhere else (a phone, a loopback redirect URI opened from another device) it shows a page
+  asking to copy the address and **paste it back** on the connection's page
+  (`POST /connections/{id}/authorize/complete`), and the flow stays open for them. A declined
+  sign-in (`?error=`) ends the flow; its description is never echoed.
+- **The device flow** shows the code and the address, and the platform polls at the interval the
+  service gives, 5 s slower on each `slow_down`, until it is used, declined or expired.
+- **Tokens** are kept encrypted (07 §7.7), renewed at 80 % of their life and once on a `401`;
+  a renewal's new refresh token is saved before the new access token is used. A refused renewal
+  (`invalid_grant`) is `needs-reauth`, said once. Deleting a connection, or signing it out,
+  revokes its tokens where the service allows.
 
 ---
 
@@ -302,3 +365,41 @@ apps the same live feed overlays get, filtered by `?types=`.
 A connector **MAY** be added as a plugin (a directory with `connector.json` and an ES module
 implementing §6.1). Plugins run in-process with full trust; installing one is an owner-only
 action and the UI **MUST** say it grants access to credentials.
+
+---
+
+## 6.11 CTD Multi-Stream
+
+The operator's multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream),
+its `docs/API.md` v1.1) streams to every platform at once and merges their chat into this
+standard's envelope. Its connector (`ctd-multistream`) is a **relay**: where a direct connector
+also sets a value (`viewers.twitch`), the direct one is shown (02 §2.5.0).
+
+**Auth:** an API token from its Settings → API (`ctd_pat_…`, scopes `chat:read` and
+`status:read`), kept as a secret setting; no sign-in flow. Its address is the LAN URL ending in
+`/api/v1` (plain HTTP on the local network), or its HTTPS address with the certificate's SHA-256
+fingerprint when self-signed. A `401` means the token was revoked or is wrong: `needs-reauth`
+until a new one is pasted. A `403` (a missing scope) is an error until it is fixed; a `429` is
+waited out.
+
+**Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`,
+resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
+when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
+`/status` and `/chat?limit=200` again; that chat goes into the chat buffer **without being sent
+live** (a snapshot shows it; overlays never replay old chat at once). Chat replayed after more than
+a minute is buffered the same way; an alert more than two minutes old is dropped. Every event is
+deduplicated by its id (a chat message by its own id).
+
+**Mapping:** `chat.message`, `chat.message.deleted`, `chat.user.cleared` and `alert.<kind>` keep
+their payloads in this standard's shapes (nulls left out, roles of the closed set, a fragment type
+not known here as text, text cut at 1000 characters, Twitch tiers as `1`, `2`, `3`, `prime`),
+with `src.platform` from the envelope (an unknown platform is `custom`). A `chat.cleared` for one
+platform removes that platform's messages (one `chat.message.deleted` each), not every
+platform's. While alerts are on, an alert's chat line (`kind: "event"`) is left out (a setting).
+`viewers.<platform>` and `stream.<platform>.live | title | startedAt` come from `/status` and each
+`destination.status`; a count it doesn't know (`null`) is absent, never 0.
+
+**Health:** `connected` while the stream is open; `degraded` while a destination is down, saying
+which and why (`Instagram: ended the live (copyright)…`); its `system.notice`s are the
+connection's warnings, for the operator only. Nothing for 45 s (it sends a heartbeat every 15 s)
+reconnects.

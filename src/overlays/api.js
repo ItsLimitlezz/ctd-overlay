@@ -1,9 +1,9 @@
 // Overlays over HTTP (03 §3.4), on the API's conventions (http/api.js):
 //
 //   GET    /api/v1/overlays                    every overlay, paged
-//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings? }
+//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections? }
 //   GET    /api/v1/overlays/:ref               by slug or id
-//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired? } (If-Match)
+//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections? } (If-Match)
 //   DELETE /api/v1/overlays/:ref
 //   POST   /api/v1/overlays/:ref/upgrade       { version, dryRun?, confirm?, runMigrate? } (04 §4.10)
 //   POST   /api/v1/overlays/:ref/revert        back to the version and settings before the last upgrade
@@ -16,9 +16,14 @@
 // overlays:read can watch already (the previews). Rotating the key needs overlays:write, as it only
 // takes access away; marking an overlay "no key required" is the owner's (system:admin, 07 §7.6).
 // The key's changes are recorded in the audit log.
+//
+// Bindings (01 §1.3): `connections` is "all" (every connection, including ones made later: the
+// default) or a list of connection ids, each of which must exist. `bound` lists the connections
+// that feed the overlay now, by name and status, for whoever edits overlays (operators don't hold
+// connections:read, and need to see what feeds what).
 import { ApiError } from '../http/api.js';
 
-export function overlayApiRoutes({ api, overlays, templates, shows, audit, base }) {
+export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections }) {
   const tag = 'Overlays';
   const r = (def) => api.route({ tag, ...def });
   const docOf = (ref) => {
@@ -40,9 +45,22 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base 
       settings: d.settings || {},
       resolvedSettings: found.settings,
       keyRequired: overlays.keyRequired(doc),
+      connections: overlays.bindingOf(doc),
+      bound: boundTo(overlays.bindingOf(doc)),
       ...(d.previous ? { previous: { template: d.previous.template, at: d.previous.at } } : {}),
       ...(shows ? { show: shows.list().find((s) => s.overlays.includes(doc.id))?.name } : {}),
     };
+  }
+  // The connections that feed an overlay with these bindings: [{ id, name, connector, status }].
+  function boundTo(binding) {
+    const list = connections?.summary() || [];
+    return list.filter((c) => binding === 'all' || binding.includes(c.id)).map((c) => ({ id: c.id, name: c.name, connector: c.connector, status: c.status }));
+  }
+  // Bindings as sent: "all", or ids of connections that exist (the registry checks the shape).
+  function checkConnections(value) {
+    if (value === undefined || value === 'all' || !Array.isArray(value)) return;
+    const missing = value.filter((id) => typeof id === 'string' && !connections?.exists(id));
+    if (missing.length) throw new ApiError(422, 'invalid', `There ${missing.length > 1 ? 'are no connections' : 'is no connection'} ${missing.map((id) => `"${id}"`).join(', ')}. "connections" is "all", or ids from GET /api/v1/connections.`);
   }
   const rev = (p) => {
     const { doc } = docOf(p.ref);
@@ -51,15 +69,17 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base 
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
     r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
-    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template', body: { fields: ['slug', 'template', 'settings'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
-      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {} });
+    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids)', body: { fields: ['slug', 'template', 'settings', 'connections'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
+      checkConnections(body.connections);
+      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all' });
       audit.record({ action: 'overlay.create', actor: who.label, ip: req.client?.ip, target: doc.data.slug, template: `${doc.data.template.id}@${doc.data.template.version}` });
       return { status: 201, body: resource(docOf(doc.data.slug)) };
     } }),
     r({ method: 'GET', path: '/api/v1/overlays/:ref', scope: 'overlays:read', summary: 'An overlay, by slug or id', run: ({ params }) => resource(docOf(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
+    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
       const { doc } = docOf(params.ref);
       if (body.keyRequired !== undefined && typeof body.keyRequired !== 'boolean') throw new ApiError(422, 'invalid', '"keyRequired" is true or false.');
+      checkConnections(body.connections);
       // Opening an overlay's page and data to anyone on the network is the owner's choice (07 §7.6),
       // not every editor's. Asking for the key again only makes it safer, so that stays theirs.
       if (body.keyRequired === false && overlays.keyRequired(doc) && !who.scopes.has('system:admin')) {
@@ -71,6 +91,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base 
       // Recorded only when the choice changed: asking for what is already so decides nothing, and
       // must not show someone else's choice as theirs.
       if (body.keyRequired !== undefined && (saved.data.keyRequired !== false) !== (doc.data.keyRequired !== false)) recordKey(who, req, 'overlay.key-required', saved.data.slug, { required: body.keyRequired });
+      if (body.connections !== undefined && JSON.stringify(overlays.bindingOf(saved)) !== JSON.stringify(overlays.bindingOf(doc))) audit.record({ action: 'overlay.bind', actor: who.label, ip: req.client?.ip, target: saved.data.slug, connections: overlays.bindingOf(saved) });
       return resource(docOf(saved.data.slug));
     } }),
     r({ method: 'DELETE', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Delete an overlay (its URL stops working)', resource: rev, run: ({ params, who, req }) => {

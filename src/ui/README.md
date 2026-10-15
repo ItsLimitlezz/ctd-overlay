@@ -143,6 +143,7 @@ const form = schemaForm({
   resolved,        // what the overlay sees now (defaults and bound values applied), shown as placeholders
   onChange,        // (values, { live }) — live is true for x-skp-preview: "live" fields while typing
   mediaList,       // async () => [{ url, name, type }] for media fields (may be undefined)
+  saved,           // names of writeOnly (secret) fields that hold a value: "Saved" as their placeholder
 });
 form.el;           // the form's element, a <div> (no submit button: the page adds Save/Reset;
                    // put it in a <form> if Enter should save)
@@ -152,3 +153,18 @@ form.validate();   // [] or [{ path, message }] (JSON pointers, '/' for the 24 K
                    // the fields and opens their sections
 form.reset(values, resolved) // show these values (and, given resolved, update the placeholders)
 ```
+
+The same form edits a connection's settings (a connector's `fields`). A `writeOnly` field is a
+secret: a password input that is never filled in (the API never sends a secret back), and left
+empty keeps what is saved. The Connections page splits `values()` into `config` and `secrets` by
+`writeOnly`.
+
+## Connections (pages/connections.js)
+
+`#/connections` (list, live from `system.connection`), `#/connections/new/:connector` (the setup
+guide: warnings first, steps, the redirect URI with Copy, scopes and why; then the form) and
+`#/connections/:id` (status, sign-in: a device code with its countdown, or a redirect with the
+always-visible **Finish sign-in** paste box; what it feeds; actions; settings with If-Match).
+Owners and admins only (`connections:read`/`write`); operators get each connection's status
+from `GET /api/v1/system/health`. Delete and Sign out are in a menu, behind a confirmation that
+names the consequence.

@@ -82,7 +82,7 @@ function problemOf(err) {
   if (err instanceof ApiError) return { status: err.status, code: err.code, detail: err.message, headers: err.headers, extra: err.extra };
   if (err?.name === 'ConflictError') return { status: 409, code: 'conflict', detail: 'It changed meanwhile: read it again, then retry.' };
   if (err?.name === 'BodyError') return { status: err.status, code: err.code, detail: err.message, headers: err.headers };
-  const known = ['ShowError', 'AuthError', 'OverlayError', 'TemplateError', 'MediaError', 'SourceError', 'SecretsError', 'MigrateError', 'ZipError'];
+  const known = ['ShowError', 'AuthError', 'OverlayError', 'TemplateError', 'MediaError', 'SourceError', 'SecretsError', 'MigrateError', 'ZipError', 'ConnectorError'];
   if (known.includes(err?.name)) {
     const status = Number.isInteger(err.status) ? err.status : statusOf(err);
     const headers = err.retryAfterS ? { 'retry-after': String(err.retryAfterS) } : undefined;
