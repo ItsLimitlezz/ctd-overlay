@@ -200,6 +200,25 @@ option that keeps a live show running with nobody touching it.
     phone width.
 15. **v0 importer.** Reads a v0 `/data` directory: `kit.json` and `shows.json` become a show,
     overlays and plans; `viewers.json` becomes Twitch and Kick connections.
+    Done in `src/import/v0.js` with `skp import v0 <dir> [--name] [--slug] [--timezone]
+    [--replace] [--dry-run] [--json]`, on the data directory with the platform stopped, one audit
+    entry per thing made as `cli:<user>`. Reading, mapping and applying are separate: the mapping
+    is a pure function, and is what a dry run prints. The setup is `kit.json`, else `live.json`'s
+    cfg (the legacy `evParams` form too), cleaned as v0's `_cmig` would; a missing file or a field
+    of the wrong type is skipped with a warning (H17), never a crash. One TAKEOVER overlay renders
+    both of v0's feeds and saves only what differs from the template's defaults; the headliner is
+    matched as v0's overlay matched it and flagged apart from the closer (H8); The Line's clip goes
+    through the media library, looked up by its base name in `uploads/` and nowhere else. The
+    timeline is v0's recipe (a title card for every act, the headliner too) plus its hand-made cues
+    still to come that night; `shows.json` dates from today on become plans, and a plan whose look
+    differs carries the overlay's whole settings, since activation replaces them. Connections don't
+    exist yet, so Twitch and Kick credentials wait in the store collection `pending_connections`,
+    the secret encrypted with the record id as associated data (re-encrypted by `skp key rotate`);
+    nothing secret reaches the summary, the logs or the audit log. Importing again is refused while
+    the show exists, unless `--replace`. The summary ends with the overlay's OBS URLs. Carried
+    forward: step 16 turns `pending_connections` into connections; the recipe gives the last set
+    two hours of now playing (v0 gave one) and plays a generated Event Intro from program only
+    (v0's played from any scene); the admin UI has no import page (the command line only).
 
 ### Milestone 4: connectors
 16. **Connector host.** Contract, backoff, health and `system.connection`, encrypted token

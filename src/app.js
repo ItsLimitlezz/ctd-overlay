@@ -50,7 +50,9 @@ export class StartupError extends Error {
 // ([executable, ...args] in place of config.ffmpeg; options for the media library; what template
 // sources fetch and resolve with; { now, timers } for shows and the timeline, a server clock set
 // ahead, H19).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {} }) {
+// readOnly: a look that changes nothing (a dry run): templates and media aren't touched, and shows
+// don't catch up what fell due while the platform was down (the platform does that when it starts).
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {}, readOnly = false }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -90,10 +92,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     migrate(store, migrations, { log: storeLog });
     bus = createBus({ log: log.child('bus') });
     const audit = createAudit({ store, now: clock.now, retentionDays: config.auditDays });
-    const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates') });
-    const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure });
-    const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg });
-    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock });
+    const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates'), readOnly });
+    const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure, readOnly });
+    const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg, readOnly });
+    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly });
     const timeline = createTimeline({
       store, shows, overlays, media, log: log.child('timeline'), ...clock,
       record: (action, details) => audit.record({ action, ...details }),

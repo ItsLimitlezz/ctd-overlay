@@ -80,6 +80,10 @@ const ACTIONS = {
   'overlay.key-required': 'Changed whether an overlay\'s URL needs its key', 'overlay.key-rotate': 'Made a new key for an overlay',
   'template.install': 'Installed a template', 'template.uninstall': 'Uninstalled a template', 'template.update': 'Updated a template by itself',
   'template.follow': 'Followed a template\'s repository', 'template.unfollow': 'Stopped following a template\'s repository',
+  'import.v0.show.create': 'Imported a show from v0', 'import.v0.show.delete': 'Replaced a show with one from v0',
+  'import.v0.overlay.create': 'Imported an overlay from v0', 'import.v0.overlay.update': 'Updated an overlay from v0',
+  'import.v0.media.add': 'Imported v0\'s Line clip', 'import.v0.cues.build': 'Built a v0 show\'s cues', 'import.v0.cue.add': 'Imported a v0 cue',
+  'import.v0.plan.add': 'Imported a v0 planned date', 'import.v0.connection.keep': 'Kept v0 credentials for a connection',
 };
 const REASONS = { password: 'wrong password', code: 'wrong code' };
 // What the audit log can be narrowed to: the server matches a whole action or its first part
@@ -87,7 +91,7 @@ const REASONS = { password: 'wrong password', code: 'wrong code' };
 const AUDIT_FILTERS = [
   ['', 'Everything'], ['login', 'Sign-ins, and failed ones'], ['session', 'Sign-outs and ended sessions'],
   ['password', 'Password changes'], ['totp', 'Two-factor'], ['user', 'Users added, changed or removed'],
-  ['token', 'API tokens'], ['overlay', 'Overlays'], ['template', 'Templates'], ['media', 'Media'], ['setup', 'Setup'],
+  ['token', 'API tokens'], ['overlay', 'Overlays'], ['template', 'Templates'], ['media', 'Media'], ['import', 'Imports from v0'], ['setup', 'Setup'],
 ];
 // A target is shown by name; an internal id ("ses_01J…") says nothing to a person, so it is left out.
 const INTERNAL_ID = /^[a-z]{3}_[0-9A-Z]{26}$/;

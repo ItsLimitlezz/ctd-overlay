@@ -43,8 +43,9 @@ function base62(bytes, length) {
 export const newOverlayKey = () => `skp_ovl_${base62(randomBytes(24), 33)}`;
 
 // secrets: encrypts overlay keys at rest (secrets.js); without it (some tests), overlays have no
-// key and need none. exposure: in public mode every overlay needs its key.
-export function createOverlays({ store, bus, templates, log, secrets, exposure = 'local' }) {
+// key and need none. exposure: in public mode every overlay needs its key. readOnly: a look that
+// changes nothing (a dry run): an overlay without a key isn't given one at startup.
+export function createOverlays({ store, bus, templates, log, secrets, exposure = 'local', readOnly = false }) {
   const bySlug = new Map(); // slug → id
   const resolved = new Map(); // id → the settings the overlay sees
   const pins = new Map(); // id → { id, version } of its template, for lookups that skip the store
@@ -143,7 +144,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
   // At startup, a bundled version an overlay pins is kept in the data directory (retain), so a
   // platform update that drops or changes it can't change the overlay. Every overlay has a key.
   for (const doc of all()) {
-    keyOf(doc);
+    if (!readOnly) keyOf(doc);
     const pin = doc.data.template;
     try {
       if (templates.get(pin.id, pin.version)?.source === 'bundled') templates.retain(pin.id, pin.version);

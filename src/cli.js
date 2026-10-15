@@ -1,10 +1,10 @@
 // The command line: `skp <noun> <verb>` (npm run skp -- template install x.skp). For template
 // authors and for operators until the admin UI and its API arrive (steps 13–14).
 //
-// Commands that change the data directory (install, uninstall, upgrade, revert) take its lock, so
-// they run while the platform is stopped: a running server would neither see the change nor keep
-// the JSON store's copy of it. Each goes to the audit log (07 §7.12) as cli:<user>. validate and
-// pack never touch the data directory.
+// Commands that change the data directory (install, uninstall, upgrade, revert, media, key rotate,
+// import v0) take its lock, so they run while the platform is stopped: a running server would
+// neither see the change nor keep the JSON store's copy of it. Each goes to the audit log
+// (07 §7.12) as cli:<user>. validate and pack never touch the data directory.
 //
 // The show, user, token and audit commands are different: they drive the running platform through
 // its API, so a show can be run while it is on air. They sign in with the local token the
@@ -23,11 +23,14 @@ import { openData, StartupError } from './app.js';
 import { cliActor } from './auth/audit.js';
 import { readLocalToken } from './auth/index.js';
 import { ConfigError, loadConfig } from './config.js';
+import { applyV0, checkV0, fitTemplate, ImportError, importJson, importSummary, mapV0, readV0 } from './import/v0.js';
 import { createLogger } from './log.js';
 import { MediaError, mediaUrl, mediaUsers } from './media/library.js';
 import { isLoopback } from './net.js';
-import { OverlayError } from './overlays/registry.js';
+import { OverlayError, SLUG } from './overlays/registry.js';
 import { rotateMasterKey, SecretsError } from './secrets.js';
+import { ShowError } from './shows/registry.js';
+import { isTimezone } from './shows/time.js';
 import { StoreVersionError } from './store/migrate.js';
 import { MigrateError } from './templates/migrate.js';
 import { packageFromDir, validatePackage } from './templates/package.js';
@@ -61,6 +64,11 @@ export const USAGE = `Usage: skp <command> [options]
   media list                              uploaded files and their URLs
   media remove <id>                       delete one (refused while an overlay, a show's lineup,
                                           a cue or a plan uses it)
+  import v0 <v0-data-dir>                 v0's setup as a show here (the platform must be stopped):
+        [--name <show>] [--slug <slug>]   its lineup, a TAKEOVER overlay with v0's settings and
+        [--timezone <zone>]               Line clip, its cues and planned dates; its Twitch and
+        [--replace] [--dry-run]           Kick credentials are kept, encrypted. --replace replaces
+                                          a show of that name; --dry-run only says what it'd do
 
 These drive the running platform (start it first):
   show list                               shows, their members, scene and whether they're live
@@ -114,8 +122,10 @@ const CONFIG_FLAGS = ['data-dir', 'config-dir', 'store', 'log-level', 'port'];
 const SHOW_FLAGS = ['from', 'overlays', 'date', 'timezone', 'go-live', 'day-boundary', 'lineup', 'transition', 'args', 'at', 'scene', 'action', 'slot', 'play', 'cue', 'label', 'recipe', 'settings'];
 const NOTE = 'Templates are code: they run in OBS and in the admin UI\'s previews, and see the data their manifest declares.';
 
-// fetch and lookup: test hooks for what template sources download with and resolve names with.
-export async function run(argv, { stdout = process.stdout, stderr = process.stderr, stdin = process.stdin, env = process.env, fetch: fetchHook, lookup: lookupHook } = {}) {
+// fetch and lookup: test hooks for what template sources download with and resolve names with;
+// ffmpeg, the ffmpeg media conversions run ([executable, ...args]); clock ({ now }), the time the
+// commands that change the data directory see (a v0 import's "today").
+export async function run(argv, { stdout = process.stdout, stderr = process.stderr, stdin = process.stdin, env = process.env, fetch: fetchHook, lookup: lookupHook, ffmpeg: ffmpegHook, clock: clockHook } = {}) {
   const out = (s) => stdout.write(`${s}\n`);
   let args;
   try {
@@ -124,8 +134,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       allowPositionals: true,
       strict: true,
       options: {
-        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' }, all: { type: 'boolean' },
-        code: { type: 'string' }, username: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' }, 'expires-days': { type: 'string' }, ips: { type: 'string' }, limit: { type: 'string' },
+        json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' }, all: { type: 'boolean' }, replace: { type: 'boolean' },
+        code: { type: 'string' }, username: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' }, 'expires-days': { type: 'string' }, ips: { type: 'string' }, limit: { type: 'string' }, slug: { type: 'string' },
         to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
         ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
@@ -147,10 +157,11 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const config = () => loadConfig({ argv: CONFIG_FLAGS.flatMap((f) => (opts[f] === undefined ? [] : [`--${f}`, opts[f]])), env });
   // Warnings and errors only, on stderr: stdout is the command's result.
   const logger = () => createLogger({ level: opts['log-level'] || 'warn', write: (line) => stderr.write(`${line}\n`) }).child('cli');
-  // The data directory, locked, for a command that may write to it.
-  const openFor = (purpose, cfg = config()) => {
+  // The data directory, locked, for a command that may write to it (readOnly: a dry run's look,
+  // which changes nothing).
+  const openFor = (purpose, cfg = config(), { readOnly = false } = {}) => {
     checkOwner(cfg.dataDir);
-    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook });
+    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook, ffmpeg: ffmpegHook, clock: clockHook ? { now: clockHook.now } : undefined, readOnly });
     return Object.assign(data, { record: (details) => data.audit.record({ action: purpose.replace(/ /g, '.'), actor: cliActor(), ...details }) });
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
@@ -485,6 +496,60 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         }
       }
 
+      case 'import v0': {
+        if (rest.length !== 1) return usage('import v0 takes v0\'s data directory (the one with kit.json and live.json)');
+        const slug = opts.slug ?? 'takeover';
+        if (!SLUG.test(slug)) return usage(`--slug "${slug}" isn't a valid slug: lowercase letters, digits and dashes`);
+        if (opts.name !== undefined && !opts.name.trim()) return usage('--name is the show\'s name');
+        const cfg = config();
+        // The show's zone: v0 used its server's (TZ, America/Toronto in its container), so the
+        // summary says which this is.
+        let timezone = cfg.timezone;
+        let timezoneSource = timezone === Intl.DateTimeFormat().resolvedOptions().timeZone ? 'this computer\'s zone' : 'the platform\'s configured zone';
+        if (opts.timezone !== undefined) {
+          if (!isTimezone(opts.timezone)) return usage(`--timezone must be an IANA time zone name, such as America/Toronto (got "${opts.timezone}")`);
+          timezone = new Intl.DateTimeFormat('en-US', { timeZone: opts.timezone }).resolvedOptions().timeZone;
+          timezoneSource = 'given with --timezone';
+        } else if (env.TZ && isTimezone(env.TZ) && new Intl.DateTimeFormat('en-US', { timeZone: env.TZ }).resolvedOptions().timeZone === timezone) {
+          timezoneSource = 'from TZ';
+        }
+        const now = clockHook?.now ?? Date.now;
+        const map = mapV0(readV0(rest[0]), { name: opts.name, slug, timezone, timezoneSource, now: now() });
+        if (opts['dry-run']) {
+          // Nothing is written: the data directory is opened (as overlay upgrade --dry-run does) only
+          // if it has a store, to see what is already there, and not at all while the platform runs.
+          let data;
+          let note;
+          if (existsSync(path.join(cfg.dataDir, cfg.store === 'json' ? 'skp.json' : 'skp.db'))) {
+            try {
+              data = openFor('import v0', cfg, { readOnly: true });
+            } catch (err) {
+              if (!(err instanceof StartupError) || err.code !== 'locked') throw err;
+              note = 'The platform is running, so what is already there (a show or an overlay of the same name) wasn\'t checked. Stop it to import.';
+            }
+          }
+          try {
+            const templates = data?.templates ?? createTemplateRegistry({ dirs: [BUILTIN_DIR], dataDir: cfg.dataDir, log: logger(), readOnly: true });
+            const check = checkV0(map, { templates, overlays: data?.overlays, shows: data?.shows, media: data?.media }, { replace: opts.replace });
+            if (check.template) fitTemplate(map, check.template.manifest);
+            if (opts.json) json(importJson(map, null, { dryRun: true, check }));
+            else out(importSummary(map, null, { dryRun: true, check, note }));
+            return check.refusal ? 1 : 0;
+          } finally {
+            data?.close();
+          }
+        }
+        const data = openFor('import v0', cfg);
+        try {
+          const result = await applyV0(map, data, { replace: opts.replace, actor: cliActor(), now, base: platformBase(cfg) });
+          if (opts.json) json(importJson(map, result));
+          else out(importSummary(map, result));
+          return 0;
+        } finally {
+          data.close();
+        }
+      }
+
       case 'show list': {
         if (rest.length) return usage('show list takes no arguments');
         const list = await everything('/shows');
@@ -769,7 +834,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       }
       return 1;
     }
-    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof SourceError || err instanceof SecretsError || err instanceof StartupError || err instanceof StoreVersionError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
+    if (err instanceof TemplateError || err instanceof OverlayError || err instanceof ZipError || err instanceof MigrateError || err instanceof MediaError || err instanceof SourceError || err instanceof SecretsError || err instanceof StartupError || err instanceof StoreVersionError || err instanceof ImportError || err instanceof ShowError || err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.name === 'ConflictError') {
       const message = err.code === 'ENOENT' ? `no such file: ${err.path}` : err.code === 'ENOTDIR' ? `not a directory: ${err.path}` : err.message;
       if (opts.json) json({ error: err.code || err.name, message });
       else stderr.write(`skp: ${message}\n`);
@@ -792,6 +857,14 @@ class PlatformError extends Error {
     this.code = code;
     this.exit = exit;
   }
+}
+
+// The address the platform answers at, for an overlay's OBS URL printed while it is stopped: its
+// public URL, else this machine at its port (0.0.0.0 and :: are any interface: loopback).
+function platformBase(cfg) {
+  if (cfg.publicUrl) return cfg.publicUrl;
+  const host = cfg.host === '0.0.0.0' ? '127.0.0.1' : cfg.host === '::' ? '::1' : cfg.host;
+  return `${cfg.tlsCert ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${cfg.port}`;
 }
 
 // One request to the running platform's local API (/api/v1…, found with the same configuration

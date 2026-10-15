@@ -68,7 +68,8 @@ export class ShowError extends Error {
   }
 }
 
-export function createShows({ store, bus, overlays, templates, log, now = Date.now, timers = { setTimeout, clearTimeout } }) {
+// passive: a look at the shows that changes nothing (a dry run): no catching up at startup.
+export function createShows({ store, bus, overlays, templates, log, now = Date.now, timers = { setTimeout, clearTimeout }, passive = false }) {
   const returns = new Map(); // show id or overlay id → timer for a timed scene's return
   const goLives = new Map(); // show id → timer for REC at go-live
   let stopped = false;
@@ -303,6 +304,15 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     arm(saved, { catchUp: ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
     notify(doc.id);
     return view(store.get('shows', doc.id) || saved);
+  }
+
+  // Checks a new show without making it: throws as create() would for its fields (an import that
+  // replaces a show checks the new one before the old one goes). Its overlays are the caller's to
+  // check; replacing: the show it will replace, whose name doesn't count as taken.
+  function check(input, { replacing } = {}) {
+    const data = clean({ ...(input || {}), overlays: [] }, { id: replacing });
+    checkPublishable(data);
+    return data;
   }
 
   // Checks a change without making it (a planned show's, 09 §9.6): throws as update() would, and
@@ -582,8 +592,9 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
 
   // At startup: every show's state to its members, standalone scenes back on their overlays, and
   // the timers armed (a return already due happens now). One show that can't be published never
-  // keeps the platform (or a command line opening the data directory) from starting.
-  for (const doc of all()) {
+  // keeps the platform (or a command line opening the data directory) from starting. A passive
+  // look does none of it: catching up writes (REC at a go-live that passed, a return due).
+  for (const doc of passive ? [] : all()) {
     try {
       publish(doc);
       arm(doc, { catchUp: true });
@@ -591,7 +602,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       log.error('a show could not be restored at startup; fix or delete it', { show: doc.id, name: doc.data.name, err: err.message });
     }
   }
-  for (const own of store.list('overlay_scenes', { limit: 1000 })) {
+  for (const own of passive ? [] : store.list('overlay_scenes', { limit: 1000 })) {
     if (showOf(own.id)) continue;
     const doc = store.get('overlays', own.id);
     const r = doc && overlays.resolve(doc.data.slug);
@@ -617,6 +628,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     takeOverlay,
     fireOverlay,
     validate,
+    check,
     setRecipe,
     offers,
     media,

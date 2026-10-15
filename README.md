@@ -266,3 +266,29 @@ a show's lineup, a cue or a plan), saying what.
 
 These commands change the data folder, so stop the platform first; until the admin UI (step 14)
 they are the way to manage media.
+
+## Moving from v0
+
+The D/PRTMNT Stream Kit's data folder (its `/data` volume, or `data/` beside its `server.js`)
+comes over in one command. Start this platform once first (it makes its master key, which the
+import encrypts with), then stop it and import:
+
+```bash
+npm run skp -- import v0 path/to/v0/data --timezone America/Toronto --dry-run
+```
+
+The dry run says what it would make and changes nothing; drop `--dry-run` to import. The night
+in `kit.json` becomes a show (its date, go-live and lineup; the event's headliner flagged on the
+lineup, the closer kept as the closer) with one TAKEOVER overlay in it, carrying v0's look, copy,
+ticker and event options, and The Line's clip from `uploads/` in the media library. The timeline
+is built the way v0 built its rundown (a title card at each set's start, the Event Intro and now
+playing at v0's minutes), and the cues v0's operator added by hand for that night come along.
+Planned Saturdays in `shows.json` become planned dates. The Twitch and Kick credentials in
+`viewers.json` are kept, encrypted, for the connections still to come; they are never printed.
+
+The summary ends with the overlay's two URLs (horizontal and vertical): they replace v0's
+`feed=h` and `feed=v` links in OBS. `--name` and `--slug` name the show and the overlay
+(`takeover` by default); without `--timezone` the show takes `TZ` or this computer's zone (v0
+used its server's). Importing again is refused while a show of that name exists, unless
+`--replace`, which replaces that show with its cues and plans and updates the overlay. v0's
+roster, its live state (scene, REC, counters), other uploads and `crash.log` stay behind.
