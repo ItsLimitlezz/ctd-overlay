@@ -13,7 +13,9 @@ export function uiRoutes({ dir = UI_DIR } = {}) {
   async function serve(res, rel) {
     const full = path.join(dir, ...rel.split('/'));
     const type = TYPES[path.extname(full).toLowerCase()];
-    if (!type || !full.startsWith(dir) || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) {
+    // A backslash is a separator on Windows: "pages\.env" or "pages\..\x" would pass the checks of
+    // "/"-separated parts. No UI file has one in its name, so any path with one is refused.
+    if (!type || rel.includes('\\') || !full.startsWith(dir) || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) {
       return sendProblem(res, 404, 'Not found', 'No such file.');
     }
     let data;

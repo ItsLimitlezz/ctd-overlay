@@ -33,11 +33,16 @@ export async function detail(view, ctx) {
 }
 ```
 
-`ctx` is `{ params, query, session, system, can(scope), navigate(path, { replace }), setTitle(t),
-refreshSession(), signedOut(), applyPreferences(prefs), applySystem(settings) }` (`signedOut()`
-after a deliberate sign-out: back to sign-in without the "session ended" error). `ctx.session` is
-`GET /api/v1/auth/session`: `{ user: { id, username, role, preferences, totp… }, role, scopes,
-csrf, expiresAt }`.
+`ctx` is `{ params, query, session, system, can(scope), alive(), navigate(path, { replace }),
+setTitle(t), refreshSession(), signedOut(), applyPreferences(prefs), applySystem(settings) }`
+(`signedOut()` after a deliberate sign-out: back to sign-in without the "session ended" error).
+`ctx.session` is `GET /api/v1/auth/session`: `{ user: { id, username, role, preferences, totp… },
+role, scopes, csrf, expiresAt }`.
+
+Each render gets a `view` (`<main>`) of its own. A page the user leaves while it still loads keeps
+drawing into its view, which is out of the document by then, and its `ctx.navigate` and
+`ctx.setTitle` do nothing; `ctx.alive()` is false. Anything else that reaches outside the view
+(`history.replaceState`, for instance) checks `ctx.alive()` first.
 
 A page that throws while rendering gets the error boundary ("This page could not load", with Try
 again); a page should still catch what it expects (a 404 → "There is no overlay "x"", with a
@@ -53,8 +58,10 @@ link back) and show it in the page.
   `api.seg(value)` for each dynamic segment.
 - **H16 · If-Match on every edit.** PATCH and PUT of a resource pass the resource as last read:
   `api.patch(path, body, { ifMatch: overlay })`. On a 412 (`err.status === 412`), say "It changed
-  since you opened it", reload it and let the user redo the change; never retry blindly. Commands
-  (take a scene, fire an action, REC, the slot) carry no If-Match.
+  since you opened it", reload it and let the user redo the change; never retry blindly. A DELETE
+  of a resource sends it too. A 404 on a change means it was deleted meanwhile: show the page's
+  "missing" view, not the server's words about an id. Commands (take a scene, fire an action, REC,
+  the slot) carry no If-Match.
 - **H17 · Defensive pages.** A missing optional field, a template without scenes, an empty list,
   a show without overlays — none of these may throw. Use `?.` and defaults; render an empty state
   (`empty(title, text, …actions)`).
@@ -87,10 +94,13 @@ link back) and show it in the page.
 - `h(spec, attrs?, ...children)` — `h('button.btn.primary', { type: 'button', onclick }, 'Save')`.
 - `mount(el, ...children)`, `q(selector, root)`.
 - `toast(messageOrError, { kind, ms })`.
-- `dialog({ title, body, actions })`, `confirm({ title, consequence, confirmLabel, danger })`,
+- `dialog({ title, body, actions, describe })`, `confirm({ title, consequence, confirmLabel, danger })`,
   `prompt({ title, intro, fields: [{ name, label, type, value, hint, required, options }], submitLabel })`.
+  Closing one gives the focus back to what opened it (once `run()` enables it again); a page's own
+  `<dialog>` does the same with `const back = focusBack()` when it opens and `back()` when it closes.
 - `menu(label, [{ label, onSelect, danger, disabled }], { buttonClass, ariaLabel })` (ariaLabel
-  tells a list of "More" buttons apart: "More for clip.mp4").
+  tells a list of "More" buttons apart: "More for clip.mp4"). It opens on the side with room,
+  focuses its first item; arrows, Home and End move, Escape closes.
 - `run(button, asyncFn, { done, onError })`.
 - `copy(text, message)`, `copyField(value, { label, copied })`.
 - `preview(url, { width, height, label, eager, title })` → element with `.unload()`, `.reload(url?)`;
@@ -111,7 +121,12 @@ Classes (styles.css): `.card .card-head .grid .grid.wide .stack .row .spread .mu
 ## The API client (api.js)
 
 - `get/post/put/patch/del(path, body?, { ifMatch, query, raw, contentType, headers, signal })` → JSON;
-  throws `ApiProblem { status, code, message (the detail), body }`.
+  throws `ApiProblem { status, code, message (the detail), body }`. A change refused for a CSRF
+  token another tab replaced (it signed in, changed the password, turned two-factor on or off) is
+  sent once more with the session's new token; if someone else is signed in now, it isn't, and
+  `onSessionChanged(fn)` tells the app.
+- `onSessionEnded(fn)`: the session is over (signed out, a 401, someone else's session): drop
+  what belongs to it (Media's upload queue). `endSession()` after a deliberate sign-out.
 - `all(path, { query })` — every item of a paged list.
 - `etagOf(resource)`, `seg(value)`, `serverNow()`.
 - `events(types, onEvent, { onStatus })` → stop; exact event types, e.g.

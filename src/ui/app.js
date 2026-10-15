@@ -90,7 +90,7 @@ async function loadSession() {
   try {
     const session = await api.get('/api/v1/auth/session');
     state.session = session;
-    api.setCsrf(session.csrf);
+    api.setCsrf(session.csrf, session.user?.id);
     applyPreferences(session.user?.preferences);
     return session;
   } catch (err) {
@@ -102,18 +102,21 @@ async function loadSession() {
   }
 }
 
-// What the page gets.
-function context(route, params) {
+// What the page gets. seq is the render it belongs to: once the user has gone elsewhere, a page
+// still finishing its requests can't move the address or the tab title from under them.
+function context(route, params, seq) {
   const session = state.session;
   const scopes = new Set(session?.scopes || []);
+  const alive = () => seq === state.seq;
   return {
     params,
     query: new URLSearchParams(location.hash.split('?')[1] || ''),
     session,
     system: state.system,
     can: (scope) => scopes.has(scope),
-    navigate,
-    setTitle: (t) => { document.title = `${t} · ${state.system.name || 'Stream Kit'}`; },
+    alive,
+    navigate: (hash, opts) => { if (alive()) navigate(hash, opts); },
+    setTitle: (t) => { if (alive()) document.title = `${t} · ${state.system.name || 'Stream Kit'}`; },
     applyPreferences,
     applySystem,
     // After a sign-in, a sign-out or a preference change: read the session again and redraw.
@@ -124,7 +127,7 @@ function context(route, params) {
     // After a deliberate sign-out: forget the session, without the "session ended" error.
     signedOut: () => {
       state.session = null;
-      api.setCsrf(undefined);
+      api.endSession();
       updateShell();
       navigate('/login', { replace: true });
     },
@@ -152,9 +155,22 @@ function updateShell() {
   }
 }
 
+// Each page draws in a <main> of its own. A page left while it was still loading (slow requests)
+// draws, when they arrive, into the one it was given, which is out of the document by then: it
+// can't cover the page the user went to, nor leave a console there whose buttons no longer work.
+function freshView() {
+  const old = q('[data-view]');
+  if (!old) return undefined;
+  const view = old.cloneNode(false); // id, data-view, tabindex: the skip link and styles still find it
+  view.className = 'main';
+  view.append(h('p.loading', 'Loading…'));
+  old.replaceWith(view);
+  return view;
+}
+
 async function render() {
   const seq = ++state.seq;
-  const view = q('[data-view]');
+  const view = freshView();
   if (!view) return;
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/';
   const nav = q('[data-nav]');
@@ -185,8 +201,7 @@ async function render() {
 
   updateShell();
   view.classList.toggle('narrow', found.route.page === 'auth');
-  mount(view, h('p.loading', 'Loading…'));
-  const ctx = context(found.route, found.params);
+  const ctx = context(found.route, found.params, seq);
   ctx.setTitle(found.route.title);
   try {
     const mod = await import(`./pages/${found.route.page}.js`);
@@ -211,6 +226,11 @@ async function render() {
 }
 
 function wireShell() {
+  // "Skip to content" moves the focus to the page; following its #main would be a route here.
+  q('.skip')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    q('[data-view]')?.focus();
+  });
   const toggle = q('[data-menu-toggle]');
   const nav = q('[data-nav]');
   toggle?.addEventListener('click', () => {
@@ -236,6 +256,14 @@ async function start() {
     toast('Your session ended. Sign in again.', { kind: 'error' });
     const path = location.hash.replace(/^#/, '').split('?')[0];
     navigate(`/login?next=${encodeURIComponent(path)}`, { replace: true });
+  });
+  // Someone else signed in in another tab (api.js found it on a change): this tab is theirs now.
+  api.onSessionChanged(async (session) => {
+    toast(`${session.user?.username || 'Someone else'} signed in on this browser, in another tab: this page shows their account now.`, { kind: 'error' });
+    await loadSession().catch(() => { state.session = null; });
+    await loadSystem();
+    updateShell();
+    render();
   });
   window.addEventListener('hashchange', () => render());
   await loadSession().catch(() => { state.session = null; });

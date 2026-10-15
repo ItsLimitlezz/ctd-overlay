@@ -323,6 +323,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
   function buildPreviews() {
     unloadPreviews();
     set(previewsToggle, previewsOpen ? 'Hide' : 'Show');
+    previewsToggle.setAttribute('aria-label', previewsOpen ? 'Hide previews' : 'Show previews'); // apart from All cues' Show
     previewsToggle.setAttribute('aria-expanded', String(previewsOpen));
     previewsBody.hidden = !previewsOpen;
     previewsHead.style.marginBottom = previewsOpen ? '' : '0'; // closed, the card is its head alone
@@ -503,6 +504,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
   }
   function renderCues() {
     set(cuesToggle, cuesOpen ? 'Hide' : 'Show');
+    cuesToggle.setAttribute('aria-label', cuesOpen ? 'Hide all cues' : 'Show all cues');
     cuesToggle.setAttribute('aria-expanded', String(cuesOpen));
     const ids = new Set();
     const order = [];
@@ -682,31 +684,30 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     problemBox.hidden = !text;
     mount(problemBox, text ? notice(text, 'danger') : null);
   }
+  // The show and its cues are read side by side, each on its own: cues that can't be read (no
+  // timeline:read, a hiccup) leave the scenes, REC and the lineup updating, and the other way round.
   async function refreshShow() {
     if (stopped) return;
     const seq = cmdSeq;
-    let next;
-    let items;
-    try {
-      [next, items] = await Promise.all([api.get(base), api.all(`${base}/cues`)]);
-    } catch (err) {
-      if (stopped || err.status === 401) return;
-      if (err.status === 404) {
-        stopped = true;
-        toast('That show was deleted.', { kind: 'error' });
-        reopen();
-        return;
-      }
-      setProblem(err);
+    const [showR, cuesR] = await Promise.allSettled([api.get(base), api.all(`${base}/cues`)]);
+    if (stopped) return;
+    const err = showR.status === 'rejected' ? showR.reason : undefined;
+    if (err?.status === 401 || cuesR.reason?.status === 401) return;
+    if (err?.status === 404) {
+      stopped = true;
+      toast('That show was deleted.', { kind: 'error' });
+      reopen();
       return;
     }
-    if (stopped) return;
-    lastOk = Date.now();
-    setProblem(null);
-    showCuesProblem(null);
+    if (err) setProblem(err);
+    else {
+      lastOk = Date.now();
+      setProblem(null);
+    }
+    showCuesProblem(cuesR.status === 'rejected' ? cuesR.reason : null);
     if (seq !== cmdSeq) return; // a command answered meanwhile: the next poll is newer
-    cues = list(items);
-    if (!applyShow(next)) renderTimeline();
+    if (cuesR.status === 'fulfilled') cues = list(cuesR.value);
+    if (err || !applyShow(showR.value)) renderTimeline();
   }
   // The viewer count, only when it is known and current (H6: never a wrong number).
   async function refreshState() {
