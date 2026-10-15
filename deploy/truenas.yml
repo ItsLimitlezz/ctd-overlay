@@ -1,0 +1,22 @@
+# TrueNAS SCALE → Apps → Discover Apps → ⋮ → Install via YAML (10 §10.3).
+# Make the two datasets first (owned by the "apps" user, 568), and set SKP_HOSTS to the NAS's LAN
+# address (a container's own addresses aren't the NAS's, so the platform must be told its name).
+services:
+  ctd-overlay:
+    image: ghcr.io/itslimitlezz/ctd---overlay:latest
+    restart: unless-stopped
+    ports:
+      - "4848:4848"
+    environment:
+      TZ: America/Toronto
+      SKP_EXPOSURE: lan
+      SKP_HOSTS: "192.168.1.50"      # the NAS's LAN address (and its DNS name, comma-separated)
+      SKP_LOG_LEVEL: info
+    volumes:
+      - /mnt/tank/apps/ctd-overlay/data:/data
+      - /mnt/tank/apps/ctd-overlay/config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4848/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
