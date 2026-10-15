@@ -39,7 +39,9 @@ something OBS can play.
 ## B. On the NAS (TrueNAS SCALE, or any Docker host)
 
 The image is built by GitHub Actions: `ghcr.io/itslimitlezz/ctd---overlay`. Pushes to `main` make
-`:latest`, and a `release/<name>` branch makes `:release-<name>`.
+`:latest`, and a `release/<name>` branch makes `:release-<name>`. The build for the 17 October
+test is `ghcr.io/itslimitlezz/ctd---overlay:release-2026-10-17`: put that tag in the YAML's
+`image:` line until this work is merged into `main`.
 
 1. **Create two datasets**, owned by the `apps` user (568): one for data and one for config. The
    config dataset holds the master key, and keeping it separate means a backup of the data never
@@ -85,8 +87,9 @@ and live status.
    - Copy the **LAN URL**, which ends in `/api/v1` (for example `http://192.168.1.50:30080/api/v1`).
    - Make a **token** with `chat:read` and `status:read`. It starts with `ctd_pat_` and is shown
      only once.
-2. In CTD Overlay, open **Connections → CTD Multi-Stream** and paste the address and the token.
-   Leave Chat and Alerts on. Save, then **Test**.
+2. In CTD Overlay, open **Connections**. Under **Add a connection**, find **CTD Multi-Stream** and
+   press **Set up**. Paste the address and the token, and leave Chat and Alerts on. Press **Save**,
+   then **Test** on the connection's page.
 3. The connection shows **Connected**. While a destination is down, it shows **Degraded** with the
    reason (for example, Instagram ended the live). That message is for you; viewers never see it.
 
@@ -119,6 +122,18 @@ platform tags to show, the alert sound and its volume.
   raid or cheer to that overlay, and the overlay in OBS shows it. **Reset** clears the result.
 - **With a test stream:** start a private stream through CTD Multi-Stream. Chat from each platform
   appears with its platform tag, and alerts appear one at a time.
+
+## During the show: alerts
+
+Alerts wait their turn on the server, so a burst never piles up on screen:
+- They play in priority order: raids first, then Super Chats and tips, then gifts, subs,
+  memberships, cheers, and finally follows.
+- A gift of 25 subs (with the 25 single gifts Twitch sends after it) plays as one alert.
+
+The **Alerts** card on **Live** shows what is on screen and what is waiting:
+- **Skip** ends the alert on screen.
+- **Replay last** plays the last alert again.
+- **Pause alerts** holds new ones (they keep queueing) until you press **Resume alerts**.
 
 ## When something's wrong
 
