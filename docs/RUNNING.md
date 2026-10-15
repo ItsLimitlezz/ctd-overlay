@@ -81,17 +81,44 @@ platform to get a new code.
 ## Connect CTD Multi-Stream
 
 CTD Multi-Stream merges chat from every platform it streams to, and sends alerts, viewer counts
-and live status.
+and live status. Its **profiles** are separate streams that can be live at the same time (for
+example DPRTMNT and Miami or Bust). **One connection follows one profile**: connect once per
+profile.
 
-1. In **CTD Multi-Stream → Settings → API**:
-   - Copy the **LAN URL**, which ends in `/api/v1` (for example `http://192.168.1.50:30080/api/v1`).
-   - Make a **token** with `chat:read` and `status:read`. It starts with `ctd_pat_` and is shown
-     only once.
+1. In **CTD Multi-Stream → Settings → API**, copy the **LAN URL**, which ends in `/api/v1` (for
+   example `http://192.168.1.50:30080/api/v1`).
 2. In CTD Overlay, open **Connections**. Under **Add a connection**, find **CTD Multi-Stream** and
-   press **Set up**. Paste the address and the token, and leave Chat and Alerts on. Press **Save**,
-   then **Test** on the connection's page.
-3. The connection shows **Connected**. While a destination is down, it shows **Degraded** with the
-   reason (for example, Instagram ended the live). That message is for you; viewers never see it.
+   press **Set up**. Paste the address into **API address** and press **Connect**. A code appears,
+   like `KQ7-2MX`, with a countdown (10 minutes).
+3. In **CTD Multi-Stream → Settings → API** (the link under the code opens it), a banner says CTD
+   Overlay wants to connect. Check that the code matches, pick the **profile** this connection
+   follows, and approve.
+4. Back in CTD Overlay, the connection connects by itself within a few seconds and names itself
+   **Multi-Stream · <profile>**. It shows the profile's status (**DPRTMNT · Live**), and
+   **Connected**. While a destination is down, it shows **Partly working** with the reason (for
+   example, Instagram ended the live). That message is for you; viewers never see it.
+5. For another profile, set up another connection the same way. Then, on each overlay's page,
+   **Fed by** chooses which connection (so which profile) it shows.
+
+**Paste a token instead:** on the setup page, open **Paste a token instead**, and paste a token
+made in **Settings → API → New token** (`chat:read` and `status:read`; add `apps:read` and
+`apps:write` to share overlays with the OBS plugin). A token that reads every profile follows the
+default profile until you pick another under **Profile** in the connection's settings.
+
+If CTD Multi-Stream says the token was revoked, press **Connect again** on the connection's page.
+
+### The CTD OBS plugin
+
+A connection made with Connect also shares the overlays it feeds with the **CTD OBS plugin**,
+through CTD Multi-Stream: the plugin lists them for its profile and adds them as browser sources at
+the right size and canvas (main or vertical), and can ask for a new one ("Let other apps create
+overlays", on by default in the connection's settings). The connection's card says **Shared with
+the OBS plugin: 4 overlays**. For this, CTD Overlay must know the address OBS reaches it at:
+`SKP_HOSTS` on the NAS (the YAML sets it), or start it on the PC with
+`npm start -- --exposure lan --hosts 192.168.1.20:4848` (that PC's address). Give equivalent
+overlays of different profiles the same **Role in OBS** (overlay page → Settings) when one profile
+has two overlays from the same template; the plugin uses it to switch its sources between
+profiles.
 
 ## Put chat and alerts in OBS
 
@@ -141,7 +168,9 @@ The **Alerts** card on **Live** shows what is on screen and what is waiting:
 |---|---|
 | A page says "This platform serves its local network only" | The device isn't on the LAN (a phone on mobile data, a VPN). Join the LAN. |
 | Signing in fails with "This can only be requested from the platform's own pages… at the platform's own address" | The address in the browser isn't one the platform knows (common in a container). Add it, with its port if that isn't 4848, to `SKP_HOSTS` and restart. |
-| The connection says the token was refused | Make a new token in CTD Multi-Stream and paste it into the connection. |
+| The connection says the token was refused | Press **Connect again** on the connection's page and approve the code in CTD Multi-Stream (or paste a new token). |
+| "Another CTD Multi-Stream token already registered the app…" | An older connection (or token) registered it. In CTD Multi-Stream → Settings → API, delete that old **CTD Overlay** app; it registers again within 30 s. |
+| "The OBS plugin sees no overlay URLs" | Set `SKP_HOSTS` to the address OBS reaches CTD Overlay at (on the PC, start with `--exposure lan --hosts <PC address>:4848`). |
 | The connection is "Reconnecting" | CTD Multi-Stream isn't reachable at that address. Open `<address>/status` in a browser on the same machine. |
 | Chat shows in the admin page but not in OBS | Check the browser source's URL (copy it again) and size. Then in OBS: right-click the source → Refresh. |
 | Phone video won't play in OBS | Install ffmpeg (on the PC); the image already has it. |

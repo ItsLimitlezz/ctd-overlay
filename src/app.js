@@ -127,7 +127,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       throw new StartupError(err.message);
     }
     const connectors = createConnectorHost({
-      store, bus, secrets, overlays, audit, log: log.child('connectors'), registry, ...clock,
+      store, bus, secrets, overlays, templates, audit, log: log.child('connectors'), registry, ...clock,
       fetch: connectorOptions.fetch, lookup: connectorOptions.lookup, endpoints: connectorOptions.endpoints, random: connectorOptions.random,
       ...(connectorOptions.holdMs ? { holdMs: connectorOptions.holdMs } : {}),
       exposure: config.exposure, publicUrl: config.publicUrl,
@@ -262,6 +262,10 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   // Connections, once the address a redirect URI names is known: the one this process listens at
   // (127.0.0.1, never "localhost": services compare redirect URIs as text), unless SKP_PUBLIC_URL.
   connectors.setOrigin(`${scheme}://${host}:${address.port}`);
+  // Where OBS reaches this platform from another machine, for the overlays connections share
+  // with CTD Multi-Stream's hub (06 §6.11).
+  const shared = shareBase(config, { scheme, port: address.port });
+  connectors.setShareBase(() => shared);
   connectors.start().catch((err) => log.error('connections could not start', { err }));
 
   let stopped = false;
@@ -328,6 +332,23 @@ export function ownHosts(server, configuredHost, { exposure = 'local', extra = [
   // The public URL as people reach it (through a proxy, on its own port or none).
   const pub = publicUrl ? [new URL(publicUrl).host] : [];
   return [...new Set([...hostPorts, ...bare, ...withPort, ...pub])];
+}
+
+// The address OBS on another machine opens this platform's overlays at: { url } or { problem }.
+// SKP_PUBLIC_URL when set; else, in lan and public modes, the first SKP_HOSTS name, with the port
+// it names or the one the platform listens on (the NAS sets SKP_HOSTS=192.168.1.50:4850 → http://
+// 192.168.1.50:4850). The machine's own addresses are never guessed: inside a container they
+// aren't the ones the network sees.
+export function shareBase(config, { scheme, port }) {
+  if (config.publicUrl) return { url: config.publicUrl };
+  if (config.exposure === 'local') {
+    return { problem: 'This platform answers on this computer only (SKP_EXPOSURE=local), so OBS on another machine can\'t open its overlays: set SKP_EXPOSURE=lan and SKP_HOSTS to this machine\'s address (like 192.168.1.50:4850).' };
+  }
+  const first = config.hosts?.[0];
+  if (!first) return { problem: 'This platform doesn\'t know the address the network reaches it at: set SKP_HOSTS to it (like 192.168.1.50:4850), or SKP_PUBLIC_URL.' };
+  const withPort = /:\d+$/.test(first) && !first.endsWith(']') ? first : `${first}:${port}`;
+  const bare = (scheme === 'https' && withPort.endsWith(':443')) || (scheme === 'http' && withPort.endsWith(':80')) ? withPort.replace(/:\d+$/, '') : withPort;
+  return { url: `${scheme}://${bare}` };
 }
 
 // Which clients a mode serves (07 §7.8): lan, the local network only; public, anyone over HTTPS

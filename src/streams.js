@@ -5,16 +5,20 @@
 //
 //   { connections: [{ id, name, connector, status, detail? }],
 //     onAir?: boolean, platforms: [{ platform, live?, title?, startedAt?, viewers?, stale? }],
-//     viewers?: number }
+//     profiles?: [{ connection, name, color?, status, startedAt? }], viewers?: number }
 //
 // - connections: the turned-on connections that feed it (every one for "all"), by name and status
 //   only: whoever reads overlays or shows sees it, connections:read or not, so never a setting.
+// - profiles: the CTD Multi-Stream profiles those connections follow (06 §6.11), from the ones
+//   connected now: its status says live before any platform does (offline, starting, live,
+//   stopping).
 // - platforms: each platform those connections report on (stream.<platform>.live | title |
 //   startedAt, viewers.<platform>), each value chosen as an overlay bound the same way sees it
 //   (bus/index.js: fresh over held, direct over relay, the older connection), the core's own
 //   values (a demo) left out. stale: a value shown is held through an error (02 §2.8).
-// - onAir: true while any platform is live; false when platforms said whether they are and none
-//   is; absent when nothing says (no connection, no data yet): "Unknown", never "Offline".
+// - onAir: true while any platform or profile is live; false when platforms or profiles said
+//   whether they are and none is; absent when nothing says (no connection, no data yet):
+//   "Unknown", never "Offline".
 // - viewers: the platforms' counts added up when any is known; absent otherwise, never 0 (H6).
 //
 // It is worked out on each read, like a show's `live`: it never moves a resource's ETag.
@@ -62,10 +66,19 @@ export function createStreams({ bus, connections, store }) {
     });
     const said = platforms.filter((p) => typeof p.live === 'boolean');
     const counts = platforms.filter((p) => p.viewers !== undefined);
+    const profiles = feeding.filter((c) => c.profile && ['connected', 'degraded'].includes(c.status)).map((c) => ({
+      connection: c.id,
+      name: String(c.profile.name || ''),
+      ...(typeof c.profile.color === 'string' ? { color: c.profile.color } : {}),
+      status: c.profile.status,
+      ...(typeof c.profile.startedAt === 'string' ? { startedAt: c.profile.startedAt } : {}),
+    }));
+    const live = said.some((p) => p.live) || profiles.some((p) => p.status === 'live');
     return {
       connections: feeding.map((c) => ({ id: c.id, name: c.name, connector: c.connector, status: c.status, ...(c.detail ? { detail: c.detail } : {}) })),
-      ...(said.length ? { onAir: said.some((p) => p.live) } : {}),
+      ...(said.length || profiles.length ? { onAir: live } : {}),
       platforms,
+      ...(profiles.length ? { profiles } : {}),
       ...(counts.length ? { viewers: counts.reduce((n, p) => n + p.viewers, 0) } : {}),
     };
   }

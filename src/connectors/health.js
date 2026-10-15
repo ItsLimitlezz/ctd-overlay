@@ -79,6 +79,9 @@ export function createHealth({ connection, now = Date.now, timers, publish, scru
     },
     // An event arrived: lastEventAt moves, quietly (it rides on the next change).
     event() { h.lastEventAt = now(); },
+    // Something the connection shows besides its health changed (its info: a profile, what it
+    // shares): system.connection goes out anyway, so the pages showing it read it again.
+    touch() { changed(); },
     get status() { return h.status; },
     get since() { return h.since; },
     view() {

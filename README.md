@@ -278,11 +278,16 @@ paste the address it landed on under **Finish sign-in**). Each connection shows 
 what it feeds and the values it sets now; a count that can't be read is held for two minutes,
 marked stale, then hidden: never shown as 0.
 
-**CTD Multi-Stream** is built in. In Multi-Stream, open Settings → API, make a token with
-`chat:read` and `status:read`, and copy the LAN URL (`http://<NAS-IP>:30080/api/v1`); add a
-CTD Multi-Stream connection with both. Its merged chat and alerts reach overlays whose template
-shows them, and the TAKEOVER viewer count becomes the total across every platform it streams to.
-Twitch and Kick (step 17), OBS, YouTube and Spotify follow.
+**CTD Multi-Stream** is built in. Copy its LAN URL from Settings → API (`http://<NAS-IP>:30080/api/v1`),
+set up a CTD Multi-Stream connection with it and press **Connect**: approve the code shown in
+CTD Multi-Stream → Settings → API and pick the profile (a token can be pasted instead). One
+connection follows one profile, named "Multi-Stream · <profile>", with the profile's live status
+on Live. Its merged chat and alerts reach overlays whose template shows them, and the TAKEOVER
+viewer count becomes the total across every platform it streams to. It also shares the overlays
+it feeds with the CTD OBS plugin through CTD Multi-Stream (their URLs at `SKP_HOSTS`'s address;
+an overlay's **Role in OBS** keeps equivalent overlays matched across profiles), and the plugin
+can ask it for new ones ("Let other apps create overlays"). Twitch and Kick (step 17), OBS,
+YouTube and Spotify follow.
 
 Overlays take every connection by default ("all", new ones too); an overlay can be bound to some
 only (`PATCH /api/v1/overlays/<slug>` with `{ "connections": ["con_…"] }`). Owners and admins

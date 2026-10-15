@@ -27,6 +27,11 @@
 //   ctx.endpoints            the definition's base URLs (a test's fake service's, in tests)
 //   ctx.publicUrl            SKP_PUBLIC_URL, when set
 //   ctx.inbound              { url, available }: where the service delivers (POST /hooks/…)
+//   ctx.setInfo(key, value)  what it tells about itself, on the connection (`info`, 16 KiB): the
+//                            profile it follows, what it shares; kept through an error
+//   ctx.suggestName(name)    the connection's name, while nobody has named it (records.js)
+//   ctx.overlays             for a definition that sharesOverlays: the overlays bound to it, their
+//                            URLs for OBS, and making one (share.js)
 import { MEMORY_BYTES } from './records.js';
 import { LIMITS } from './runner.js';
 import { namesOf } from './names.js';
@@ -172,6 +177,15 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     fail(err, opts) { runner.failNow(gen, err instanceof Error ? err : new Error(String(err)), opts); },
     reauth(detail) { runner.reauthNow(gen, String(detail || 'The service refused the credentials: enter them again.')); },
 
+    setInfo(key, value) {
+      if (typeof key !== 'string' || !/^[a-z][A-Za-z0-9]{0,39}$/.test(key)) throw new TypeError(`"${key}" isn't a name for ctx.setInfo (camelCase).`);
+      runner.setInfo(gen, key, value);
+    },
+    suggestName(name) {
+      if (live() && typeof name === 'string') env.suggestName?.(runner.id, name);
+    },
+    overlays: def.sharesOverlays && env.share ? overlaysFor(runner, gen, live, env) : undefined,
+
     memory: Object.freeze({
       get: (key) => {
         const v = runner.memory.data[key];
@@ -207,6 +221,30 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     }),
   };
   return Object.freeze(ctx);
+}
+
+// ctx.overlays: share.js's capability for this connection, through this instance only: a listener
+// it adds ends when it stops, and a stopped instance makes nothing.
+function overlaysFor(runner, gen, live, env) {
+  const share = env.share.forConnection({ id: runner.id, get name() { return runner.doc.data.name; } });
+  return Object.freeze({
+    get baseUrl() { return share.baseUrl; },
+    get baseProblem() { return share.baseProblem; },
+    list: () => share.list(),
+    onChange(fn) {
+      if (!live()) return () => {};
+      const off = share.onChange(() => {
+        if (!live()) return;
+        try { fn(); } catch (err) { runner.failNow(gen, err); }
+      });
+      runner.disposers.add(off);
+      return () => { off(); runner.disposers.delete(off); };
+    },
+    create(spec) {
+      if (!live()) throw new Error('The connection stopped.');
+      return share.create(spec);
+    },
+  });
 }
 
 function deepFreeze(o) {

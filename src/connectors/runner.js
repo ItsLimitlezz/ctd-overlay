@@ -38,6 +38,7 @@ export const LIMITS = Object.freeze({
   quietPerSecond: 5000, // moderation and backfill (context.js)
 });
 const SECRET_MIN = 8; // shorter values aren't scrubbed: "true" or "1234" would mangle every log line
+const INFO_BYTES = 16 * 1024;
 
 // env: what the host shares with every runner (createConnectorHost builds it).
 export class ConnectionRunner {
@@ -63,6 +64,8 @@ export class ConnectionRunner {
     this.stats = { inboundAccepted: 0, inboundRefused: 0 };
     this.secretValues = [];
     this.tokens = null;
+    this.info = {}; // what the instance tells about itself (ctx.setInfo): kept through an error, gone on a deliberate stop
+    this.disposers = new Set(); // subscriptions the instance made (ctx.overlays.onChange): ended when it stops
     const mem = env.records.memoryOf(doc.id);
     this.memory = { data: mem.memory && typeof mem.memory === 'object' ? mem.memory : {}, quota: mem.quota, dirty: false, timer: null };
     this.health = createHealth({
@@ -334,6 +337,10 @@ export class ConnectionRunner {
       this.env.timers.clearInterval?.(h);
     }
     this.instanceTimers.clear();
+    for (const d of this.disposers) {
+      try { d(); } catch { /* already gone */ }
+    }
+    this.disposers.clear();
     if (this.stableTimer) this.env.timers.clearTimeout(this.stableTimer);
     this.stableTimer = null;
     if (!inst || typeof inst.stop !== 'function') return Promise.resolve();
@@ -403,6 +410,7 @@ export class ConnectionRunner {
     if (deliberate || shutdown) {
       this.dropHolds();
       if (!shutdown) this.env.bus.clearOwner(this.id);
+      this.info = {};
     }
     await stopping;
     if (!shutdown) this.health.set({ status });
@@ -519,8 +527,20 @@ export class ConnectionRunner {
     return { status, ...(out?.body !== undefined ? { body: out.body } : {}) };
   }
 
+  // ctx.setInfo: a small JSON value under key (undefined removes it), shown on the connection.
+  setInfo(gen, key, value) {
+    if (!this.current(gen)) return;
+    const next = { ...this.info };
+    if (value === undefined) delete next[key];
+    else next[key] = JSON.parse(JSON.stringify(this.scrubDeep(value)));
+    if (Buffer.byteLength(JSON.stringify(next)) > INFO_BYTES) throw new TypeError(`A connection shows at most ${INFO_BYTES / 1024} KiB about itself.`);
+    if (JSON.stringify(next) === JSON.stringify(this.info)) return;
+    this.info = next;
+    this.health.touch();
+  }
+
   view() {
-    return { health: this.health.view(), ...(this.stats.inboundAccepted || this.stats.inboundRefused ? { deliveries: { accepted: this.stats.inboundAccepted, refused: this.stats.inboundRefused } } : {}) };
+    return { health: this.health.view(), ...(Object.keys(this.info).length ? { info: this.info } : {}), ...(this.stats.inboundAccepted || this.stats.inboundRefused ? { deliveries: { accepted: this.stats.inboundAccepted, refused: this.stats.inboundRefused } } : {}) };
   }
 }
 

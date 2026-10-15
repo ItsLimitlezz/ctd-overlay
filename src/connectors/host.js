@@ -12,7 +12,11 @@
 //   use, 10 minutes, bound to whoever started it; and when the browser that lands there isn't that
 //   person's (another device, or a redirect URI on 127.0.0.1 opened from a phone), they paste the
 //   address they landed on (POST …/authorize/complete). Client credentials and passwords need no
-//   sign-in.
+//   sign-in. Pairing (an app's own way, CTD Multi-Stream's): the service shows a code an admin
+//   approves there; the platform polls at the interval it gives, and the secret it hands over
+//   (once) is saved into the connection's secret field as if typed.
+// - Connections that share overlays with their service (CTD Multi-Stream's hub) get them through
+//   share.js; deleting or turning one off lets its definition undo what it registered (retire).
 // - Nothing secret leaves it: not in answers, the audit log, health details or logs.
 import { randomBytes as cryptoRandom } from 'node:crypto';
 import { ConnectorError } from './errors.js';
@@ -21,6 +25,7 @@ import { createFlowTable, createOAuthClient, newState, pkcePair, principalOf, sa
 import { createRecords, fieldsOf, withDefaults } from './records.js';
 import { isOAuthFlow } from './registry.js';
 import { ConnectionRunner, LIMITS } from './runner.js';
+import { createShare } from './share.js';
 
 // Where the v0 importer keeps Twitch and Kick credentials until a connector takes them (import/v0.js).
 const PENDING_CONNECTIONS = 'pending_connections';
@@ -29,10 +34,11 @@ const SPACING_MS = 250;
 const TEST_EVERY_MS = 5000;
 const AUTHORIZE_PER_MINUTE = 10;
 const DONE_KEEP_MS = 10 * 60 * 1000; // how long a finished sign-in's outcome stays on the resource
+const RETIRE_MS = 5000;
 const CONNECTION_ID = /^con_[0-9A-Z]{26}$/;
 
 export function createConnectorHost({
-  store, bus, secrets, overlays, audit, log, registry, now = Date.now, timers = { setTimeout, clearTimeout, setInterval, clearInterval },
+  store, bus, secrets, overlays, templates, audit, log, registry, now = Date.now, timers = { setTimeout, clearTimeout, setInterval, clearInterval },
   fetch = globalThis.fetch, lookup, endpoints = {}, exposure = 'local', publicUrl, random = Math.random, randomBytes = cryptoRandom,
   holdMs = LIMITS.holdMs, spacingMs = SPACING_MS,
 }) {
@@ -40,6 +46,9 @@ export function createConnectorHost({
   const runners = new Map();
   const flows = createFlowTable({ now });
   const devices = new Map(); // connection id → a device flow in progress
+  const pairings = new Map(); // connection id → a pairing in progress
+  // Where OBS reaches this platform, for the overlays a connection shares (setShareBase).
+  let shareBase = () => ({ problem: 'The platform hasn\'t started listening yet.' });
   const outcomes = new Map(); // connection id → { flow, status, detail?, at }
   const lastTest = new Map();
   const authorizeCounts = new Map(); // connection id → [times]
@@ -69,7 +78,11 @@ export function createConnectorHost({
     bus, records, registry, log, now, timers, fetch, lookup, allowHttp, random, holdMs, endpointsOf, oauthOf, post, publicUrl,
     publish: (type, data) => bus.publish(type, data),
     inboundUrl: (def, id) => (publicUrl && def.inbound ? `${publicUrl}/hooks/${def.id}/${id}` : undefined),
+    share: overlays && templates ? createShare({ overlays, templates, audit, log, base: () => shareBase() }) : undefined,
+    suggestName,
   };
+  // A request client of the platform's own, outside any connection's instance (pairing, retire).
+  const plainHttp = () => createHttpClient({ fetch, lookup, now, timers, allowHttp, log, random });
 
   const docOf = (id) => {
     const doc = records.get(id);
@@ -134,8 +147,10 @@ export function createConnectorHost({
     const out = outcomes.get(doc.id);
     const dev = devices.get(doc.id);
     const red = flows.open(doc.id);
+    const pair = pairings.get(doc.id);
     let authorization;
     if (dev) authorization = { flow: 'device', status: 'pending', userCode: dev.userCode, verificationUri: dev.verificationUri, ...(dev.verificationUriComplete ? { verificationUriComplete: dev.verificationUriComplete } : {}), expiresAt: new Date(dev.expiresAt).toISOString(), intervalS: dev.intervalS };
+    else if (pair) authorization = pairingView(pair, 'pending');
     else if (red) authorization = { flow: 'redirect', status: 'pending', expiresAt: new Date(red.expiresAt).toISOString() };
     else if (out && now() - out.at < DONE_KEEP_MS) authorization = { flow: out.flow, status: out.status, ...(out.detail ? { detail: out.detail } : {}) };
     return {
@@ -146,9 +161,13 @@ export function createConnectorHost({
       ...(authorization ? { authorization } : {}),
       capabilities: def?.capabilities || [],
       overlays: overlays?.fedBy(doc.id) || [],
+      ...(r?.view().info ? { info: r.view().info } : {}),
       ...(r?.view().deliveries ? { deliveries: r.view().deliveries } : {}),
     };
   }
+  // A pairing as the resource and the authorize answer show it: the code and where to approve it,
+  // never what it is polled with.
+  const pairingView = (p, status) => ({ flow: 'pairing', ...(status ? { status } : {}), code: p.code, ...(p.approveUrl ? { approveUrl: p.approveUrl } : {}), expiresAt: new Date(p.expiresAt).toISOString(), intervalS: p.intervalS });
 
   // ---- settings checks the records can't make ------------------------------------------------
   // An address the operator types (x-skp-egress lan) must be one connections may reach (07 §7.11).
@@ -195,6 +214,9 @@ export function createConnectorHost({
     // compares redirect URIs as text), for redirect URIs when there is no public URL.
     setOrigin(o) { origin = o; },
     redirectFor,
+    // fn() → { url } where OBS reaches this platform, or { problem } saying what to set, for the
+    // overlays connections share (app.js works it out once it listens).
+    setShareBase(fn) { shareBase = fn; },
 
     async start() {
       if (started) return;
@@ -216,6 +238,8 @@ export function createConnectorHost({
       startTimers.clear();
       for (const d of devices.values()) timers.clearTimeout(d.timer);
       devices.clear();
+      for (const p of pairings.values()) timers.clearTimeout(p.timer);
+      pairings.clear();
       await Promise.all([...runners.values()].map((r) => r.close({ shutdown: true }).catch(() => {})));
     },
 
@@ -238,11 +262,14 @@ export function createConnectorHost({
         const h = r ? r.health.view() : { status: doc.data.enabled ? 'connecting' : 'disabled' };
         const mine = bus.stateOf(doc.id);
         const counts = mine.filter((e) => /^viewers\.[a-z0-9-]+$/.test(e.key) && typeof e.value === 'number');
+        // The stream it follows at its service (a CTD Multi-Stream profile: name, colour, live or not).
+        const profile = r?.info?.profile;
         return {
           id: doc.id, name: doc.data.name, connector: doc.data.connector, status: h.status,
           ...(h.detail ? { detail: h.detail } : {}), ...(h.since ? { since: h.since } : {}),
           ...(counts.length ? { viewers: counts.reduce((n, e) => n + e.value, 0) } : {}),
           ...(mine.some((e) => e.stale) ? { stale: true } : {}),
+          ...(profile && typeof profile === 'object' ? { profile } : {}),
         };
       });
     },
@@ -266,6 +293,7 @@ export function createConnectorHost({
       if (reauth) {
         flows.cancel(id);
         cancelDevice(id);
+        cancelPairing(id);
         records.clearTokens(id);
       }
       const onOff = changed.includes('enabled');
@@ -280,6 +308,8 @@ export function createConnectorHost({
         if (started && !stopped) await r.reload(saved);
         else r.rename(saved);
       } else r.rename(saved);
+      // Turned off: what it registered at its service goes too (it registers again when on).
+      if (onOff && !saved.data.enabled) retire(saved, def);
       return resource(saved);
     },
 
@@ -289,17 +319,20 @@ export function createConnectorHost({
       const fed = overlays?.fedBy(id) || [];
       flows.cancel(id);
       cancelDevice(id);
+      cancelPairing(id);
       const r = runners.get(id);
       if (r) {
         await r.stop({ deliberate: true });
         await r.close({ shutdown: false });
         runners.delete(id);
       }
+      const def = registry.get(doc.data.connector);
+      // Before its secrets and memory go: what it registered at its service is undone.
+      if (def) retire(records.get(id) || doc, def);
       bus.clearOwner(id);
       bus.purgeChat(id);
       bus.setRank(id, 0);
       // The service forgets the sign-in too, where it allows (best effort).
-      const def = registry.get(doc.data.connector);
       let tokens;
       try { tokens = records.tokensOf(id)?.user; } catch { tokens = undefined; }
       if (def?.oauth?.revokeUrl && tokens) {
@@ -319,7 +352,7 @@ export function createConnectorHost({
     async authorize(id, { who, ip } = {}) {
       const doc = docOf(id);
       const def = defOf(doc);
-      if (!isOAuthFlow(def)) {
+      if (!isOAuthFlow(def) && def.auth !== 'pairing') {
         const how = def.auth === 'client-credentials' ? 'it uses its client ID and secret, from its settings'
           : def.auth === 'password' ? 'it uses the password or token in its settings'
             : 'it needs no account';
@@ -328,6 +361,7 @@ export function createConnectorHost({
       const times = (authorizeCounts.get(id) || []).filter((t) => now() - t < 60000);
       if (times.length >= AUTHORIZE_PER_MINUTE) throw new ConnectorError(`More than ${AUTHORIZE_PER_MINUTE} sign-ins a minute: wait a moment.`, 'rate-limited', { retryAfterS: 60 });
       authorizeCounts.set(id, [...times, now()]);
+      if (def.auth === 'pairing') return startPairing(doc, def, who);
       const client = clientFor(def, doc);
       if (!client) throw new ConnectorError(`Enter the app's client ID in ${doc.data.name}'s settings first (the setup guide says where to find it).`, 'invalid');
       const principal = principalOf(who);
@@ -400,7 +434,7 @@ export function createConnectorHost({
     // revoked where the service allows).
     async cancelAuthorization(id, { who, ip } = {}) {
       const doc = docOf(id);
-      const had = flows.cancel(id) + (cancelDevice(id) ? 1 : 0);
+      const had = flows.cancel(id) + (cancelDevice(id) ? 1 : 0) + (cancelPairing(id) ? 1 : 0);
       if (had) return { cancelled: true };
       const def = defOf(doc);
       let tokens;
@@ -509,6 +543,131 @@ export function createConnectorHost({
     timers.clearTimeout(d.timer);
     devices.delete(id);
     return true;
+  }
+
+  // ---- pairing -------------------------------------------------------------------------------
+  // The service gives a code (an admin approves it in its own settings) and a secret to poll with,
+  // kept here only, never in an answer or a log. Polled at its interval (longer when it asks for a
+  // pause) until it hands over the connection's secret, says no, or the code expires.
+  async function startPairing(doc, def, who) {
+    cancelPairing(doc.id);
+    outcomes.delete(doc.id);
+    const config = withDefaults(def, doc.data.config);
+    const problem = def.validate?.(config, {});
+    if (typeof problem === 'string' && problem) throw new ConnectorError(problem, 'invalid');
+    const http = plainHttp();
+    let start;
+    try {
+      start = await def.pairing.start({ config, http });
+    } catch (err) {
+      const limited = err.status === 429 || err.code === 'rate-limited';
+      throw new ConnectorError(`${def.name}: ${scrubFor(doc, err.message)}`, limited ? 'rate-limited' : 'action-failed', limited ? { retryAfterS: Math.max(1, Math.ceil((err.retryAfterMs || 60000) / 1000)) } : {});
+    }
+    const intervalS = Math.max(1, Math.min(60, Number(start.intervalS) || 5));
+    const p = {
+      code: String(start.code).slice(0, 40),
+      ...(typeof start.approveUrl === 'string' && /^https?:\/\/\S+$/.test(start.approveUrl) ? { approveUrl: start.approveUrl.slice(0, 2048) } : {}),
+      expiresAt: now() + Math.max(30, Math.min(3600, Number(start.expiresInS) || 600)) * 1000,
+      intervalS, state: start.state, config, http, actor: who?.label, timer: null,
+    };
+    pairings.set(doc.id, p);
+    pollPairing(doc.id, p, intervalS * 1000);
+    return pairingView(p);
+  }
+
+  function cancelPairing(id) {
+    const p = pairings.get(id);
+    if (!p) return false;
+    timers.clearTimeout(p.timer);
+    pairings.delete(id);
+    return true;
+  }
+
+  function pollPairing(id, p, wait) {
+    p.timer = timers.setTimeout(async () => {
+      if (pairings.get(id) !== p || stopped) return;
+      const doc = records.get(id);
+      const def = doc && registry.get(doc.data.connector);
+      if (!def) { pairings.delete(id); return; }
+      if (now() >= p.expiresAt) {
+        pairings.delete(id);
+        outcomes.set(id, { flow: 'pairing', status: 'expired', detail: 'The code expired before it was approved. Connect again for a new one.', at: now() });
+        record('connection.authorize-failed', p.actor, undefined, id, { reason: 'expired' });
+        return;
+      }
+      let r;
+      try {
+        r = await def.pairing.poll({ config: p.config, http: p.http }, p.state);
+      } catch (err) {
+        if (pairings.get(id) !== p) return;
+        pairings.delete(id);
+        const status = err.code === 'denied' ? 'denied' : err.code === 'expired' ? 'expired' : 'failed';
+        outcomes.set(id, { flow: 'pairing', status, detail: scrubFor(doc, err.message), at: now() });
+        record('connection.authorize-failed', p.actor, undefined, id, { reason: err.code || 'refused' });
+        return;
+      }
+      if (pairings.get(id) !== p) return;
+      if (r?.secrets) {
+        pairings.delete(id);
+        await finishPairing(id, def, r, p);
+        return;
+      }
+      pollPairing(id, p, Math.max(p.intervalS * 1000, Math.min(Number(r?.waitMs) || 0, 10 * 60 * 1000)));
+    }, wait);
+    p.timer?.unref?.();
+  }
+
+  // The secret in hand: saved (encrypted) into the connection's secret field, as if typed, and the
+  // connection started again with it.
+  async function finishPairing(id, def, r, p) {
+    let saved;
+    try {
+      const doc = records.get(id);
+      if (!doc) return;
+      saved = records.update(def, doc, { secrets: r.secrets }, { actor: p.actor || 'platform' }).doc;
+    } catch (err) {
+      outcomes.set(id, { flow: 'pairing', status: 'failed', detail: `What ${def.name} sent couldn't be saved (${String(err.message).slice(0, 200)}). Connect again.`, at: now() });
+      record('connection.authorize-failed', p.actor, undefined, id, { reason: 'unsaved' });
+      return;
+    }
+    outcomes.set(id, { flow: 'pairing', status: 'done', at: now() });
+    record('connection.authorize', p.actor, undefined, id, { flow: 'pairing', ...(r.audit && typeof r.audit === 'object' ? r.audit : {}) });
+    log.info('a connection was paired with its service', { connection: id, connector: def.id });
+    if (started && !stopped) await runnerOf(saved).reload(saved);
+  }
+
+  // ---- what a connection leaves at its service --------------------------------------------------
+  // Deleted or turned off: its definition undoes what it registered there (an app in CTD
+  // Multi-Stream's hub), best effort, with the secrets and memory it had. Not awaited: a service
+  // that doesn't answer mustn't hold up a delete.
+  function retire(doc, def) {
+    if (typeof def.retire !== 'function') return;
+    let s;
+    try { s = records.secretsOf(doc); } catch { return; }
+    const memory = records.memoryOf(doc.id).memory || {};
+    const config = withDefaults(def, doc.data.config);
+    const http = plainHttp();
+    Promise.resolve()
+      .then(() => withTimeoutOf(def.retire({ config, secrets: s, memory, http }), RETIRE_MS))
+      .catch((err) => log.warn('what a connection registered at its service could not be undone', { connection: doc.id, err: scrubFor(doc, err?.message) }));
+  }
+  const withTimeoutOf = (promise, ms) => new Promise((resolve, reject) => {
+    const t = timers.setTimeout(() => reject(new Error('no answer in time')), ms);
+    t?.unref?.();
+    Promise.resolve(promise).then((v) => { timers.clearTimeout(t); resolve(v); }, (e) => { timers.clearTimeout(t); reject(e); });
+  });
+
+  // A name a running connector suggests (records.suggestName): taken while nobody named it.
+  function suggestName(id, name) {
+    try {
+      const doc = records.get(id);
+      const def = doc && registry.get(doc.data.connector);
+      if (!def) return;
+      const saved = records.suggestName(def, id, name);
+      if (saved) runners.get(id)?.rename(saved);
+    } catch (err) {
+      log.warn('a connection could not take the name its service suggests', { connection: id, err: err.message });
+    }
   }
 
   // The device flow (RFC 8628 §3.4–3.5): poll at the interval the service gave, 5 s slower each

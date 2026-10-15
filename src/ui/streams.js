@@ -1,5 +1,6 @@
 // Streams in the admin UI: a show's or an overlay's stream status as people read it (on air or not,
-// each platform, viewers, what feeds it), and the "Fed by" choice of connections. Live, Overlays
+// the CTD Multi-Stream profile it follows, each platform, viewers, what feeds it), and the "Fed by"
+// choice of connections. Live, Overlays
 // and Shows use these. A stream's status comes from the API (`stream` on a show or an overlay,
 // src/streams.js): onAir true, false, or absent when nothing says, which is "Unknown", never
 // "Offline"; viewers absent when no count is known, never 0 (H6).
@@ -39,6 +40,17 @@ function platformText(p) {
   return `${parts.join(' · ')}${p.stale ? ' (held)' : ''}`;
 }
 
+// A CTD Multi-Stream profile's status in words (06 §6.11).
+const PROFILE = { live: 'Live', starting: 'Starting', stopping: 'Stopping', offline: 'Offline' };
+export const profileWords = (status) => PROFILE[status] || 'Unknown';
+
+// A profile as a chip: its colour (never alone: its name and status are the words), "DPRTMNT · Live".
+export function profileChip(p) {
+  const dot = h('span.dot', { 'aria-hidden': 'true' });
+  if (typeof p?.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(p.color)) dot.style.background = p.color;
+  return h('span.chip', dot, `${p?.name || 'A profile'} · ${profileWords(p?.status)}`);
+}
+
 // A connection as a chip: its dot, its name and status in words; what is wrong, when something is.
 export function connectionChip(c) {
   const [kind, words] = connectionWords(c?.status);
@@ -57,6 +69,7 @@ export function streamStatus({ compact = false } = {}) {
     const air = airOf(stream);
     const platforms = list(stream?.platforms);
     const connections = list(stream?.connections);
+    const profiles = list(stream?.profiles);
     const title = platforms.find((p) => p.title)?.title;
     mount(el,
       h('div.row',
@@ -64,6 +77,7 @@ export function streamStatus({ compact = false } = {}) {
         rec ? badge('REC', 'danger') : null,
         Number.isFinite(stream?.viewers) ? h('strong', viewersText(stream.viewers)) : null,
         !compact && title ? h('span.muted.truncate', title) : null),
+      profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null,
       platforms.length ? h('div.chips', { role: 'list', 'aria-label': 'Platforms' }, platforms.map((p) => h('span.chip', { role: 'listitem' }, platformText(p)))) : null,
       connections.length
         ? h('div.chips', { role: 'list', 'aria-label': 'Fed by' }, connections.map((c) => { const chip = connectionChip(c); chip.setAttribute('role', 'listitem'); return chip; }))

@@ -1,7 +1,7 @@
 // Connections in the store (07 §7.7): three collections per connection, all deleted together.
 //
 //   connections/<con_…>        { connector, name, enabled, config, secrets?, secretFields,
-//                                createdAt, createdBy, updatedAt, updatedBy, source? }
+//                                createdAt, createdBy, updatedAt, updatedBy, source?, autoName? }
 //       config: the definition's fields that aren't secret; secrets: the writeOnly ones, as one
 //       JSON object, encrypted with AAD "connection:<id>"; secretFields: the names that hold a
 //       value (the admin UI says "saved" for them). Its rev is the resource's ETag.
@@ -169,6 +169,19 @@ export function createRecords({ store, secrets, now = Date.now }) {
       Object.assign(next, sealSecrets(doc.id, values), { secretFields: Object.keys(values).filter((k) => values[k]).sort() });
       const saved = store.put(CONNECTIONS, doc.id, next, { ifRev: ifRev ?? doc.rev });
       return { doc: saved, changed, reauth };
+    },
+
+    // A name the connector suggests (what its service calls what it follows: "Multi-Stream ·
+    // DPRTMNT"), taken while nobody has named the connection: it still has the definition's name,
+    // or the last name suggested (autoName). Returns the saved doc, or undefined when it kept its name.
+    suggestName(def, id, name) {
+      const doc = store.get(CONNECTIONS, id);
+      if (!doc) return undefined;
+      let n;
+      try { n = cleanName(String(name).slice(0, NAME_CHARS)); } catch { return undefined; }
+      if (doc.data.name !== def.name && doc.data.name !== doc.data.autoName) return undefined;
+      if (doc.data.name === n && doc.data.autoName === n) return undefined;
+      return store.put(CONNECTIONS, id, { ...doc.data, name: n, autoName: n, updatedAt: iso(now()), updatedBy: 'platform' }, { ifRev: doc.rev });
     },
 
     // The connection, its tokens and its memory, in one transaction.

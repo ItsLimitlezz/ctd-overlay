@@ -1,9 +1,9 @@
 // Overlays over HTTP (03 §3.4), on the API's conventions (http/api.js):
 //
 //   GET    /api/v1/overlays                    every overlay, paged
-//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections? }
+//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections?, role? }
 //   GET    /api/v1/overlays/:ref               by slug or id
-//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections? } (If-Match)
+//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections?, role? } (If-Match)
 //   DELETE /api/v1/overlays/:ref
 //   POST   /api/v1/overlays/:ref/upgrade       { version, dryRun?, confirm?, runMigrate? } (04 §4.10)
 //   POST   /api/v1/overlays/:ref/revert        back to the version and settings before the last upgrade
@@ -23,6 +23,10 @@
 // connections:read, and need to see what feeds what). `stream` is its stream status (src/streams.js):
 // the turned-on connections that feed it, whether it is on air on each platform, its viewers;
 // worked out on each read, so it never moves the ETag.
+//
+// `role` ("Role in OBS", 06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
+// overlay of every stream ("chat-main"); CTD Multi-Stream's OBS plugin uses it to re-point its
+// browser sources when it switches stream. Absent: the template's short name ("takeover").
 import { ApiError } from '../http/api.js';
 
 export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections, streams }) {
@@ -49,6 +53,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
       keyRequired: overlays.keyRequired(doc),
       connections: overlays.bindingOf(doc),
       bound: boundTo(overlays.bindingOf(doc)),
+      ...(d.role ? { role: d.role } : {}),
       ...(streams ? { stream: streams.ofOverlay(doc) } : {}),
       ...(d.previous ? { previous: { template: d.previous.template, at: d.previous.at } } : {}),
       ...(shows ? { show: shows.list().find((s) => s.overlays.includes(doc.id))?.name } : {}),
@@ -72,14 +77,14 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
     r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays, each with what feeds it and its stream status', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
-    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids)', body: { fields: ['slug', 'template', 'settings', 'connections'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
+    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids)', body: { fields: ['slug', 'template', 'settings', 'connections', 'role'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
       checkConnections(body.connections);
-      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all' });
+      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all', role: body.role });
       audit.record({ action: 'overlay.create', actor: who.label, ip: req.client?.ip, target: doc.data.slug, template: `${doc.data.template.id}@${doc.data.template.version}` });
       return { status: 201, body: resource(docOf(doc.data.slug)) };
     } }),
     r({ method: 'GET', path: '/api/v1/overlays/:ref', scope: 'overlays:read', summary: 'An overlay, by slug or id', run: ({ params }) => resource(docOf(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
+    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, role in OBS, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections', 'role'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
       const { doc } = docOf(params.ref);
       if (body.keyRequired !== undefined && typeof body.keyRequired !== 'boolean') throw new ApiError(422, 'invalid', '"keyRequired" is true or false.');
       checkConnections(body.connections);

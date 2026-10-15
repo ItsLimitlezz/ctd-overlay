@@ -9,12 +9,19 @@
 //                                    redirect with "Finish sign-in" to paste the address landed on),
 //                                    what it feeds, its actions, its settings
 //
+// A connector that pairs (auth 'pairing', CTD Multi-Stream) is set up with its address only and
+// Connect: the code to approve at the service shows on the connection's page, with its countdown,
+// until the service hands over the token; "Paste a token instead" keeps the whole form. Its info
+// (what the running connection tells about itself) shows the profile it follows and what it shares
+// with the OBS plugin; a setting marked x-skp-choices takes its options from info.choices.
+//
 // Seeing connections takes connections:read and changing them connections:write (owners and
 // admins); operators see each one's status, from GET /api/v1/system/health. Secrets are password
 // fields that are never filled in (the API never sends them); leaving one empty keeps it.
 import * as api from '../api.js';
 import { ago, badge, clock, confirm, copyField, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, toast } from '../dom.js';
 import { schemaForm } from '../schema-form.js';
+import { profileChip } from '../streams.js';
 
 const STATUS = {
   connected: ['ok', 'Connected'],
@@ -42,6 +49,39 @@ const statusOf = (health) => STATUS[health?.status] || [undefined, health?.statu
 const feedsOf = (caps = []) => caps.map((c) => FEEDS[c]).filter(Boolean);
 const platformName = (p) => PLATFORM[p] || p;
 const signsIn = (def) => Boolean(def && SIGN_IN.has(def.auth));
+const pairs = (def) => def?.auth === 'pairing';
+// Connect, or Connect again once it has a token (a refused one, or another profile).
+const connectLabel = (c) => (c.secretFields?.length ? 'Connect again' : 'Connect');
+const needsConnect = (c) => !c.secretFields?.length || c.health?.status === 'needs-reauth';
+
+// The profile it follows at its service: "DPRTMNT · Live", since when.
+function profileLine(c) {
+  const p = c.info?.profile;
+  if (!p || typeof p !== 'object') return null;
+  return h('div.row', profileChip(p), p.status === 'live' && p.startedAt ? h('span.small.muted', `since ${clock(p.startedAt)}`) : null);
+}
+// What it shares with the OBS plugin (CTD Multi-Stream's hub); a failure's reason is a warning.
+function hubLine(c) {
+  const hub = c.info?.hub;
+  if (!hub || typeof hub !== 'object') return null;
+  if (hub.status === 'shared') return h('p.small', `Shared with the OBS plugin: ${hub.overlays} overlay${hub.overlays === 1 ? '' : 's'}${hub.resources !== hub.overlays ? ` (${hub.resources} canvases)` : ''}.`);
+  if (hub.status === 'starting') return h('p.small.muted', 'Sharing its overlays with the OBS plugin…');
+  if (hub.status === 'failed') return h('p.small.muted', 'Not shared with the OBS plugin: see the warning.');
+  return h('p.small.muted', `Not shared with the OBS plugin: ${hub.detail || 'off'}`);
+}
+
+// A settings schema with the choices the running connection offers (x-skp-choices: a profile to
+// follow, say), or without those settings while it offers none.
+function withChoices(schema, info) {
+  if (!schema?.properties) return schema;
+  const props = {};
+  for (const [k, s] of Object.entries(schema.properties)) {
+    if (!s?.['x-skp-choices']) { props[k] = s; continue; }
+    const list = Array.isArray(info?.choices?.[k]) ? info.choices[k].filter((x) => typeof x?.value === 'string') : [];
+    if (list.length) props[k] = { ...s, enum: list.map((x) => x.value), 'x-skp-labels': list.map((x) => x.label || x.value) };
+  }
+  return { ...schema, properties: props, ...(Array.isArray(schema.required) ? { required: schema.required.filter((k) => k in props) } : {}) };
+}
 
 // "Twitch viewers: 214", "Twitch live: yes" … for the values a connection sets now.
 function valueRows(state = {}, stale = []) {
@@ -134,6 +174,7 @@ export async function list(view, ctx) {
     const values = valueRows(c.state, c.stale);
     const buttons = [];
     if (canWrite && signsIn(def) && (!c.signedIn || c.health?.status === 'needs-reauth')) buttons.push(h('a.btn.primary', { href: `#/connections/${api.seg(c.id)}` }, c.signedIn ? 'Re-authorize' : 'Authorize'));
+    if (canWrite && pairs(def) && needsConnect(c)) buttons.push(h('a.btn.primary', { href: `#/connections/${api.seg(c.id)}` }, connectLabel(c)));
     if (canWrite) {
       const test = h('button.btn', { type: 'button', onclick: async () => { const out = await run(test, () => api.post(`/api/v1/connections/${api.seg(c.id)}/test`, {})); if (out) showTest(out, c.name); } }, 'Test');
       const toggle = h('button.btn', { type: 'button', onclick: () => setEnabled(toggle, c, !c.enabled, () => load()) }, c.enabled ? 'Turn off' : 'Turn on');
@@ -146,8 +187,10 @@ export async function list(view, ctx) {
     return h('article.card', { dataset: { id: c.id } },
       h('div.card-head', h('h2', h('a', { href: `#/connections/${api.seg(c.id)}` }, c.name))),
       statusLine(c),
+      profileLine(c),
       h('p.small.muted', [def?.name || c.connector, feeds.length ? `feeds ${feeds.join(', ').toLowerCase()}` : ''].filter(Boolean).join(' · ')),
       c.account ? h('p.small', `Signed in as ${c.account.name || c.account.login || c.account.id}`) : null,
+      hubLine(c),
       values.length ? kv(values) : null,
       c.health?.lastEventAt ? h('p.small.muted', `Last event ${ago(c.health.lastEventAt)}`) : null,
       quotaBar(c.health?.quota),
@@ -178,14 +221,15 @@ export async function list(view, ctx) {
   }
 
   await load();
-  // Live: a connection's status changes as it happens (system.connection); values every 10 s.
+  // Live: a connection's status changes as it happens (system.connection), and what it tells about
+  // itself (its profile, what it shares) is read again then; values every 10 s.
   let pending = null;
   const stopEvents = api.events(['system.connection'], (env) => {
     const id = env.data?.connection;
     const i = items.findIndex((c) => c.id === id);
     if (i >= 0) items[i] = { ...items[i], health: { ...items[i].health, status: env.data.status, detail: env.data.detail, since: env.data.since, lastEventAt: env.data.lastEventAt, warnings: env.data.warnings || [] } };
     clearTimeout(pending);
-    pending = setTimeout(draw, 200);
+    pending = setTimeout(() => load().catch(draw), 300);
   });
   let first = true;
   const stopPoll = every(10000, async () => { if (first) { first = false; return; } await load(); });
@@ -252,7 +296,7 @@ export async function create(view, ctx) {
   ctx.setTitle(`Connect ${def.name}`);
   const nameInput = h('input', { type: 'text', value: def.name, maxlength: '80', autocomplete: 'off' });
   const on = h('input', { type: 'checkbox', checked: true });
-  const form = schemaForm({ schema: def.fields, values: {}, resolved: {} });
+  const form = schemaForm({ schema: withChoices(def.fields), values: {}, resolved: {} });
   const save = h('button.btn.primary', { type: 'submit' }, 'Save');
   const submit = async (e) => {
     e.preventDefault();
@@ -261,17 +305,50 @@ export async function create(view, ctx) {
     const made = await run(save, () => api.post('/api/v1/connections', { connector: def.id, name: nameInput.value.trim() || def.name, enabled: on.checked, config, secrets }), { done: (c) => `Added ${c.name}` });
     if (made) ctx.navigate(`/connections/${encodeURIComponent(made.id)}`);
   };
+  const settings = h('form', { onsubmit: submit },
+    field('Name', nameInput, { hint: 'What you call it here, like "Multi-Stream (NAS)".' }),
+    form.el,
+    field('Turn it on when saved', on),
+    h('div.form-actions', h('a.btn', { href: '#/connections' }, 'Cancel'), save));
   mount(view,
     pageHead(`Connect ${def.name}`, { crumbs }),
     guide(def),
-    h('section.card',
-      h('h2', 'Settings'),
-      h('form', { onsubmit: submit },
-        field('Name', nameInput, { hint: 'What you call it here, like "Multi-Stream (NAS)".' }),
-        form.el,
-        field('Turn it on when saved', on),
-        h('div.form-actions', h('a.btn', { href: '#/connections' }, 'Cancel'), save))));
+    pairs(def)
+      ? [pairingSetup(ctx, def), h('section.card', h('details', h('summary', 'Paste a token instead'), h('p.small.muted', `Made a token in ${def.name} yourself? Paste it here with the address; the rest works the same.`), settings))]
+      : h('section.card', h('h2', 'Settings'), settings));
   return undefined;
+}
+
+// Pairing (the default for a connector that pairs): the address only, then Connect. The connection
+// is made and asks the service for a code; its page shows the code until it is approved there. If
+// the service can't be asked, the connection isn't kept, so the address can be fixed here.
+function pairingSetup(ctx, def) {
+  const s = def.fields?.properties?.baseUrl || {};
+  const address = h('input', { type: 'url', inputmode: 'url', autocomplete: 'off', required: true, maxlength: String(s.maxLength || 300), placeholder: s.examples?.[0] || '' });
+  const go = h('button.btn.primary', { type: 'submit' }, 'Connect');
+  const problem = h('div', { 'aria-live': 'polite' });
+  const submit = async (e) => {
+    e.preventDefault();
+    mount(problem);
+    const baseUrl = address.value.trim();
+    if (!baseUrl) { address.focus(); return; }
+    await run(go, async () => {
+      const made = await api.post('/api/v1/connections', { connector: def.id, config: { baseUrl } });
+      try {
+        await api.post(`/api/v1/connections/${api.seg(made.id)}/authorize`, {});
+      } catch (err) {
+        await api.del(`/api/v1/connections/${api.seg(made.id)}`, { ifMatch: made }).catch(() => {});
+        throw err;
+      }
+      ctx.navigate(`/connections/${encodeURIComponent(made.id)}`);
+    }, { onError: (err) => mount(problem, notice(err?.message || String(err), 'danger')) });
+  };
+  return h('section.card',
+    h('h2', `Connect to ${def.name}`),
+    h('form', { onsubmit: submit },
+      field(s.title || 'API address', address, { hint: s.description }),
+      problem,
+      h('div.form-actions', h('a.btn', { href: '#/connections' }, 'Cancel'), go)));
 }
 
 // ---- one connection ----------------------------------------------------------------------------
@@ -312,6 +389,8 @@ export async function detail(view, ctx) {
   const settingsBox = h('section.card');
   let tick = null;
   let started = null; // a sign-in this page started: { flow, url, redirectUri } (redirect)
+  let shownRev; // the version the settings form shows
+  let shownChoices; // and the choices it offered
 
   function drawHead() {
     mount(head, pageHead(c.name, {
@@ -329,6 +408,8 @@ export async function detail(view, ctx) {
     mount(statusBox,
       h('h2', 'Status'),
       statusLine(c),
+      profileLine(c),
+      hubLine(c),
       h('p.small.muted', [c.health?.since ? `Since ${ago(c.health.since)}` : '', c.health?.lastEventAt ? `last event ${ago(c.health.lastEventAt)}` : ''].filter(Boolean).join(', ')),
       quotaBar(c.health?.quota),
       warningsOf(c.health?.warnings),
@@ -336,10 +417,52 @@ export async function detail(view, ctx) {
       canWrite ? h('div.row', test, toggle) : null);
   }
 
+  // A countdown to an ISO instant ("9:41"), ticking while the page shows it.
+  function countdownTo(iso) {
+    const left = h('span.countdown');
+    const update = () => {
+      const ms = Date.parse(iso) - api.serverNow();
+      left.textContent = ms > 0 ? `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}` : 'expired';
+    };
+    update();
+    tick = setInterval(update, 1000);
+    return left;
+  }
+
+  // Pairing: Connect asks the service for a code; an admin approves it there (and picks the
+  // profile); the platform collects the token by itself.
+  function drawPairing() {
+    const a = c.authorization;
+    const parts = [h('h2', 'Connection')];
+    if (a?.flow === 'pairing' && a.status === 'pending') {
+      parts.push(
+        h('p', `Approve this code in ${def.name} → Settings → API, and pick the profile this connection follows:`),
+        h('p.device-code', { 'aria-label': `Code ${String(a.code).split('').join(' ')}` }, a.code),
+        a.approveUrl ? h('p', h('a', { href: a.approveUrl, target: '_blank', rel: 'noopener noreferrer' }, `Open ${def.name}'s Settings → API`)) : null,
+        h('p.small.muted', 'Waiting for the approval: it connects by itself. The code works for ', countdownTo(a.expiresAt), '.'),
+        canWrite ? h('div.row', h('button.btn', { type: 'button', onclick: (e) => cancel(e.currentTarget) }, 'Cancel')) : null);
+      mount(signBox, parts);
+      return;
+    }
+    if (a && a.status !== 'pending' && a.flow === 'pairing') {
+      parts.push(notice(a.status === 'done' ? `Connected: ${def.name} approved it.` : a.detail || 'Connecting didn\'t work.', a.status === 'done' ? 'ok' : 'danger'));
+    }
+    const p = c.info?.profile;
+    const up = c.health?.status === 'connected' || c.health?.status === 'degraded';
+    if (c.secretFields?.length && c.health?.status !== 'needs-reauth') parts.push(h('p', p ? ['Follows the profile ', h('strong', p.name), `${c.info?.choices?.profile ? ' (pick another in Settings below)' : ''}.`] : up ? 'Running with its token.' : 'It has a token, but isn\'t running now: see Status.'));
+    else parts.push(h('p.muted', `Not connected: press ${connectLabel(c)}, then approve the code in ${def.name} → Settings → API.`));
+    if (canWrite) {
+      const go = h('button.btn', { class: needsConnect(c) ? 'primary' : undefined, type: 'button', onclick: () => authorize(go) }, connectLabel(c));
+      parts.push(h('div.row', go), h('p.small.muted', 'Connect again for another profile, or after the token was revoked. Or paste a token under Settings.'));
+    }
+    mount(signBox, parts);
+  }
+
   function drawSignIn() {
     clearInterval(tick);
     tick = null;
-    signBox.hidden = !signsIn(def);
+    signBox.hidden = !signsIn(def) && !pairs(def);
+    if (pairs(def)) { drawPairing(); return; }
     if (!signsIn(def)) return;
     const a = c.authorization;
     const parts = [h('h2', 'Sign-in')];
@@ -347,17 +470,10 @@ export async function detail(view, ctx) {
     else parts.push(h('p.muted', `Not signed in: Authorize to connect ${def.name}.`));
     if (c.needsReauth) parts.push(notice(`Sign in again: ${c.needsReauth.reason}.`, 'danger'));
     if (a?.flow === 'device' && a.status === 'pending') {
-      const left = h('span.countdown');
-      const update = () => {
-        const ms = Date.parse(a.expiresAt) - api.serverNow();
-        left.textContent = ms > 0 ? `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}` : 'expired';
-      };
-      update();
-      tick = setInterval(update, 1000);
       parts.push(
         h('p', 'On any device, open ', h('a', { href: a.verificationUriComplete || a.verificationUri, target: '_blank', rel: 'noopener noreferrer' }, a.verificationUri), ' and enter this code:'),
         h('p.device-code', { 'aria-label': `Code ${a.userCode.split('').join(' ')}` }, a.userCode),
-        h('p.small.muted', 'Waiting for you to approve it. The code works for ', left, '.'),
+        h('p.small.muted', 'Waiting for you to approve it. The code works for ', countdownTo(a.expiresAt), '.'),
         canWrite ? h('div.row', h('button.btn', { type: 'button', onclick: (e) => cancel(e.currentTarget) }, 'Cancel')) : null);
     } else {
       if (a && a.status !== 'pending') {
@@ -414,15 +530,23 @@ export async function detail(view, ctx) {
   function drawSettings() {
     if (!canWrite) { settingsBox.hidden = true; return; }
     const read = c; // the version this form edits (If-Match, H16)
+    shownRev = c.rev;
+    shownChoices = JSON.stringify(c.info?.choices || null);
     const nameInput = h('input', { type: 'text', value: c.name, maxlength: '80', autocomplete: 'off' });
-    const form = def ? schemaForm({ schema: def.fields, values: c.config || {}, resolved: {}, saved: c.secretFields || [] }) : null;
+    const schema = def ? withChoices(def.fields, c.info) : undefined;
+    // A setting whose choices the connection offers none of now is kept as it is, not dropped.
+    const hiddenValues = Object.fromEntries(Object.entries(c.config || {}).filter(([k]) => def?.fields?.properties?.[k] && !schema?.properties?.[k]));
+    // The choice it follows when none is set (the default profile), as the placeholder.
+    const resolved = c.info?.profile && schema?.properties?.profile ? { profile: c.info.profile.id } : {};
+    const form = def ? schemaForm({ schema, values: c.config || {}, resolved, saved: c.secretFields || [] }) : null;
     const save = h('button.btn.primary', { type: 'submit' }, 'Save');
     mount(settingsBox,
       h('h2', 'Settings'),
       h('form', { onsubmit: async (e) => {
         e.preventDefault();
         if (form?.validate().length) { toast('Check the marked settings.', { kind: 'error' }); return; }
-        const { config, secrets } = split(def, form ? form.values() : {});
+        const { config: shown, secrets } = split(def, form ? form.values() : {});
+        const config = { ...hiddenValues, ...shown };
         const body = { name: nameInput.value.trim() || c.name, ...(form ? { config } : {}), ...(Object.keys(secrets).length ? { secrets } : {}) };
         const out = await run(save, () => api.patch(`/api/v1/connections/${api.seg(c.id)}`, body, { ifMatch: read }), {
           done: 'Settings saved',
@@ -452,9 +576,13 @@ export async function detail(view, ctx) {
     try { await load(); } catch (err) { if (err.status === 404) { ctx.navigate('/connections'); return; } throw err; }
     drawHead();
     drawStatus();
-    // The sign-in box keeps what is being typed in it, unless the flow moved on.
-    if (!signBox.contains(document.activeElement)) drawSignIn();
+    // A box keeps what is being typed in it; the settings are drawn again when the connection
+    // changed (renamed after its profile, a profile list arrived) and nobody is editing them.
+    const typing = (box) => box.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (!typing(signBox)) drawSignIn();
     drawValues();
+    const choices = JSON.stringify(c.info?.choices || null);
+    if ((c.rev !== shownRev || choices !== shownChoices) && !settingsBox.contains(document.activeElement)) drawSettings();
   }
 
   async function authorize(button) {

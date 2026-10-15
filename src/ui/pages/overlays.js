@@ -1,7 +1,7 @@
 // Overlays (08 §8.3, §8.5): every overlay as a card, and one overlay's page: previews at each
 // canvas, its URL for OBS, the settings form and what feeds it ("Fed by": every connection or only
-// some), scenes outside a show, the Simulate panel, template versions (upgrade, go back), and the
-// More menu (rename, the key, delete).
+// some), its role in OBS (for the CTD OBS plugin), scenes outside a show, the Simulate panel,
+// template versions (upgrade, go back), and the More menu (rename, the key, delete).
 import * as api from '../api.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
 import { connectionChip, fedByForm, fedByWords } from '../streams.js';
@@ -682,6 +682,34 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     }
   }
 
+  // ---- role in OBS (06 §6.11) ------------------------------------------------------------
+  // How the CTD OBS plugin knows this overlay's place in a scene across streams: the same role
+  // for the equivalent overlay of every CTD Multi-Stream profile, so switching profile re-points
+  // its browser sources. Empty: the template's short name.
+  const rolePanel = h('section.card.stack#role', h('h2', 'Role in OBS'));
+  {
+    const fallback = String(pinned.id || '').split('.').pop() || 'overlay';
+    const input = h('input', { type: 'text', value: overlay.role || '', maxlength: '54', autocomplete: 'off', spellcheck: 'false', placeholder: fallback, disabled: !canWrite, pattern: '[a-z0-9][a-z0-9\\-]*' });
+    const saveRole = h('button.btn', { type: 'submit', disabled: !canWrite }, 'Save role');
+    rolePanel.append(h('form', { onsubmit: async (e) => {
+      e.preventDefault();
+      const next = input.value.trim().toLowerCase();
+      if (next === (overlay.role || '')) return;
+      await run(saveRole, async () => {
+        try {
+          overlay = await api.patch(ref(), { role: next || null }, { ifMatch: overlay });
+        } catch (err) {
+          if (await outdated(err)) return;
+          throw err;
+        }
+        toast(next ? `"${overlay.slug}" plays the role "${next}" in OBS now.` : `"${overlay.slug}" plays its template's role in OBS now.`);
+      });
+    } },
+    field('Role', input, { hint: `The same role for this overlay in every stream (like "chat-main"), so the CTD OBS plugin can switch its sources between CTD Multi-Stream profiles. Lowercase letters, digits and dashes. Empty: "${fallback}".` }),
+    h('div.form-actions', saveRole)));
+    if (!canWrite) rolePanel.append(h('p.muted', 'Your role can see this but not change it.'));
+  }
+
   // ---- scenes (an overlay outside a show) ------------------------------------------------
   const scenesPanel = h('div.card.stack', h('h2', 'Scenes'));
   if (overlay.show) {
@@ -840,7 +868,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // ---- the page --------------------------------------------------------------------------
   const panels = { settings: settingsPanel, scenes: scenesPanel, test: testPanel, version: versionPanel };
   const tabList = tabs([
-    { id: 'settings', label: 'Settings', render: (p) => { p.append(panels.settings, fedByPanel); } },
+    { id: 'settings', label: 'Settings', render: (p) => { p.append(panels.settings, fedByPanel, rolePanel); } },
     { id: 'scenes', label: 'Scenes', render: (p) => { p.append(panels.scenes); } },
     { id: 'test', label: 'Test', render: (p) => { p.append(panels.test); } },
     { id: 'version', label: 'Version', render: (p) => { p.append(panels.version); } },

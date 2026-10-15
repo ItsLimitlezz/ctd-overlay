@@ -56,6 +56,16 @@ export function checkBinding(value) {
 }
 const feeds = (doc, connId) => { const b = bindingOf(doc); return b === 'all' || b.includes(connId); };
 
+// "Role in OBS" (06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
+// overlay of every stream ("chat-main"), so the CTD OBS plugin can re-point its browser sources
+// when it switches stream. Its canvas is appended ("chat-main-landscape", at most 64 characters).
+export const ROLE = /^[a-z0-9](?:[a-z0-9-]{0,53})$/;
+export function checkRole(value) {
+  if (value === null || value === undefined || value === '') return undefined;
+  if (typeof value !== 'string' || !ROLE.test(value)) throw new OverlayError('"role" is lowercase letters, digits and dashes, at most 54, like "chat-main" (or empty for none).', 'bad-role');
+  return value;
+}
+
 // secrets: encrypts overlay keys at rest (secrets.js); without it (some tests), overlays have no
 // key and need none. exposure: in public mode every overlay needs its key. readOnly: a look that
 // changes nothing (a dry run): an overlay without a key isn't given one at startup.
@@ -66,6 +76,12 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
   const broken = new Set(); // ids whose template is installed but can't be used as it is
   const bindings = new Map(); // state key → ids of overlays with a setting bound to it
   const keys = new Map(); // id → its key, decrypted once
+  const listeners = new Set(); // fn() after an overlay is made, changed or deleted (its URL, key, bindings, role)
+  const changed = () => {
+    for (const fn of listeners) {
+      try { fn(); } catch (err) { log.error('an overlay change listener failed', { err: err.message }); }
+    }
+  };
 
   // One overlay's channel and settings. A template that can't be used (missing, or a manifest
   // later rules refuse) takes only its own overlays off air (503), never the platform's startup.
@@ -223,8 +239,13 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       else delete next.keyRequired;
     }
     if (has('connections')) next.connections = checkBinding(changes.connections);
+    if (has('role')) {
+      const role = checkRole(changes.role);
+      if (role) next.role = role;
+      else delete next.role;
+    }
     const rebound = JSON.stringify(bindingOf({ data: next })) !== JSON.stringify(bindingOf(doc));
-    if (!has('settings') && !rebound && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired) return doc;
+    if (!has('settings') && !rebound && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired && next.role === doc.data.role) return doc;
     const saved = store.put('overlays', doc.id, next, { ifRev: ifRev ?? doc.rev });
     if (saved.data.slug !== doc.data.slug) {
       bySlug.delete(doc.data.slug);
@@ -233,6 +254,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     if (has('settings') || rebound) open(saved);
     // Streams opened without the key end once it is needed: they come back with it, or not at all.
     if (secrets && !keyRequired(doc) && keyRequired(saved)) bus.channel(doc.id).reset();
+    changed();
     return saved;
   }
 
@@ -243,11 +265,12 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     const previous = { template: doc.data.template, settings: doc.data.settings || {}, at: new Date().toISOString() };
     const saved = store.put('overlays', doc.id, { ...doc.data, template: { id: template.id, version: template.version }, settings, previous }, { ifRev: ifRev ?? doc.rev });
     open(saved).reset();
+    changed(); // another version may have other canvases
     return saved;
   }
 
   return {
-    create({ slug, template, settings = {}, connections = 'all' }) {
+    create({ slug, template, settings = {}, connections = 'all', role }) {
       if (typeof slug !== 'string' || !SLUG.test(slug)) {
         throw new OverlayError(`"${slug}" isn't a valid slug: use lowercase letters, digits and dashes, starting with a letter or digit`, 'bad-slug');
       }
@@ -256,13 +279,23 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       if (!t) throw new OverlayError(`template ${template?.id}@${template?.version} isn't installed`, 'no-template');
       checkSettings(t, settings);
       connections = checkBinding(connections);
+      role = checkRole(role);
       templates.retain(t.id, t.version); // a bundled version stays even if a platform update drops it
       const id = newId('ovl');
       const key = secrets ? newOverlayKey() : undefined;
-      const doc = store.put('overlays', id, { slug, template: { id: t.id, version: t.version }, settings, connections, ...(key ? { key: secrets.encrypt(key, id) } : {}) }, { ifRev: 0 });
+      const doc = store.put('overlays', id, { slug, template: { id: t.id, version: t.version }, settings, connections, ...(role ? { role } : {}), ...(key ? { key: secrets.encrypt(key, id) } : {}) }, { ifRev: 0 });
       if (key) keys.set(id, key);
       open(doc);
+      changed();
       return doc;
+    },
+
+    // fn() after an overlay is made, deleted, or changes its URL, key, bindings, role or template
+    // version (the connections that share overlays with another app register them again, 06
+    // §6.11). Returns an unsubscribe function.
+    onChange(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
     },
 
     // Whether a request for this overlay's page or data may be answered: it carries the key, or
@@ -289,6 +322,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       store.put('overlays', doc.id, { ...doc.data, key: secrets.encrypt(key, doc.id) });
       keys.set(doc.id, key);
       bus.channel(doc.id).reset();
+      changed();
       return key;
     },
 
@@ -339,15 +373,16 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     // A deleted connection leaves every list it was named in, so an overlay's bindings, read and
     // sent back, name only connections that exist. Returns the slugs whose list changed.
     unbind(connId) {
-      const changed = [];
+      const slugs = [];
       for (const doc of all()) {
         const b = bindingOf(doc);
         if (b === 'all' || !b.includes(connId)) continue;
         const saved = store.put('overlays', doc.id, { ...doc.data, connections: b.filter((c) => c !== connId) });
         open(saved);
-        changed.push(saved.data.slug);
+        slugs.push(saved.data.slug);
       }
-      return changed;
+      if (slugs.length) changed();
+      return slugs;
     },
 
     remove(id) {
@@ -360,6 +395,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       broken.delete(id);
       for (const ids of bindings.values()) ids.delete(id);
       bus.removeChannel(id);
+      changed();
       return true;
     },
 

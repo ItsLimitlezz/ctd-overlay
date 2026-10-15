@@ -21,8 +21,11 @@ interface Connector {
                                      // secret, password, token), x-skp-egress: 'lan' = an address
                                      // they type, x-skp-reauth = changing it signs the account out
   auth: 'oauth-pkce' | 'oauth-code' | 'device-code' | 'client-credentials'
-      | 'password' | 'none'
+      | 'password' | 'pairing' | 'none'
   oauth?: { authorizeUrl?, tokenUrl, deviceUrl?, revokeUrl?, scopes: { scope, why }[], pkce? }
+  pairing?: { secret, start(), poll() }  // the service's own code-to-approve flow (6.4)
+  sharesOverlays?: boolean           // gets ctx.overlays: the overlays bound to it, keyed URLs
+  retire?(…): Promise<void>          // deleted or turned off: undo what it registered there
   requiresPublicUrl?: boolean        // true if the service pushes to us (webhooks)
   guide: SetupGuide                  // 6.4, 08 §8.7
   actions?: Record<string, ActionSpec>
@@ -52,6 +55,9 @@ interface ConnectorContext {
   log: Logger                         // redacts secrets, its own included
   publicUrl?: string                  // SKP_PUBLIC_URL, when set
   schedule(ms, fn): Cancel · every(ms, fn): Cancel · wrap(fn): fn  // a throw fails the instance
+  setInfo(key, value): void           // what it tells about itself, on the connection (`info`)
+  suggestName(name): void             // the connection's name, while nobody has named it
+  overlays?: { baseUrl?, list(), onChange(fn), create(spec) }  // sharesOverlays only (6.11)
 }
 ```
 
@@ -137,6 +143,7 @@ copied from the installation's configuration.
 | **Auth code + PKCE** | Kick, Google, Spotify | Yes — `SKP_PUBLIC_URL/oauth/callback/<connector>`, or a loopback URL for a desktop install |
 | **Client credentials** | App-only reads (viewer counts) | No |
 | **Password** | obs-websocket | No |
+| **Pairing** | CTD Multi-Stream (§6.11): the service shows a code an admin approves in its own settings, then hands over a token once | No |
 
 OAuth requests **MUST** use `state` bound to the user's session and **MUST** use PKCE (S256)
 whenever the service supports it, even for confidential clients.
@@ -157,6 +164,10 @@ How the platform does it:
   sign-in (`?error=`) ends the flow; its description is never echoed.
 - **The device flow** shows the code and the address, and the platform polls at the interval the
   service gives, 5 s slower on each `slow_down`, until it is used, declined or expired.
+- **Pairing** works the same way for a service with a flow of its own: the connection's page shows
+  the code, where to approve it and its countdown; the platform polls (never the browser) with a
+  secret it keeps to itself, and saves what the service hands over into the connection's secret
+  field, encrypted, as if typed. Denied, expired or cancelled, it says so; Connect again starts over.
 - **Tokens** are kept encrypted (07 §7.7), renewed at 80 % of their life and once on a `401`;
   a renewal's new refresh token is saved before the new access token is used. A refused renewal
   (`invalid_grant`) is `needs-reauth`, said once. Deleting a connection, or signing it out,
@@ -371,18 +382,74 @@ action and the UI **MUST** say it grants access to credentials.
 ## 6.11 CTD Multi-Stream
 
 The operator's multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream),
-its `docs/API.md` v1.1) streams to every platform at once and merges their chat into this
-standard's envelope. Its connector (`ctd-multistream`) is a **relay**: where a direct connector
-also sets a value (`viewers.twitch`), the direct one is shown (02 §2.5.0).
+its `docs/API.md` v1.2) streams to every platform at once and merges their chat into this
+standard's envelope. Its **profiles** are independent streaming set-ups, live at the same time
+("DPRTMNT", "Miami or Bust"). Its connector (`ctd-multistream`) is a **relay**: where a direct
+connector also sets a value (`viewers.twitch`), the direct one is shown (02 §2.5.0). **One
+connection follows one profile**; overlays are assigned to a profile by being fed by its
+connection (01 §1.3).
 
-**Auth:** an API token from its Settings → API (`ctd_pat_…`, scopes `chat:read` and
-`status:read`), kept as a secret setting; no sign-in flow. Its address is the LAN URL ending in
-`/api/v1` (plain HTTP on the local network), or its HTTPS address with the certificate's SHA-256
-fingerprint when self-signed. A `401` means the token was revoked or is wrong: `needs-reauth`
-until a new one is pasted. A `403` (a missing scope) is an error until it is fixed; a `429` is
-waited out.
+**Auth: pairing** (its §9.3). The operator types the LAN URL ending in `/api/v1` (plain HTTP on the
+local network, or its HTTPS address with the certificate's SHA-256 fingerprint when self-signed)
+and presses Connect: `POST /pairing` (no token) asks for `status:read`, `chat:read`, `apps:read`,
+`apps:write` with `appName: "CTD Overlay"`, `kind: "ctd-overlay"`, `profileId: null`. The code
+shows on the connection's page with its `approveUrl`; an admin approves it in CTD Multi-Stream →
+Settings → API and picks the profile. The platform polls `POST /pairing/{id}/token` every
+`interval` s (`202` pending, `200` the token, once; `403` denied, `410` expired; a `429` waits for
+its `Retry-After`), and saves the token as the connection's token secret; the poll secret is
+never answered, logged or stored. Too many requests waiting (`429` on `POST /pairing`) is said in
+words. A pasted token (`ctd_pat_…`, Settings → API → New token) still works. A `401` means the
+token was revoked or is wrong: `needs-reauth` until Connect again (or a new token). A `403` (a
+missing scope) is an error until it is fixed; a `429` is waited out.
 
-**Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`,
+**Profiles:** `GET /api/v1/` names the token's `profileId`. A token limited to a profile reads
+that one (`GET /profiles/{id}`); a token for every profile (`null`, pasted tokens from before
+v1.2 too) follows the profile picked in the connection's settings (`GET /profiles` lists them; the
+default profile until one is picked) and passes `?profile=<id>` on `/status`, `/chat` and
+`/events`, always. The profile (name, colour, `offline | starting | live | stopping`, since when)
+is the connection's `info.profile`, kept fresh by `profile.status`; `profiles.changed` reads it
+again, and a profile deleted there is an `error` saying so. A connection nobody named is called
+"Multi-Stream · <profile name>". A stream fed by the connection (src/streams.js) shows the profile
+and is **on air when the profile is live**, before any platform says so. A server older than v1.2
+(no `profileId` in `GET /`) is read as before.
+
+**Hub** (its §9.2), with `apps:write`: the connection registers the overlays it feeds (bound to
+it, or to every connection) with `PUT /apps/{appId}`, `appId` `ctd-overlay-<profile slug>` for a
+token limited to a profile and `ctd-overlay` for one that reads every profile: `{ name: "CTD
+Overlay", kind: "ctd-overlay", version, baseUrl, capabilities: ["overlays", "overlay.create"],
+resources }`. One resource per canvas: `{ type: "overlay", id: "<overlay id>:<canvas id>", name:
+"<slug> — <canvas>", profileId, url, width, height, meta: { canvas, slot, transparent: true } }`.
+`url` is the overlay's URL for OBS, its key included, at `baseUrl`: `SKP_PUBLIC_URL`, else the
+first `SKP_HOSTS` name with its port (lan and public modes; `192.168.1.50:4850` →
+`http://192.168.1.50:4850`); without one the connection warns and shares no URLs. `canvas` is
+`landscape` or `vertical`: a canvas id `h`/`v` says so, else in a template with a `v` canvas the
+others are the main output's, else its shape (width ≥ height). `slot` is the overlay's **Role in
+OBS** (`role`, ≤ 54 of `[a-z0-9-]`, set on the overlay) or its template id's last part, plus the
+canvas: `takeover-landscape`, `chat-main-vertical`: the same for the equivalent overlay of every
+profile, so the OBS plugin re-points its sources when it switches profile. Sent every 30 s (the
+hub counts an app offline after 90 s) and about a second after an overlay is made, deleted,
+renamed, re-keyed, re-bound or re-roled; at most 200 resources and 256 KB (the first ones, by slug,
+and a warning). `409 app_owned` (another token registered that id) is a warning saying to delete
+the old app in Settings → API; it registers again by itself once it can. Deleting or turning off
+the connection unregisters it (`DELETE /apps/{appId}`, best effort). The connection shows what it
+shares (`info.hub`: "Shared with the OBS plugin: 4 overlays").
+
+**Messages** (its `app.message`, with `apps:read`): only requests addressed to this app id are
+answered, and every one is (`POST /messages { to: <from>, from: <appId>, type, profileId,
+replyTo: <id>, data }`): `overlay.create { template, canvas? }` makes an overlay when the
+connection's **Let other apps create overlays** is on (the default): `template` is an installed
+template's id, or its id's last part or its name (any case); `canvas` `landscape` or `vertical`
+picks that canvas (absent: every canvas). The overlay is named `<template short name>-<profile
+slug>` (`-2`, `-3`… when taken), fed by this connection only, recorded in the audit log as
+`app:<from>` (`via` the connection), registered, then answered `overlay.created { ok: true,
+resource }` (or `resources`). Anything else is `{ ok: false, reason }` in plain words: the switch
+off, no such template or canvas, no address for OBS, more than 10 a minute; a type it doesn't
+handle is answered `error { ok: false, reason }`. Broadcasts and replies are never answered; each
+message is handled once (its id remembered across restarts); a request replayed after the
+connection was away over two minutes is refused; at most 100 answers a minute (the hub takes 120).
+
+**Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`
+(and `profile.status,profiles.changed`, and `app.message` with `apps:read`),
 resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
 when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
 `/status` and `/chat?limit=200` again; that chat goes into the chat buffer **without being sent

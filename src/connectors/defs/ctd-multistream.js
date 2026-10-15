@@ -1,7 +1,23 @@
-// CTD Multi-Stream (PLAN step 16b): the operator's multistreaming server merges chat from every
-// destination it relays to (Twitch, YouTube, Kick, Facebook, X, Instagram, TikTok) and serves it in
-// this standard's envelope (its docs/API.md, v1.1). This connector follows it with an API token:
+// CTD Multi-Stream (PLAN steps 16b, 16c): the operator's multistreaming server merges chat from
+// every destination it relays to (Twitch, YouTube, Kick, Facebook, X, Instagram, TikTok) and serves
+// it in this standard's envelope (its docs/API.md, v1.2). This connector follows it with an API
+// token, one connection per profile (a streaming set-up of its own, live at the same time as
+// others: "DPRTMNT", "Miami or Bust"):
 //
+// - Connect is pairing (its §9.3, auth 'pairing' in host.js): POST /pairing asks for a token
+//   (status:read, chat:read, apps:read, apps:write), CTD Multi-Stream shows the code, an admin
+//   approves it there and picks the profile; the platform polls /pairing/<id>/token at the interval
+//   it gives and saves the token it hands over (once) as the connection's token. A token pasted in
+//   the settings still works. A refused token (401) needs Connect again.
+// - GET / says which profile the token is limited to (or none: every profile). Limited: that
+//   profile, read with GET /profiles/<id>. Every profile: the one picked in the settings (the
+//   default profile until then), and ?profile=<id> on /status, /chat and /events, so one connection
+//   is always one profile. Its name, colour and live status are the connection's info (the Live
+//   page's "DPRTMNT · Live"), kept fresh by profile.status; profiles.changed reads it again, and a
+//   profile deleted there is an error saying so. The connection is named "Multi-Stream · <profile>"
+//   until someone names it. A server older than v1.2 (no profiles) is read as before.
+// - With apps:write it shares the overlays bound to it with the hub, and answers other apps'
+//   requests for new ones (ctd-multistream-hub.js).
 // - GET /status first (every platform's live state, title and viewers), then the event stream
 //   (GET /events, SSE) from the last event seen (Last-Event-ID, kept between starts). With no
 //   cursor yet, or when the server says system.reset (the cursor is older than its buffer, or it
@@ -32,6 +48,8 @@
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
 import { readSse } from '../sse-client.js';
+import { VERSION } from '../../version.js';
+import { APP_ID, appIdFor, createHub } from './ctd-multistream-hub.js';
 
 const PLATFORMS = ['twitch', 'youtube', 'kick', 'facebook', 'x', 'instagram', 'tiktok', 'custom'];
 const ROLES = new Set(['broadcaster', 'moderator', 'vip', 'subscriber', 'member', 'verified', 'founder', 'artist', 'bot']);
@@ -44,12 +62,40 @@ const OLD_CHAT_MS = 60 * 1000;
 const OLD_ALERT_MS = 2 * 60 * 1000;
 const HOLD_MS = 300; // how long an event line waits for its alert (sent right after it)
 const NOTICE_MS = 10 * 60 * 1000;
-const REAUTH = 'CTD Multi-Stream refused the token: it was revoked or is wrong. Make a new one in CTD Multi-Stream → Settings → API (chat:read and status:read), and paste it into this connection\'s settings.';
+const SCOPES = ['status:read', 'chat:read', 'apps:read', 'apps:write']; // what pairing asks for
+const TOKEN = /^ctd_pat_[A-Za-z0-9_-]{16,200}$/;
+const NOT_CONNECTED = 'Not connected yet: press Connect, then approve the code in CTD Multi-Stream → Settings → API (or paste a token into this connection\'s settings).';
+const REAUTH = 'CTD Multi-Stream refused the token: it was revoked or is wrong. Press Connect again and approve the code in CTD Multi-Stream → Settings → API (or paste a new token into this connection\'s settings).';
 
 const platformOf = (p) => (PLATFORMS.includes(p) ? p : 'custom');
 const userIdOf = (id) => (PLATFORMS.includes(id.split(':')[0]) ? id : `custom:${id}`);
 const str = (v) => typeof v === 'string' && v.length > 0;
 const https = (v) => str(v) && /^https:\/\/\S+$/.test(v) && v.length <= 2048;
+const COLOR = /^#[0-9A-Fa-f]{6}$/;
+const minutes = (ms) => (ms >= 90000 ? `${Math.ceil(ms / 60000)} min` : `${Math.max(1, Math.ceil(ms / 1000))} s`);
+
+// Requests to the API at the configured address (LAN egress, the certificate pinned when set),
+// with the token when there is one.
+function apiOf({ config, token, http }) {
+  const base = String(config.baseUrl).replace(/\/+$/, '');
+  const tls = config.tlsFingerprint256 ? { fingerprint256: config.tlsFingerprint256 } : undefined;
+  return (path, { headers, ...rest } = {}) => http.request(`${base}${path}`, { egress: 'lan', ...(tls ? { tls } : {}), ...rest, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(headers || {}) } });
+}
+
+// A profile as the connection shows it (its info, the Live page): nothing it doesn't need.
+function profileView(p) {
+  return {
+    id: p.id,
+    name: str(p.name) ? p.name.slice(0, 80) : p.id,
+    ...(str(p.slug) ? { slug: p.slug.slice(0, 64) } : {}),
+    ...(str(p.color) && COLOR.test(p.color) ? { color: p.color } : {}),
+    status: ['offline', 'starting', 'live', 'stopping'].includes(p.status) ? p.status : 'offline',
+    ...(str(p.startedAt) && Number.isFinite(Date.parse(p.startedAt)) ? { startedAt: new Date(Date.parse(p.startedAt)).toISOString() } : {}),
+    ...(p.testMode === true ? { testMode: true } : {}),
+    ...(Number.isInteger(p.live) ? { live: p.live } : {}),
+    ...(Number.isInteger(p.down) ? { down: p.down } : {}),
+  };
+}
 
 export const ctdMultistream = {
   id: 'ctd-multistream',
@@ -58,27 +104,29 @@ export const ctdMultistream = {
   platforms: PLATFORMS,
   relay: true,
   capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status'],
-  auth: 'password',
+  auth: 'pairing',
+  sharesOverlays: true,
   fields: {
     type: 'object',
-    required: ['baseUrl', 'token'],
+    required: ['baseUrl'],
     properties: {
       baseUrl: { type: 'string', title: 'API address', maxLength: 300, examples: ['http://192.168.1.50:30080/api/v1'], description: 'The LAN URL from CTD Multi-Stream → Settings → API, ending in /api/v1.', 'x-skp-egress': 'lan' },
-      token: { type: 'string', title: 'API token', writeOnly: true, pattern: '^ctd_pat_[A-Za-z0-9_-]{16,200}$', description: 'ctd_pat_… from CTD Multi-Stream → Settings → API, with chat:read and status:read.' },
+      token: { type: 'string', title: 'API token', writeOnly: true, pattern: '^ctd_pat_[A-Za-z0-9_-]{16,200}$', description: 'Only to paste a token instead of Connect: ctd_pat_… from CTD Multi-Stream → Settings → API, with chat:read and status:read (and apps:read, apps:write to share overlays with the OBS plugin).' },
       tlsFingerprint256: { type: 'string', title: 'Certificate fingerprint (SHA-256)', pattern: '^([0-9A-Fa-f]{2}:?){31}[0-9A-Fa-f]{2}$', description: 'Only for an https:// address with a self-signed certificate: the fingerprint shown in Settings → API.' },
+      profile: { type: 'string', title: 'Profile', maxLength: 100, pattern: '^[^\\s/?#]+$', 'x-skp-choices': true, description: 'Only for a token that reads every profile: the CTD Multi-Stream profile this connection follows. Empty: the default profile.' },
       chat: { type: 'boolean', title: 'Chat', default: true, description: 'Chat from every platform it streams to, merged.' },
       alerts: { type: 'boolean', title: 'Alerts', default: true, description: 'Subscriptions, gifts, cheers, raids, memberships and Super Chats.' },
       hideAlertChatLines: { type: 'boolean', title: 'Hide an alert\'s chat line', default: true, description: 'While alerts are on, a sub or a raid shows as the alert, not also as a line of chat.' },
+      allowAppOverlays: { type: 'boolean', title: 'Let other apps create overlays', default: true, description: 'The CTD OBS plugin can ask for a new overlay (a TAKEOVER for this profile, say): it is made from an installed template and fed by this connection only.' },
     },
   },
   guide: {
-    before: 'CTD Multi-Stream streams to every platform at once and merges their chat. This connection reads its merged chat, alerts, viewer counts and live status, over your local network.',
+    before: 'CTD Multi-Stream streams to every platform at once and merges their chat. This connection follows one of its profiles: its merged chat, alerts, viewer counts and live status, over your local network. It also shares the overlays it feeds with the CTD OBS plugin through CTD Multi-Stream.',
     steps: [
-      'In CTD Multi-Stream, open Settings → API.',
-      'Copy the LAN URL (it ends in /api/v1, like http://192.168.1.50:30080/api/v1) into "API address".',
-      'Make a new token there with chat:read and status:read, and paste it into "API token". It is shown once; here it is kept encrypted.',
-      'Using the https:// address with a self-signed certificate instead? Copy the SHA-256 fingerprint shown there into "Certificate fingerprint".',
-      'Save, then Test: it checks the address and the token\'s permissions.',
+      'In CTD Multi-Stream, open Settings → API and copy the LAN URL (it ends in /api/v1, like http://192.168.1.50:30080/api/v1) into "API address".',
+      'Press Connect: a code appears here.',
+      'In CTD Multi-Stream → Settings → API, a banner says CTD Overlay wants to connect: check the code is the same, pick the profile this connection follows, and approve.',
+      'It connects by itself within seconds. One connection per profile: connect again for another profile.',
     ],
     warnings: [
       { text: 'Chat from Instagram, TikTok, X and Facebook profiles is read from their live pages: it has no moderation events, so a message deleted there stays on screen.' },
@@ -93,12 +141,69 @@ export const ctdMultistream = {
     return undefined;
   },
 
+  // Pairing (its §9.3): the code to show, then polls until the token is handed over. The poll
+  // secret stays in `state`, which only the platform keeps.
+  pairing: {
+    secret: 'token',
+    async start({ config, http }) {
+      const api = apiOf({ config, http });
+      let r;
+      try {
+        r = await api('/pairing', { method: 'POST', json: { appName: 'CTD Overlay', kind: 'ctd-overlay', scopes: SCOPES, profileId: null }, retries: 0 });
+      } catch (err) {
+        if (err.status === 429) throw Object.assign(new Error(`It has too many connection requests waiting. Approve or deny them in its Settings → API, or press Connect again in ${minutes(err.retryAfterMs || 60000)}.`), { status: 429, retryAfterMs: err.retryAfterMs });
+        if (err.status === 404) throw new Error('This CTD Multi-Stream can\'t pair (it is older than v1.2): paste a token from its Settings → API into this connection\'s settings instead, or update it.');
+        throw new Error(`It couldn't be asked to connect: ${err.message}`);
+      }
+      const d = r.data && typeof r.data === 'object' ? r.data : {};
+      if (!str(d.pairingId) || !str(d.pollSecret) || !str(d.code)) throw new Error('It answered the connection request with something this version doesn\'t understand.');
+      return { code: d.code, approveUrl: d.approveUrl, expiresInS: d.expiresIn, intervalS: d.interval, state: { id: d.pairingId, secret: d.pollSecret } };
+    },
+    async poll({ config, http }, state) {
+      const api = apiOf({ config, http });
+      let r;
+      try {
+        r = await api(`/pairing/${encodeURIComponent(state.id)}/token`, { method: 'POST', json: { pollSecret: state.secret }, retries: 0, timeoutMs: 8000 });
+      } catch (err) {
+        if (err.status === 403) throw Object.assign(new Error('The connection was denied in CTD Multi-Stream. Press Connect again if that was a mistake.'), { code: 'denied' });
+        if (err.status === 410) throw Object.assign(new Error('The code expired before it was approved (or CTD Multi-Stream restarted). Press Connect again for a new one.'), { code: 'expired' });
+        if (err.status === 429) return { pending: true, waitMs: err.retryAfterMs };
+        if (err.status >= 400 && err.status < 500) throw new Error(`CTD Multi-Stream refused the connection request: ${err.message}`);
+        return { pending: true }; // unreachable for a moment, or a 5xx: it keeps trying until the code expires
+      }
+      const d = r.data && typeof r.data === 'object' ? r.data : {};
+      if (r.status === 202 || d.status === 'pending') return { pending: true };
+      if (d.status === 'approved' && TOKEN.test(d.token || '')) {
+        return { secrets: { token: d.token }, audit: { profile: str(d.profileId) ? d.profileId : 'every profile', scopes: (Array.isArray(d.scopes) ? d.scopes.filter(str) : []).join(' ').slice(0, 200) } };
+      }
+      throw new Error('CTD Multi-Stream approved the connection but sent no token this version can use. Press Connect again.');
+    },
+  },
+
+  // Deleted or turned off: the app it registered in the hub goes (best effort; revoking the token
+  // in CTD Multi-Stream removes it too).
+  async retire({ config, secrets, memory, http }) {
+    if (!TOKEN.test(secrets.token || '') || !APP_ID.test(memory?.hubApp || '')) return;
+    try {
+      await apiOf({ config, token: secrets.token, http })(`/apps/${memory.hubApp}`, { method: 'DELETE', expect: 'none', retries: 0, timeoutMs: 4000 });
+    } catch (err) {
+      if (err.status !== 404 && err.status !== 401) throw err;
+    }
+  },
+
   create(ctx) {
     const cfg = ctx.connection.config;
-    const base = String(cfg.baseUrl).replace(/\/+$/, '');
     const token = ctx.connection.secrets.token;
-    const tls = cfg.tlsFingerprint256 ? { fingerprint256: cfg.tlsFingerprint256 } : undefined;
-    const get = (path, { headers, ...rest } = {}) => ctx.http.request(`${base}${path}`, { egress: 'lan', ...(tls ? { tls } : {}), ...rest, headers: { authorization: `Bearer ${token}`, ...(headers || {}) } });
+    const get = apiOf({ config: cfg, token, http: ctx.http });
+
+    let scopes = [];
+    let v12 = false; // the server has profiles (its GET / names the token's profile)
+    let limitedTo = null; // the profile the token is limited to
+    let profile = null; // the profile followed: its view (profileView)
+    let hub = null;
+    // ?profile= for a token that reads every profile: one connection is one profile, always.
+    const withProfile = (path) => (v12 && !limitedTo && profile ? `${path}${path.includes('?') ? '&' : '?'}profile=${encodeURIComponent(profile.id)}` : path);
+    const fatal = (message) => Object.assign(new Error(message), { fatal: true });
 
     const dests = new Map(); // destination id → its status
     const startedAt = new Map(); // platform → epoch ms, from /status
@@ -168,9 +273,65 @@ export const ctdMultistream = {
       const feeds = [cfg.chat && 'chat', cfg.alerts && 'alerts'].filter(Boolean);
       ctx.setHealth({
         status: down.length ? 'degraded' : 'connected',
-        detail: down.length ? `${said(down[0])}${down.length > 1 ? ` (and ${down.length - 1} more down)` : ''}` : `Receiving ${[...feeds, 'live status'].join(', ')} from ${dests.size} destination${dests.size === 1 ? '' : 's'}.`,
-        warnings: notices.map((n) => n.text),
+        detail: down.length ? `${said(down[0])}${down.length > 1 ? ` (and ${down.length - 1} more down)` : ''}` : `Receiving ${[...feeds, 'live status'].join(', ')} from ${dests.size} destination${dests.size === 1 ? '' : 's'}${profile ? ` of ${profile.name}` : ''}.`,
+        warnings: [...(hub?.warning ? [hub.warning] : []), ...notices.map((n) => n.text)],
       });
+    }
+
+    // ---- the profile -------------------------------------------------------------------------
+    // The settings' Profile choice (x-skp-choices): the profiles a token for every profile reads.
+    function offerProfiles(items) {
+      ctx.setInfo('choices', { profile: items.slice(0, 50).map((p) => ({ value: p.id.slice(0, 100), label: str(p.name) ? p.name.slice(0, 80) : p.id.slice(0, 80) })) });
+    }
+
+    function setProfile(p) {
+      profile = profileView(p);
+      ctx.setInfo('profile', profile);
+      ctx.suggestName(`Multi-Stream · ${profile.name}`);
+    }
+
+    // Which profile: the token's, or (a token for every profile) the one picked in the settings,
+    // else the default profile. The list goes to the settings' Profile choice.
+    async function readProfile() {
+      if (!v12) return;
+      if (limitedTo) {
+        let r;
+        try { r = await get(`/profiles/${encodeURIComponent(limitedTo)}`); } catch (err) {
+          if (err.status === 404) throw fatal('The CTD Multi-Stream profile this connection\'s token reads was deleted: press Connect again and pick another profile.');
+          throw err;
+        }
+        if (!r.data || !str(r.data.id)) throw new Error('CTD Multi-Stream answered GET /profiles/<id> with something this version doesn\'t understand.');
+        return setProfile(r.data);
+      }
+      const r = await get('/profiles');
+      const items = (Array.isArray(r.data?.items) ? r.data.items : []).filter((p) => p && str(p.id));
+      offerProfiles(items);
+      const want = str(cfg.profile) ? cfg.profile : undefined;
+      const p = want ? items.find((x) => x.id === want) : items.find((x) => x.id === 'default') || items[0];
+      if (!p) throw fatal(want ? `The profile picked in this connection's settings isn't in CTD Multi-Stream any more: pick another in its settings.` : 'CTD Multi-Stream has no profile to follow.');
+      return setProfile(p);
+    }
+
+    // profiles.changed: one was made, renamed or deleted. This one deleted: an error saying so.
+    async function profilesChanged() {
+      if (!profile) return;
+      let r;
+      try { r = await get(`/profiles/${encodeURIComponent(profile.id)}`, { retries: 0 }); } catch (err) {
+        if (err.status === 404) {
+          ctx.fail(new Error(limitedTo
+            ? `The profile "${profile.name}" was deleted in CTD Multi-Stream, and this connection's token reads only that profile: press Connect again and pick another.`
+            : `The profile "${profile.name}" was deleted in CTD Multi-Stream: pick another in this connection's settings.`), { retry: false });
+          return;
+        }
+        throw err;
+      }
+      if (r.data && str(r.data.id)) setProfile(r.data);
+      if (!limitedTo) {
+        const list = await get('/profiles', { retries: 0 }).catch(() => undefined);
+        const items = (Array.isArray(list?.data?.items) ? list.data.items : []).filter((p) => p && str(p.id));
+        if (items.length) offerProfiles(items);
+      }
+      health();
     }
 
     function notice(d) {
@@ -277,16 +438,24 @@ export const ctdMultistream = {
         return undefined;
       }
       if (type === 'system.notice') return notice(d);
+      if (type === 'profile.status') {
+        if (profile && d.id === profile.id) { setProfile(d); health(); }
+        return undefined;
+      }
+      if (type === 'app.message') {
+        hub?.message(d, env);
+        return undefined;
+      }
       return undefined; // feed.status and anything newer: not used here
     }
 
     // ---- the stream --------------------------------------------------------------------------
     async function refresh(withChat) {
-      const status = await get('/status');
+      const status = await get(withProfile('/status'));
       clockFrom(status);
       applyStatus(status.data);
       if (withChat && cfg.chat) {
-        const r = await get('/chat?limit=200');
+        const r = await get(withProfile('/chat?limit=200'));
         for (const env of Array.isArray(r.data?.items) ? r.data.items : []) if (env && env.type === 'chat.message') chat(env, { backfill: true });
       }
     }
@@ -311,6 +480,12 @@ export const ctdMultistream = {
       let env;
       try { env = JSON.parse(frame.data); } catch { return; }
       if (!env || typeof env !== 'object' || typeof env.type !== 'string') return;
+      if (env.type === 'profiles.changed') {
+        release(true);
+        await profilesChanged();
+        cursor(frame.id);
+        return;
+      }
       if (held && /^alert\.[a-z]+$/.test(env.type) && env.data?.messageId === held.env.data.id) {
         // The held line's alert: shown, it stays hidden; refused (alerts off, too old), it shows.
         const h = held;
@@ -327,9 +502,12 @@ export const ctdMultistream = {
     }
 
     async function follow() {
-      const types = [...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice'];
+      const types = [
+        ...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice',
+        ...(v12 ? ['profile.status', 'profiles.changed'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
+      ];
       const from = ctx.memory.get('cursor');
-      const res = await get(`/events?types=${encodeURIComponent(types.join(','))}`, { expect: 'stream', retries: 0, signal: streamStop.signal, headers: { accept: 'text/event-stream', ...(str(from) ? { 'last-event-id': from } : {}) } });
+      const res = await get(withProfile(`/events?types=${encodeURIComponent(types.join(','))}`), { expect: 'stream', retries: 0, signal: streamStop.signal, headers: { accept: 'text/event-stream', ...(str(from) ? { 'last-event-id': from } : {}) } });
       clockFrom(res);
       open = true;
       active = true;
@@ -340,16 +518,55 @@ export const ctdMultistream = {
       );
     }
 
+    // Who the token is: its scopes, and the profile it is limited to (v1.2; none: every profile).
+    async function whoAmI() {
+      const r = await get('/');
+      clockFrom(r);
+      const t = r.data?.token && typeof r.data.token === 'object' ? r.data.token : {};
+      scopes = Array.isArray(t.scopes) ? t.scopes.filter(str) : [];
+      v12 = Object.hasOwn(t, 'profileId');
+      limitedTo = str(t.profileId) ? t.profileId : null;
+    }
+
+    // The hub: with apps:write the overlays it feeds are shared with the OBS plugin.
+    function hubFor() {
+      if (!v12 || !profile) {
+        ctx.setInfo('hub', { status: 'off', detail: 'This CTD Multi-Stream is older than v1.2: it has no hub to share overlays through.' });
+        return null;
+      }
+      if (!scopes.includes('apps:write')) {
+        ctx.setInfo('hub', { status: 'off', detail: 'The token can\'t share overlays with the OBS plugin (it lacks apps:write): press Connect again to get one that can.' });
+        return null;
+      }
+      return createHub(ctx, {
+        request: get,
+        appId: appIdFor({ limited: Boolean(limitedTo), slug: profile.slug, id: profile.id }),
+        profileId: profile.id,
+        profileSlug: profile.slug || profile.id,
+        version: VERSION,
+        allowMaking: () => cfg.allowAppOverlays !== false,
+        isOld: (env) => old(env, OLD_ALERT_MS),
+        onChange: health,
+        reauth: () => ctx.reauth(REAUTH),
+      });
+    }
+
     return {
       async start() {
+        if (!str(token)) return ctx.reauth(NOT_CONNECTED);
         try {
+          await whoAmI();
+          await readProfile();
+          hub = hubFor();
           await refresh(!str(ctx.memory.get('cursor')));
           await follow();
         } catch (err) {
           if (err.status === 401) return ctx.reauth(REAUTH);
-          if (err.status === 403) return ctx.fail(new Error('The token can\'t read everything this needs: give it chat:read and status:read in CTD Multi-Stream → Settings → API (or make a new one).'), { retry: false });
+          if (err.status === 403) return ctx.fail(new Error('The token can\'t read everything this needs: press Connect again, or give it chat:read and status:read in CTD Multi-Stream → Settings → API.'), { retry: false });
+          if (err.fatal) return ctx.fail(err, { retry: false });
           throw err;
         }
+        hub?.start();
         // Nothing for 45 s (it sends a heartbeat every 15): the stream is dead without saying so.
         ctx.every(15000, () => {
           if (active) { active = false; quiet = 0; return; }
@@ -360,8 +577,10 @@ export const ctdMultistream = {
       stop() {
         stopping = true;
         streamStop.abort();
+        hub?.stop();
       },
       async test() {
+        if (!str(token)) return [{ name: 'Connected to CTD Multi-Stream', ok: false, detail: NOT_CONNECTED }];
         let r;
         try {
           r = await get('/', { retries: 0 });
@@ -369,11 +588,13 @@ export const ctdMultistream = {
           if (err.status === 401) return [{ name: 'Token', ok: false, detail: REAUTH }];
           return [{ name: 'Reaching CTD Multi-Stream', ok: false, detail: err.message }];
         }
-        const scopes = Array.isArray(r.data?.token?.scopes) ? r.data.token.scopes : [];
-        const missing = ['chat:read', 'status:read'].filter((s) => !scopes.includes(s));
+        const has = Array.isArray(r.data?.token?.scopes) ? r.data.token.scopes : [];
+        const missing = ['chat:read', 'status:read'].filter((s) => !has.includes(s));
+        const t = r.data?.token || {};
         return [
           { name: 'Reaching CTD Multi-Stream', ok: true, detail: `${str(r.data?.name) ? r.data.name : 'ctd-multi-stream'}${str(r.data?.version) ? ` ${r.data.version}` : ''}` },
-          { name: 'Token permissions', ok: !missing.length, detail: missing.length ? `The token lacks ${missing.join(' and ')}: add ${missing.length > 1 ? 'them' : 'it'} in CTD Multi-Stream → Settings → API.` : 'chat:read and status:read' },
+          ...(Object.hasOwn(t, 'profileId') ? [{ name: 'Profile', ok: true, detail: `${profile ? profile.name : 'not read yet'}${str(t.profileId) ? ' (the token reads only this profile)' : ' (the token reads every profile: pick one in the settings)'}` }] : []),
+          { name: 'Token permissions', ok: !missing.length, detail: missing.length ? `The token lacks ${missing.join(' and ')}: press Connect again, or add ${missing.length > 1 ? 'them' : 'it'} in CTD Multi-Stream → Settings → API.` : 'chat:read and status:read' },
         ];
       },
     };

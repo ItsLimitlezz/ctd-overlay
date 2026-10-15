@@ -103,7 +103,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | Method · Path | Purpose |
 |---|---|
 | `GET/POST /overlays` | List · create from a template (`connections`: `"all"`, the default, or connection ids) |
-| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections` and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: the connections that feed it now, `[{ id, name, connector, status }]`, and its `stream` (below) |
+| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections`, `role` (its role in OBS, `[a-z0-9-]` ≤ 54, `null` clears: 06 §6.11) and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: the connections that feed it now, `[{ id, name, connector, status }]`, and its `stream` (below) |
 | `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate`. `dryRun`, `confirm` and `runMigrate` are `true` or `false`; anything else is a `422` |
 | `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL** and ends streams opened with the old key; UI must confirm; never replayed for an `Idempotency-Key` (its answer holds the key) |
@@ -127,13 +127,15 @@ It acts as the owner and is accepted only from a loopback address, never through
 
 **Stream status.** A show and an overlay carry `stream`, worked out on each read (it never moves
 the ETag): `{ connections: [{ id, name, connector, status, detail? }], onAir?, platforms: [{
-platform, live?, title?, startedAt?, viewers?, stale? }], viewers? }`. `connections` are the
+platform, live?, title?, startedAt?, viewers?, stale? }], profiles?: [{ connection, name, color?,
+status, startedAt? }], viewers? }`. `profiles` are the CTD Multi-Stream profiles the connected ones
+follow (06 §6.11; `status` `offline | starting | live | stopping`). `connections` are the
 turned-on connections that feed it (an overlay's bindings; a show's members' together, and one
 member bound to `"all"` makes the show's `"all"`), by name and status only, so whoever reads
 overlays or shows sees it without `connections:read`. `platforms` come from those connections'
 `stream.<platform>.*` and `viewers.<platform>` state, each value chosen as an overlay bound the
 same way sees it (fresh over held, direct over relay, 01 §1.3), the core's own values left out.
-`onAir` is `true` while any platform is live, `false` when platforms said and none is, and absent
+`onAir` is `true` while any platform or profile is live, `false` when they said and none is, and absent
 when nothing says (*Unknown*, never *Offline*); `viewers` adds up the known counts and is absent
 when none is known, never `0`.
 
@@ -146,8 +148,8 @@ of its secret settings that hold a value.
 |---|---|
 | `GET /connectors` · `GET /connectors/{id}` | Available connectors: capabilities, settings (a JSON Schema; `writeOnly` fields are secrets), sign-in kind, scopes and why, the redirect URI to register, whether a public URL is needed, the setup guide with the warnings that apply here, actions (a list: `{ items, next }`) |
 | `GET/POST /connections` | Connections, by name, with their health · add one: `{ connector, name?, enabled?, config?, secrets? }` (`201`) |
-| `GET/PATCH/DELETE /connections/{id}` | A connection: settings, `secretFields`, account, health, the values it sets now (`state`, `stale`), a sign-in in progress (`authorization`), the overlays it feeds · rename, turn on or off, change `config` (replaced) and `secrets` (`{ field: "new" }` sets, `null` clears, absent keeps), with an ETag · delete (answers `{ id, name, overlays }`: the overlays it fed). A changed client ID signs the account out |
-| `POST /connections/{id}/authorize` | Start signing in → `{ "flow": "device", "userCode", "verificationUri", "verificationUriComplete"?, "expiresAt", "intervalS" }` or `{ "flow": "redirect", "url", "redirectUri", "expiresAt" }`; `422` for a connector without a sign-in. Never replayed for an `Idempotency-Key` |
+| `GET/PATCH/DELETE /connections/{id}` | A connection: settings, `secretFields`, account, health, the values it sets now (`state`, `stale`), a sign-in in progress (`authorization`), the overlays it feeds, what it tells about itself (`info`: a CTD Multi-Stream connection's `profile`, `hub`, `choices`) · rename, turn on or off, change `config` (replaced) and `secrets` (`{ field: "new" }` sets, `null` clears, absent keeps), with an ETag · delete (answers `{ id, name, overlays }`: the overlays it fed). A changed client ID signs the account out |
+| `POST /connections/{id}/authorize` | Start signing in → `{ "flow": "device", "userCode", "verificationUri", "verificationUriComplete"?, "expiresAt", "intervalS" }` or `{ "flow": "redirect", "url", "redirectUri", "expiresAt" }` or `{ "flow": "pairing", "code", "approveUrl"?, "expiresAt", "intervalS" }` (06 §6.4: approved at the service, polled by the platform); `422` for a connector without a sign-in. Never replayed for an `Idempotency-Key` |
 | `POST /connections/{id}/authorize/complete` | Finish a redirect sign-in with the address the service sent the operator to (`{ "url" }`) or `{ "code", "state" }`, when the callback landed in another browser (06 §6.4); only whoever started it (`403`), once (`410`) |
 | `DELETE /connections/{id}/authorize` | Cancel a sign-in in progress; with none, sign the account out (its tokens forgotten, revoked where the service allows) |
 | `GET /oauth/callback/{connector}` | OAuth redirect target (outside `/api/v1`, not in its OpenAPI document) |
