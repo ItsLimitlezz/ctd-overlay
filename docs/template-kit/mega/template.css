@@ -1,0 +1,106 @@
+/* Mega Show. Lay out in canvas pixels (1920 x 1080, or 1080 x 1920 under [data-skp-canvas="v"]):
+   the runtime scales the stage to the browser source, so never compute scaling yourself. */
+/* OBS's browser is Chromium 103 (OBS 30): no color-mix(), no :has(), no CSS nesting. */
+:root { --accent: #16e0ff; --accent-glow: rgba(22, 224, 255, .45); --ink: #ffffff; --paper: #0a0b0d; --muted: #9aa3ad; --line: rgba(255, 255, 255, .18); --chat-x: 40px; --chat-y: 420px; }
+:root[data-theme="day"] { --ink: #101215; --paper: #f2f0ea; --muted: #5d636b; --line: rgba(16, 18, 21, .18); }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body, [data-skp-stage] { font-family: 'Archivo', system-ui, sans-serif; color: var(--ink); }
+
+/* ---- scenes ---------------------------------------------------------------------------------- */
+.scene { position: absolute; inset: 0; overflow: hidden; }
+.scene.solid { background: var(--paper); }
+.center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 18px; padding: 80px; box-sizing: border-box; }
+.eyebrow, .k { font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; letter-spacing: .35em; color: var(--accent); font-size: 26px; }
+.title { margin: 0; font-weight: 900; font-size: 120px; line-height: .95; letter-spacing: -2px; }
+.title.big { font-size: 170px; }
+[data-skp-canvas="v"] .title { font-size: 96px; }
+[data-skp-canvas="v"] .title.big { font-size: 120px; }
+.date { font-weight: 800; font-size: 34px; color: var(--muted); }
+.date:empty { display: none; }
+.countdown, .headliner { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.countdown b { font-family: 'Space Mono', ui-monospace, monospace; font-size: 88px; font-variant-numeric: tabular-nums; }
+.headliner b { font-weight: 900; font-size: 54px; }
+.brb { max-width: 1100px; font-weight: 500; font-size: 40px; color: var(--muted); margin: 0; }
+.logo { max-height: 160px; max-width: 600px; }
+.logo.small { max-height: 54px; }
+[hidden] { display: none !important; }
+
+.bgvideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: .55; }
+.glow { position: absolute; width: 1400px; height: 1400px; left: 50%; top: 50%; margin: -700px 0 0 -700px; border-radius: 50%;
+  background: radial-gradient(closest-side, var(--accent-glow), transparent); animation: drift 9s ease-in-out infinite alternate; }
+@keyframes drift { to { transform: translate(120px, -60px) scale(1.12); } }
+/* Grain from a file in the package: SK.asset gives its versioned URL (set as --grain in template.js). */
+.grain { position: absolute; inset: -50%; background: var(--grain) repeat; opacity: .09; animation: grain .8s steps(4) infinite; pointer-events: none; }
+@keyframes grain { 25% { transform: translate(-3%, 2%); } 50% { transform: translate(2%, -3%); } 75% { transform: translate(-2%, -1%); } }
+:root[data-no-grain] .grain, [data-skp-lite] .grain, [data-skp-lite] .glow { display: none; } /* lite: phones' previews (05 §5.8) */
+
+/* ---- the live scene -------------------------------------------------------------------------- */
+.bug { position: absolute; left: 48px; top: 40px; display: flex; align-items: center; gap: 16px; }
+.live-pill, .viewers, .rec { display: inline-flex; align-items: center; gap: 10px; padding: 8px 16px; background: rgba(10, 11, 13, .78); color: #fff;
+  font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; font-size: 22px; letter-spacing: .12em; }
+.live-pill i { width: 12px; height: 12px; border-radius: 50%; background: #ff2a2a; animation: pulse 1.1s infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.viewers.stale { opacity: .55; } /* held through an error (viewers.stale, 02 §2.8) */
+.onnow { position: absolute; right: 48px; top: 40px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding: 12px 20px; background: rgba(10, 11, 13, .78); color: #fff; }
+.onnow b { font-weight: 900; font-size: 40px; }
+[data-skp-canvas="v"] .onnow { top: 140px; }
+
+.np { position: absolute; left: 48px; bottom: 60px; width: 640px; display: grid; grid-template-columns: auto 1fr; gap: 18px; padding: 16px; background: rgba(10, 11, 13, .82); color: #fff; }
+.np .art { width: 96px; height: 96px; object-fit: cover; }
+.np-text { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.np-text b { font-weight: 900; font-size: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-text span:last-child { font-size: 24px; color: #c5ccd3; }
+.np .bar { grid-column: 1 / -1; height: 4px; background: rgba(255, 255, 255, .15); }
+.np .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+[data-skp-canvas="v"] .np { left: 40px; right: 40px; width: auto; bottom: 260px; }
+
+.chat { position: absolute; left: var(--chat-x); top: var(--chat-y); width: 520px; display: flex; flex-direction: column; gap: 8px; }
+[data-skp-canvas="v"] .chat { width: 1000px; }
+.chat .msg { padding: 8px 14px; background: rgba(10, 11, 13, .78); color: #fff; font-size: 24px; line-height: 1.25; border-left: 4px solid var(--accent); overflow-wrap: anywhere; }
+.chat .msg b { color: var(--name, var(--accent)); margin-right: 8px; }
+.chat .msg img { height: 1.3em; vertical-align: middle; }
+.chat .msg[data-skp-state="enter"] { animation: rise .35s cubic-bezier(.2, .7, .2, 1) both; }
+.chat .msg[data-skp-state="exit"] { animation: fade .3s ease-in both; }
+
+/* Actions: lower thirds shown for the trigger's window (04 §4.6). */
+.actions { position: absolute; left: 0; right: 0; bottom: 200px; display: flex; justify-content: center; pointer-events: none; }
+.card { padding: 22px 44px 26px; background: rgba(10, 11, 13, .9); color: #fff; border-top: 6px solid var(--accent); text-align: center; }
+.card .k { font-size: 20px; }
+.card b { display: block; margin-top: 6px; font-weight: 900; font-size: 64px; }
+.card[data-skp-state="enter"] { animation: rise .6s cubic-bezier(.2, .7, .2, 1) both; }
+.card[data-skp-state="exit"] { animation: fade .45s ease-in both; }
+
+/* Alerts: the runtime makes the element ([data-skp-alert]); template.js fills it. */
+.alerts { position: absolute; left: 0; right: 0; top: 140px; display: flex; justify-content: center; pointer-events: none; }
+.alert { position: absolute; padding: 24px 48px 28px; background: rgba(10, 11, 13, .92); color: #fff; border-top: 6px solid #ffd23f; text-align: center; }
+.alert .k { color: #ffd23f; font-size: 22px; }
+.alert b { display: block; font-weight: 900; font-size: 64px; }
+.alert span { font-size: 30px; color: var(--accent); font-weight: 800; }
+.alert[data-skp-state="enter"] { animation: rise .6s cubic-bezier(.2, .8, .2, 1) both; }
+.alert[data-skp-state="exit"] { animation: fade .45s ease-in both; }
+
+/* ---- lineup ------------------------------------------------------------------------------------ */
+.lineup { position: absolute; inset: 90px 120px; display: flex; flex-direction: column; gap: 14px; }
+.acts { list-style: none; margin: 30px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.acts li { display: flex; align-items: baseline; gap: 28px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 44px; font-weight: 800; }
+.acts li .t { font-family: 'Space Mono', ui-monospace, monospace; font-size: 28px; color: var(--muted); min-width: 170px; }
+.acts li.on { color: var(--accent); }
+.acts li .tag { font-family: 'Space Mono', ui-monospace, monospace; font-size: 18px; letter-spacing: .2em; color: var(--accent); }
+
+/* ---- ticker ------------------------------------------------------------------------------------ */
+.ticker { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; overflow: hidden; background: var(--accent); color: #0a0a0a; }
+.ticker .run { display: inline-flex; gap: 60px; white-space: nowrap; padding-left: 100%; font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; font-size: 26px; line-height: 56px; letter-spacing: .2em;
+  animation: ticker 28s linear infinite; }
+@keyframes ticker { to { transform: translateX(-100%); } }
+
+/* ---- scene transitions (05 §5.4); a "cut" skips them by itself ------------------------------ */
+[data-skp-scene-root][data-skp-state="enter"] { animation: fadeIn .5s ease both; }
+[data-skp-scene-root][data-skp-state="exit"] { animation: fade .5s ease both; }
+.intro .title { animation: zoom 8s ease-out both; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(24px); } }
+@keyframes fade { to { opacity: 0; } }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes zoom { from { transform: scale(.9); letter-spacing: -6px; } }
+/* The admin UI's preview honours reduced motion (on air, OBS always animates: 05 §5.9). */
+[data-skp-reduced-motion] * { animation-duration: .01s !important; animation-iteration-count: 1 !important; }

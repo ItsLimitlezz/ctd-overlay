@@ -1,0 +1,89 @@
+{
+  "standard": "skp/1",
+  "id": "com.example.mega-show",
+  "name": "Mega Show",
+  "version": "1.0.0",
+  "description": "A reference show package that uses every template feature: all eight core scenes plus a timed extra, actions with arguments, settings of every kind, the lineup, a go-live countdown, viewers, now playing, chat and alerts, on a 16:9 and a 9:16 canvas.",
+  "author": { "name": "Your name", "url": "https://example.com" },
+  "license": "MIT",
+  "category": "show",
+  "tags": ["show", "reference", "example"],
+  "entry": "index.html",
+  "previews": ["previews/mega.svg"],
+  "engines": { "obs": ">=30" },
+
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+
+  "scenes": [
+    { "id": "auto", "label": "Auto (countdown, then live)", "core": "auto" },
+    { "id": "starting", "label": "Starting Soon", "core": "starting" },
+    { "id": "program", "label": "Live", "core": "program", "transparent": true },
+    { "id": "brb", "label": "Be Right Back", "core": "brb" },
+    { "id": "lineup", "label": "Timetable", "core": "lineup" },
+    { "id": "outro", "label": "Thanks For Watching", "core": "outro" },
+    { "id": "bg", "label": "Background", "core": "bg" },
+    { "id": "intro", "label": "Event Intro", "core": "intro", "durationMs": 8000, "then": "program" },
+    { "id": "shoutout", "label": "Headliner Intro", "durationMs": 6000, "then": "program" }
+  ],
+
+  "consumes": {
+    "state": ["show.*", "viewers.total", "viewers.stale", "music.nowPlaying"],
+    "events": ["show.trigger", "alert.*"],
+    "chat": { "recent": 20, "max": 12 }
+  },
+
+  "actions": [
+    { "id": "titleCard", "label": "DJ title card", "durationMs": 7000 },
+    { "id": "nowPlaying", "label": "Now playing", "durationMs": 12000 },
+    { "id": "announce", "label": "Announcement", "durationMs": 8000 }
+  ],
+
+  "alerts": { "mode": "serial", "durationMs": 6000, "durationSetting": "alertMs", "gapMs": 500 },
+
+  "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@500;800;900&family=Space+Mono:wght@700&display=swap"],
+
+  "settings": { "$ref": "#/definitions/settings" },
+
+  "definitions": {
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accent": { "type": "string", "format": "color", "title": "Accent", "default": "#16E0FF", "x-skp-group": "Look", "x-skp-preview": "live" },
+        "theme": { "type": "string", "title": "Theme", "enum": ["night", "day"], "x-skp-labels": ["Night (dark)", "Day (light)"], "default": "night", "x-skp-group": "Look" },
+        "grain": { "type": "boolean", "title": "Film grain", "default": true, "x-skp-group": "Look" },
+        "logo": { "type": "string", "title": "Logo", "x-skp-widget": "media", "x-skp-accept": "image/*", "x-skp-group": "Look" },
+        "background": { "type": "string", "title": "Background video (optional)", "x-skp-widget": "media", "x-skp-accept": "video/*", "x-skp-group": "Look" },
+
+        "title": { "type": "string", "title": "Show title", "maxLength": 60, "default": "SATURDAY NIGHT", "x-skp-group": "Copy" },
+        "tagline": { "type": "string", "title": "Tagline", "maxLength": 80, "default": "LIVE FROM THE CLUB", "x-skp-group": "Copy" },
+        "brbText": { "type": "string", "title": "Be Right Back text", "maxLength": 200, "default": "The music doesn't stop.", "x-skp-widget": "textarea", "x-skp-group": "Copy" },
+        "headliner": { "type": "string", "title": "Headliner", "maxLength": 80, "x-skp-bind": "show.headliner", "x-skp-group": "Copy" },
+        "date": { "type": "string", "format": "date", "title": "Date shown on Starting Soon (optional)", "x-skp-group": "Copy" },
+        "ticker": { "type": "boolean", "title": "Ticker", "default": false, "x-skp-group": "Copy" },
+        "tickerItems": { "type": "array", "title": "Ticker lines", "items": { "type": "string", "maxLength": 60 }, "maxItems": 12, "default": ["SATURDAY NIGHT", "LIVE"], "x-skp-showIf": { "field": "ticker", "equals": true }, "x-skp-group": "Copy" },
+
+        "showViewers": { "type": "boolean", "title": "Viewer count", "default": true, "x-skp-group": "Live" },
+        "showRec": { "type": "boolean", "title": "REC timer", "default": true, "x-skp-group": "Live" },
+        "chat": { "type": "boolean", "title": "Chat on the live scene", "default": true, "x-skp-group": "Live" },
+        "chatX": { "type": "integer", "title": "Chat position (left)", "minimum": 0, "maximum": 1920, "default": 40, "x-skp-widget": "position", "x-skp-axis": "x", "x-skp-showIf": { "field": "chat", "equals": true }, "x-skp-group": "Live" },
+        "chatY": { "type": "integer", "title": "Chat position (top)", "minimum": 0, "maximum": 1920, "default": 420, "x-skp-widget": "position", "x-skp-axis": "y", "x-skp-showIf": { "field": "chat", "equals": true }, "x-skp-group": "Live" },
+        "chatLines": { "type": "integer", "title": "Chat messages shown", "minimum": 2, "maximum": 12, "default": 6, "x-skp-widget": "slider", "x-skp-showIf": { "field": "chat", "equals": true }, "x-skp-group": "Live" },
+        "alertMs": { "type": "integer", "title": "Alert duration (ms)", "minimum": 2000, "maximum": 20000, "default": 6000, "x-skp-widget": "slider", "x-skp-group": "Live" },
+
+        "timetable": {
+          "type": "object",
+          "title": "Timetable",
+          "additionalProperties": false,
+          "properties": {
+            "showTimes": { "type": "boolean", "title": "Show set times", "default": true },
+            "clock": { "type": "string", "title": "Clock", "enum": ["12h", "24h"], "x-skp-labels": ["12-hour (1:00 AM)", "24-hour (01:00)"], "default": "12h" }
+          }
+        }
+      }
+    }
+  }
+}
