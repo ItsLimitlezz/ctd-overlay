@@ -10,6 +10,8 @@ import { DIAG, TESTBED, TESTBED_DIR, packTemplate, signedIn, startWithOverlay } 
 async function setup(t, { install, settings = {}, options } = {}) {
   const ctx = await startWithOverlay(t, { slug: 'bed', template: TESTBED, settings, install, platform: options });
   const { platform } = ctx;
+  // What each simulation sends, as it is sent: pacing is the alert queue's (alert-queue.test.js).
+  platform.bus.useAlertQueue(undefined);
   platform.overlays.create({ slug: 'other', template: TESTBED, settings: {} });
   platform.overlays.create({ slug: 'diag', template: DIAG, settings: {} });
   const got = {};

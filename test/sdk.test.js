@@ -514,8 +514,10 @@ test('the renderer gets only the alert kinds the template declared (04 §4.2)', 
   const rendered = [];
   SK.alerts.render((a) => { rendered.push(a.kind); });
   await until(() => SK.transport.mode === 'stream');
-  platform.bus.publish('alert.raid', { kind: 'raid', user: { name: 'x' } });
-  platform.bus.publish('alert.follow', { kind: 'follow', user: { name: 'y' } });
+  // With their windows already given, both come at once (the queue would pace them).
+  const display = { startAt: Date.now(), durationMs: 1000 };
+  platform.bus.publish('alert.raid', { kind: 'raid', user: { name: 'x' }, display });
+  platform.bus.publish('alert.follow', { kind: 'follow', user: { name: 'y' }, display });
   platform.bus.publish('custom.done', {});
   await until(() => rendered.length === 1, 2000, 'the follow');
   await new Promise((r) => setTimeout(r, 100));

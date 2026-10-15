@@ -46,6 +46,7 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
   const globalSubs = new Set();
   const watchers = new Set(); // told the keys whose values may have changed for someone
   let chat = []; // chat.message envelopes still visible after moderation, oldest first
+  let alertQueue; // set by useAlertQueue(); without one, alerts go straight to overlays
   let lastId = idgen(now());
 
   // ---- choosing the value a set of owners shows ----------------------------------------------
@@ -177,7 +178,11 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       checkSize(env);
       if (target !== undefined) {
         const ch = channels.get(target);
-        if (ch && ch.accepts(env)) ch.offer(env);
+        if (ch && ch.accepts(env)) {
+          // A simulated alert waits its turn like a real one (05 §5.5).
+          if (queued(env)) alertQueue.enqueue(env, [target]);
+          else ch.offer(env);
+        }
         return env;
       }
       if (type.startsWith('chat.')) moderate(env);
@@ -308,6 +313,15 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
     removeChannel(id) {
       channels.get(id)?.close();
       channels.delete(id);
+      alertQueue?.forget(id);
+    },
+
+    // The alert queue alerts go through on their way to overlays (src/alerts/queue.js).
+    useAlertQueue(q) { alertQueue = q; },
+    // Sends env to one channel, if it is still there and accepts it (the alert queue's delivery).
+    deliver(id, env) {
+      const ch = channels.get(id);
+      if (ch && ch.accepts(env)) ch.offer(env);
     },
 
     // Every routed envelope (not targeted or channel-only ones), installation-wide, for API-level
@@ -332,9 +346,20 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
     },
   };
 
+  // An alert goes through the queue unless it already has its display window.
+  const queued = (env) => Boolean(alertQueue) && env.type.startsWith('alert.') && !env.data.display;
+
   function route(env) {
-    for (const ch of channels.values()) {
-      if (ch.accepts(env)) ch.offer(env);
+    if (queued(env)) {
+      // Alerts go to overlays through the alert queue, which gives each its display window when
+      // its turn comes (05 §5.5); API-level subscribers get them as they arrive.
+      const ids = [];
+      for (const [id, ch] of channels) if (ch.accepts(env)) ids.push(id);
+      if (ids.length) alertQueue.enqueue(env, ids);
+    } else {
+      for (const ch of channels.values()) {
+        if (ch.accepts(env)) ch.offer(env);
+      }
     }
     for (const fn of globalSubs) {
       try { fn(env); } catch (err) { log.error('bus subscriber failed', { err }); }
