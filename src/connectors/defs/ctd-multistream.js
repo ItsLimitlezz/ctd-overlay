@@ -9,9 +9,15 @@
 //   overlays never replay minutes of old chat at once) and /status is read again.
 // - chat.message, its deletions, bans and clears, and alert.<kind> become this platform's events,
 //   with src.platform from the envelope and its id as the dedupe key. A platform this standard
-//   doesn't know becomes "custom". An alert's chat line (kind "event") is left out while alerts are
-//   on and "Hide an alert's chat line" is (the alert shows instead). A clear on one platform
-//   removes that platform's messages only: the others stay on screen.
+//   doesn't know becomes "custom". An alert's chat line is left out while alerts are on and "Hide
+//   an alert's chat line" is (the alert shows instead): CTD sends the alert right after its line,
+//   with the line's id as its messageId, so a kind "event" line waits for the next frame (300 ms
+//   at most) and is dropped only when that frame is its alert. Event lines no alert follows (a
+//   Twitch /announce, Kick's Kicks, YouTube's Jewels, TikTok's gifts) are shown. A clear on one
+//   destination removes the lines from it that are still in the chat buffer: the others stay on
+//   screen. A ban that names the user only also removes their lines that carry an id.
+// - It waits for room under the platform's publish limit (ctx.room) rather than lose a burst, and
+//   the cursor moves only past a frame whose events were published.
 // - viewers.<platform> and stream.<platform>.live | title | startedAt from /status and every
 //   destination.status: a count multi-stream doesn't know (null) is absent, never 0 (02 §2.8).
 // - Health: connected while the stream is open; degraded, saying why, while a destination is down
@@ -19,7 +25,9 @@
 //   operator, never for overlays. A refused token (401) needs a new one; a missing permission
 //   (403) waits for the token to be fixed; a 429 waits as long as the server asks.
 // - Replayed after a restart of this platform: chat older than a minute goes to the buffer quietly,
-//   an alert older than two minutes is dropped (its moment has passed).
+//   an alert older than two minutes is dropped (its moment has passed). Only the replay (what
+//   arrives before the stream's first heartbeat) is judged, and on CTD's clock (the Date its
+//   answers carry), so a server whose clock is off never makes live chat look old.
 //
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
@@ -34,11 +42,12 @@ const TEXT_CHARS = 1000; // 02 §2.9
 const QUIET_TICKS = 3; // ticks of 15 s with nothing arriving (it sends a heartbeat every 15 s)
 const OLD_CHAT_MS = 60 * 1000;
 const OLD_ALERT_MS = 2 * 60 * 1000;
-const RECENT_IDS = 500;
+const HOLD_MS = 300; // how long an event line waits for its alert (sent right after it)
 const NOTICE_MS = 10 * 60 * 1000;
 const REAUTH = 'CTD Multi-Stream refused the token: it was revoked or is wrong. Make a new one in CTD Multi-Stream → Settings → API (chat:read and status:read), and paste it into this connection\'s settings.';
 
 const platformOf = (p) => (PLATFORMS.includes(p) ? p : 'custom');
+const userIdOf = (id) => (PLATFORMS.includes(id.split(':')[0]) ? id : `custom:${id}`);
 const str = (v) => typeof v === 'string' && v.length > 0;
 const https = (v) => str(v) && /^https:\/\/\S+$/.test(v) && v.length <= 2048;
 
@@ -93,8 +102,10 @@ export const ctdMultistream = {
 
     const dests = new Map(); // destination id → its status
     const startedAt = new Map(); // platform → epoch ms, from /status
-    const recent = new Map(); // platform → message ids this connection published (for a clear)
     let session = null;
+    let skew = 0; // CTD's clock minus this machine's, from the Date its answers carry
+    let caughtUp = false; // a heartbeat came after the replay: everything since is live
+    let held = null; // { env, frameId, cancel }: an event line waiting to see whether its alert follows
     let shown = new Set(); // platforms whose state is set
     let notices = []; // [{ text, cancel }]
     let open = false;
@@ -172,51 +183,83 @@ export const ctdMultistream = {
     }
 
     // ---- chat and alerts -------------------------------------------------------------------
-    function remember(platform, id) {
-      const list = recent.get(platform) || [];
-      list.push(id);
-      if (list.length > RECENT_IDS) list.splice(0, list.length - RECENT_IDS);
-      recent.set(platform, list);
+    // Only the replay after connecting can be old: CTD writes it before its first heartbeat, so
+    // what follows a heartbeat is live, whatever its ts says (a clock set back mid-show). Ages are
+    // measured on CTD's clock: its envelopes' ts against its Date, never this machine's.
+    const old = (env, ms) => !caughtUp && typeof env.ts === 'number' && ctx.now() + skew - env.ts > ms;
+    function clockFrom(res) {
+      const t = Date.parse(res?.headers?.get?.('date') ?? '');
+      if (Number.isFinite(t)) skew = t - ctx.now();
     }
-    const old = (env, ms) => typeof env.ts === 'number' && ctx.now() - env.ts > ms;
 
-    function chat(env, { backfill = false } = {}) {
+    function chat(env, { backfill = false, frameId } = {}) {
       const d = env.data;
       if (!cfg.chat || !d || typeof d !== 'object' || !str(d.id)) return;
-      if (d.kind === 'event' && cfg.alerts && cfg.hideAlertChatLines) return;
+      // From the stream (not /chat, which has no alerts), an event line waits for its alert.
+      if (d.kind === 'event' && cfg.alerts && cfg.hideAlertChatLines && !backfill) {
+        held = { env, frameId, cancel: ctx.schedule(HOLD_MS, () => release(true)) };
+        return;
+      }
       const platform = platformOf(env.src?.platform ?? d.platform);
-      const msg = chatMessage(d, platform);
-      const out = ctx.publish('chat.message', msg, { platform, dedupeKey: `chat:${d.id}`, backfill: backfill || old(env, OLD_CHAT_MS) });
-      if (out) remember(platform, d.id);
+      ctx.publish('chat.message', chatMessage(d, platform), { platform, dedupeKey: `chat:${d.id}`, backfill: backfill || old(env, OLD_CHAT_MS) });
     }
 
-    function handle(env) {
+    // The held line had no alert after it: it is shown after all (and the cursor may pass it).
+    function release(saveCursor = false) {
+      const h = held;
+      if (!h) return;
+      held = null;
+      h.cancel();
+      const d = h.env.data;
+      const platform = platformOf(h.env.src?.platform ?? d.platform);
+      ctx.publish('chat.message', chatMessage(d, platform), { platform, dedupeKey: `chat:${d.id}`, backfill: old(h.env, OLD_CHAT_MS) });
+      if (saveCursor) cursor(h.frameId);
+    }
+
+    // Lines from one destination (or platform) still in the chat buffer, newest first.
+    function linesOf(platform, destinationId) {
+      return ctx.recentChat().filter((m) => m.platform === platform && (!str(destinationId) || m.destinationId === destinationId)).reverse();
+    }
+
+    // Returns true when an alert was shown (now or before), so its chat line can stay hidden.
+    function handle(env, frameId) {
       const { type } = env;
       const d = env.data && typeof env.data === 'object' ? env.data : {};
       const platform = platformOf(env.src?.platform ?? d.platform);
       const key = `env:${env.id}`;
-      if (type === 'chat.message') return chat(env);
+      if (type === 'chat.message') return chat(env, { frameId });
       if (type === 'chat.message.deleted') {
         if (cfg.chat && str(d.messageId)) ctx.publish('chat.message.deleted', { messageId: d.messageId }, { platform, dedupeKey: key });
         return undefined;
       }
       if (type === 'chat.user.cleared') {
-        if (cfg.chat && str(d.userId)) ctx.publish('chat.user.cleared', { userId: d.userId }, { platform, dedupeKey: key });
+        if (!cfg.chat || !str(d.userId)) return undefined;
+        const userId = userIdOf(d.userId);
+        ctx.publish('chat.user.cleared', { userId }, { platform, dedupeKey: key });
+        // Named only ("<platform>:name:<name>"), or their lines are: those lines carry another id,
+        // so they're taken off one by one, matched by name or login as CTD's own buffer does.
+        const nameOnly = (id) => typeof id === 'string' && id.startsWith(`${platform}:name:`);
+        const name = (str(d.userName) ? d.userName : nameOnly(userId) ? userId.slice(platform.length + 6) : '').toLowerCase();
+        if (!name) return undefined;
+        for (const m of linesOf(platform, d.destinationId)) {
+          if (m.user?.id === userId || (!nameOnly(userId) && !nameOnly(m.user?.id))) continue;
+          if (m.user?.name?.toLowerCase() === name || m.user?.login?.toLowerCase() === name) ctx.publish('chat.message.deleted', { messageId: m.id }, { platform });
+        }
         return undefined;
       }
       if (type === 'chat.cleared') {
-        // One platform's chat was cleared: its messages go, the others' stay (a chat.cleared here
-        // would clear every platform's on every overlay).
-        if (!cfg.chat || ctx.seen(key)) return undefined;
-        for (const id of recent.get(platform) || []) ctx.publish('chat.message.deleted', { messageId: id }, { platform });
-        recent.delete(platform);
+        // One destination's chat was cleared: its lines go, the others' stay (a chat.cleared here
+        // would clear every platform's on every overlay). Worked out from the chat buffer, so the
+        // lines from before a reconnect go too, and a clear seen twice removes nothing more.
+        if (!cfg.chat) return undefined;
+        for (const m of linesOf(platform, d.destinationId)) ctx.publish('chat.message.deleted', { messageId: m.id }, { platform });
         return undefined;
       }
       if (/^alert\.[a-z]+$/.test(type)) {
-        if (!cfg.alerts || old(env, OLD_ALERT_MS)) return undefined;
+        if (!cfg.alerts || old(env, OLD_ALERT_MS)) return false;
         const a = alertOf(d, type.slice(6), platform);
-        if (a) ctx.publish(type, a, { platform, dedupeKey: key });
-        return undefined;
+        if (!a) return false;
+        return ctx.publish(type, a, { platform, dedupeKey: key }) !== undefined || ctx.seen(key);
       }
       if (type === 'stream.status') { session = d; return publishState(); }
       if (type === 'destination.status') {
@@ -240,6 +283,7 @@ export const ctdMultistream = {
     // ---- the stream --------------------------------------------------------------------------
     async function refresh(withChat) {
       const status = await get('/status');
+      clockFrom(status);
       applyStatus(status.data);
       if (withChat && cfg.chat) {
         const r = await get('/chat?limit=200');
@@ -247,30 +291,50 @@ export const ctdMultistream = {
       }
     }
 
+    // The cursor is a frame's id (what Last-Event-ID resumes from); a frame without one (the
+    // current state sent on connecting) leaves it where it was.
+    function cursor(id) {
+      if (str(id) && id.length <= 64) ctx.memory.set('cursor', id);
+    }
+
     async function onFrame(frame) {
       ctx.event();
+      // Room for this frame's event and a held line it lets go: a burst (the replay after a
+      // reconnect) waits for it rather than being lost. Reading waits meanwhile.
+      await ctx.room(2);
       if (frame.event === 'system.reset') {
+        release(true);
         await refresh(true);
-        if (str(frame.id) && frame.id.length <= 64) ctx.memory.set('cursor', frame.id);
+        cursor(frame.id);
         return;
       }
       let env;
       try { env = JSON.parse(frame.data); } catch { return; }
       if (!env || typeof env !== 'object' || typeof env.type !== 'string') return;
-      handle(env);
-      // The cursor is the frame's id (what Last-Event-ID resumes from); a frame without one (the
-      // current state sent on connecting) leaves it where it was.
-      if (str(frame.id) && frame.id.length <= 64) ctx.memory.set('cursor', frame.id);
+      if (held && /^alert\.[a-z]+$/.test(env.type) && env.data?.messageId === held.env.data.id) {
+        // The held line's alert: shown, it stays hidden; refused (alerts off, too old), it shows.
+        const h = held;
+        if (handle(env, frame.id)) {
+          held = null;
+          h.cancel();
+        } else release();
+      } else {
+        release(true);
+        handle(env, frame.id);
+      }
+      // A line still held keeps the cursor before it: a stop now replays it rather than lose it.
+      if (!held) cursor(frame.id);
     }
 
     async function follow() {
       const types = [...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice'];
-      const cursor = ctx.memory.get('cursor');
-      const res = await get(`/events?types=${encodeURIComponent(types.join(','))}`, { expect: 'stream', retries: 0, signal: streamStop.signal, headers: { accept: 'text/event-stream', ...(str(cursor) ? { 'last-event-id': cursor } : {}) } });
+      const from = ctx.memory.get('cursor');
+      const res = await get(`/events?types=${encodeURIComponent(types.join(','))}`, { expect: 'stream', retries: 0, signal: streamStop.signal, headers: { accept: 'text/event-stream', ...(str(from) ? { 'last-event-id': from } : {}) } });
+      clockFrom(res);
       open = true;
       active = true;
       health();
-      readSse(res.body, onFrame, { onActivity: () => { active = true; } }).then(
+      readSse(res.body, onFrame, { onActivity: () => { active = true; }, onComment: () => { caughtUp = true; } }).then(
         () => { if (!stopping) ctx.fail(new Error('CTD Multi-Stream closed the event stream; reconnecting.')); },
         (err) => { if (!stopping) ctx.fail(err); },
       );
@@ -321,8 +385,7 @@ export const ctdMultistream = {
 // characters (marked truncated), platform and destination kept for templates that tell them apart.
 export function chatMessage(d, platform) {
   const u = d.user && typeof d.user === 'object' ? d.user : {};
-  let uid = str(u.id) ? u.id : `${platform}:name:${str(u.name) ? u.name : 'unknown'}`;
-  if (!PLATFORMS.includes(uid.split(':')[0])) uid = `custom:${uid}`;
+  const uid = userIdOf(str(u.id) ? u.id : `${platform}:name:${str(u.name) ? u.name : 'unknown'}`);
   let text = typeof d.text === 'string' ? d.text : '';
   let fragments = Array.isArray(d.fragments) ? d.fragments.filter((f) => f && typeof f.text === 'string').map((f) => fragment(f)) : [];
   if (fragments.map((f) => f.text).join('') !== text) fragments = [{ type: 'text', text }];

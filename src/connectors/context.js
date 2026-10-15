@@ -6,6 +6,8 @@
 //   ctx.connection   { id, name, connector, config (defaults applied), secrets } (frozen copies)
 //   ctx.platform     the definition's main platform
 //   ctx.publish(type, data, { platform, dedupeKey, backfill })   an event (names.js decides which)
+//   ctx.room(n?)             resolves once n more events (1) may be published this second
+//   ctx.recentChat()         this connection's chat messages still in the chat buffer, oldest first
 //   ctx.setState(key, value, { platform })                       state; undefined removes it
 //   ctx.hold(keys?)          an error for these values (all by default): held 120 s, marked stale
 //   ctx.seen(key)            true for a message id seen in the last 10 minutes (else remembers it)
@@ -30,6 +32,7 @@ import { LIMITS } from './runner.js';
 import { namesOf } from './names.js';
 
 const HEALTH_FROM_CONNECTOR = new Set(['connected', 'degraded', 'connecting']);
+const QUIET = new Set(['chat.message.deleted', 'chat.user.cleared', 'chat.cleared']); // moderation
 
 export function makeContext(runner, gen, { def, config, secrets }) {
   const live = () => runner.current(gen);
@@ -45,17 +48,23 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     return p;
   }
 
-  // At most 200 events a second from one instance: past that a flood is a bug, and dropped.
-  function admit() {
-    const w = runner.publishWindow;
+  // A guard against a connector at fault, not a feature: at most 200 events a second that overlays
+  // play as they arrive, and 5000 that they don't (moderation, and history going into the chat
+  // buffer: a whole /clear or a whole replay at once). Past that publish throws, which fails the
+  // instance (a webhook gets a 500 and sends it again), so nothing is lost without anyone
+  // knowing: the event isn't marked seen, and a connector that keeps a cursor hasn't moved it.
+  // A connector reading a fast feed waits for room (ctx.room) instead.
+  const budget = (quiet) => {
+    const w = quiet ? runner.quietWindow : runner.publishWindow;
     const t = env.now();
-    if (t - w.start >= 1000) Object.assign(w, { start: t, count: 0, warned: false });
-    if (++w.count <= LIMITS.publishPerSecond) return true;
-    if (!w.warned) {
-      w.warned = true;
-      env.log.warn('a connection published more than 200 events in a second; the rest of that second was dropped', { connection: runner.id });
-    }
-    return false;
+    if (t - w.start >= 1000) Object.assign(w, { start: t, count: 0 });
+    return w;
+  };
+  function admit(quiet) {
+    const w = budget(quiet);
+    const limit = quiet ? LIMITS.quietPerSecond : LIMITS.publishPerSecond;
+    if (w.count >= limit) throw Object.assign(new Error(`It tried to publish more than ${limit} events in one second; the rest were refused.`), { code: 'flood' });
+    w.count++;
   }
 
   const ctx = {
@@ -72,11 +81,29 @@ export function makeContext(runner, gen, { def, config, secrets }) {
       names.event(type);
       const p = platformFor(platform);
       if (!live()) return undefined;
-      if (dedupeKey !== undefined && dedupeKey !== null && runner.dedupe.seen(dedupeKey)) return undefined;
-      if (!admit()) return undefined;
+      const keyed = dedupeKey !== undefined && dedupeKey !== null;
+      if (keyed && runner.dedupe.has(dedupeKey)) return undefined;
+      const history = backfill && type === 'chat.message';
+      admit(history || QUIET.has(type));
+      const out = env.bus.publish(type, data, { src: src(p), backfill: history });
+      // Marked seen only once it is published: one that was refused can come again.
+      if (keyed) runner.dedupe.seen(dedupeKey);
       runner.health.event();
-      return env.bus.publish(type, data, { src: src(p), backfill: backfill && type === 'chat.message' });
+      return out;
     },
+
+    room(n = 1) {
+      const w = budget(false);
+      if (w.count + n <= LIMITS.publishPerSecond) return Promise.resolve();
+      return new Promise((resolve) => {
+        const t = env.timers.setTimeout(resolve, Math.max(0, w.start + 1000 - env.now()));
+        t?.unref?.();
+      });
+    },
+
+    // Copies, so a connector can work out what a moderation event removes (the lines a platform's
+    // /clear takes, say) from what overlays may still show, across restarts of its instance.
+    recentChat: () => env.bus.chatRecent().filter((m) => m.src?.connection === runner.id).map((m) => structuredClone(m.data)),
 
     setState(key, value, { platform } = {}) {
       names.state(key);
@@ -90,7 +117,8 @@ export function makeContext(runner, gen, { def, config, secrets }) {
       runner.hold(keys === undefined ? undefined : [].concat(keys));
     },
 
-    seen: (key) => runner.dedupe.seen(key),
+    // A stopped instance only asks: what it has seen it never published.
+    seen: (key) => (live() ? runner.dedupe.seen(key) : runner.dedupe.has(key)),
 
     setHealth({ status, detail, warnings, quota } = {}) {
       if (status !== undefined && !HEALTH_FROM_CONNECTOR.has(status)) throw new TypeError(`A connector sets its health to connected, degraded or connecting; "${status}" comes from ctx.fail() or ctx.reauth().`);

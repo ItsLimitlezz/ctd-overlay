@@ -34,7 +34,8 @@ export const LIMITS = Object.freeze({
   actionMs: 10000,
   testMs: 10000,
   memoryFlushMs: 5000,
-  publishPerSecond: 200,
+  publishPerSecond: 200, // events overlays play as they arrive
+  quietPerSecond: 5000, // moderation and backfill (context.js)
 });
 const SECRET_MIN = 8; // shorter values aren't scrubbed: "true" or "1234" would mangle every log line
 
@@ -57,7 +58,8 @@ export class ConnectionRunner {
     this.stableTimer = null;
     this.ops = Promise.resolve();
     this.dedupe = createDedupe({ now: env.now });
-    this.publishWindow = { start: 0, count: 0, warned: false };
+    this.publishWindow = { start: 0, count: 0 };
+    this.quietWindow = { start: 0, count: 0 };
     this.stats = { inboundAccepted: 0, inboundRefused: 0 };
     this.secretValues = [];
     this.tokens = null;

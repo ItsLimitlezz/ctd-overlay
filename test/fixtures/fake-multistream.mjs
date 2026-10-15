@@ -10,6 +10,9 @@
 //   ms.forget()          empties the buffer (as after a restart: the next resume gets system.reset)
 //   ms.revoked = true    the token is refused (401)
 //   ms.tooMany = 1       the next n stream requests get 429 + Retry-After: 1
+//   ms.openStreams       how many event streams are open now (the real server allows maxStreams,
+//                        5 per token: a 6th gets 429 + Retry-After: 30)
+//   ms.skewMs = -90000   its clock runs that far from this machine's (envelope ts and Date header)
 //   ms.requests          [{ method, path, query, headers }]
 import http from 'node:http';
 import { createUlid } from '../../src/ids.js';
@@ -21,6 +24,8 @@ export async function startFakeMultistream({ heartbeatMs = 200 } = {}) {
     token: `ctd_pat_${'Q'.repeat(43)}`,
     revoked: false,
     tooMany: 0,
+    maxStreams: 5,
+    skewMs: 0,
     scopes: ['chat:read', 'status:read'],
     requests: [],
     buffer: [],
@@ -40,7 +45,7 @@ export async function startFakeMultistream({ heartbeatMs = 200 } = {}) {
       ],
     },
   };
-  const envelope = (type, data, { platform = 'core', destination = 'core' } = {}) => ({ id: ulid(), type, ts: Date.now(), src: { connector: 'ctd-multi-stream', connection: destination, platform }, data });
+  const envelope = (type, data, { platform = 'core', destination = 'core' } = {}) => ({ id: ulid(), type, ts: Date.now() + ms.skewMs, src: { connector: 'ctd-multi-stream', connection: destination, platform }, data });
   const wants = (types, type) => !types.length || types.some((g) => (g.endsWith('.*') ? type.startsWith(g.slice(0, -1)) : g === type));
   const frame = (res, env, withId = true) => res.write(`${withId ? `id: ${env.id}\n` : ''}event: ${env.type}\ndata: ${JSON.stringify(env)}\n\n`);
 
@@ -54,6 +59,7 @@ export async function startFakeMultistream({ heartbeatMs = 200 } = {}) {
   };
   ms.dropStreams = () => { for (const s of streams) s.res.destroy(); streams.clear(); };
   ms.forget = () => { ms.buffer = []; };
+  Object.defineProperty(ms, 'openStreams', { get: () => streams.size });
 
   const problem = (res, status, code, detail, headers = {}) => {
     res.writeHead(status, { 'content-type': 'application/problem+json', ...headers });
@@ -62,6 +68,7 @@ export async function startFakeMultistream({ heartbeatMs = 200 } = {}) {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     ms.requests.push({ method: req.method, path: u.pathname, query: Object.fromEntries(u.searchParams), headers: req.headers });
+    if (ms.skewMs) res.setHeader('date', new Date(Date.now() + ms.skewMs).toUTCString());
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
     if (bearer !== ms.token || ms.revoked) return problem(res, 401, 'unauthenticated', 'No/unknown/revoked token');
     const json = (body) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -73,6 +80,7 @@ export async function startFakeMultistream({ heartbeatMs = 200 } = {}) {
       return json({ items, next: items.at(-1)?.id ?? null });
     }
     if (u.pathname === '/api/v1/events') {
+      if (streams.size >= ms.maxStreams) return problem(res, 429, 'rate_limited', 'Too many streams', { 'retry-after': '30' });
       if (ms.tooMany > 0) {
         ms.tooMany--;
         return problem(res, 429, 'rate_limited', 'Too many streams', { 'retry-after': '1' });

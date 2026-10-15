@@ -234,6 +234,30 @@ test('a pushed message seen before is published once, across restarts of the ins
   assert.throws(() => second.ctx.setState('viewers.twitch.stale', true), /connector host/);
 });
 
+test('the publish limit is a guard that loses nothing quietly: past it publish throws and marks nothing seen; moderation and backfill have their own room; ctx.room waits for it', async (t) => {
+  const fake = fakeConnector();
+  const { host, bus, clock } = await setup(t, { defs: [fake.def] });
+  host.create({ connector: 'fake', name: 'Push', config: { behaviour: 'push' } });
+  await clock.flush();
+  const { ctx } = fake.live.at(-1);
+  const line = (id) => ({ id, user: { id: 'twitch:1', name: 'a', roles: [] }, text: id, fragments: [{ type: 'text', text: id }] });
+  // History going into the buffer and a moderator's /clear don't use the room overlays play from.
+  for (let i = 0; i < 300; i++) assert.ok(ctx.publish('chat.message', line(`b${i}`), { dedupeKey: `b${i}`, backfill: true }));
+  for (let i = 0; i < 300; i++) assert.ok(ctx.publish('chat.message.deleted', { messageId: `b${i}` }));
+  for (let i = 0; i < 200; i++) assert.ok(ctx.publish('chat.message', line(`m${i}`), { dedupeKey: `m${i}` }));
+  assert.throws(() => ctx.publish('chat.message', line('late'), { dedupeKey: 'late' }), (err) => err.code === 'flood' && /more than 200 events in one second/.test(err.message));
+  let roomy = false;
+  const room = ctx.room().then(() => { roomy = true; });
+  await clock.flush();
+  assert.equal(roomy, false, 'no room until the next second');
+  await clock.advance(SEC);
+  await room;
+  assert.ok(ctx.publish('chat.message', line('late'), { dedupeKey: 'late' }), 'refused, so never marked seen: it can come again');
+  assert.equal(bus.chatRecent().at(-1).data.id, 'late');
+  // Moderation has a limit too: a connector deleting in a loop is stopped, not just slowed.
+  assert.throws(() => { for (let i = 0; i < 5001; i++) ctx.publish('chat.message.deleted', { messageId: `x${i}` }); }, { code: 'flood' });
+});
+
 test('a stopped instance\'s late callbacks change nothing', async (t) => {
   const fake = fakeConnector();
   const { host, bus, clock } = await setup(t, { defs: [fake.def] });

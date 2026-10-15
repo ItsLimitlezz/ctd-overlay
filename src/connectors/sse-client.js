@@ -4,13 +4,13 @@
 // starting with ":" is a comment (a heartbeat). A frame larger than maxFrameBytes is refused (the
 // stream is broken or hostile), never buffered without bound.
 //
-//   await readSse(body, (frame) => …, { onActivity, maxFrameBytes })
+//   await readSse(body, (frame) => …, { onActivity, onComment, maxFrameBytes })
 //   frame: { id?, event (default "message"), data, retry? }
 // Resolves when the stream ends; rejects when it errors or a frame is too large. onFrame may be
 // async: frames are handled one after the other.
 export const MAX_FRAME_BYTES = 256 * 1024;
 
-export async function readSse(body, onFrame, { onActivity = () => {}, maxFrameBytes = MAX_FRAME_BYTES } = {}) {
+export async function readSse(body, onFrame, { onActivity = () => {}, onComment = () => {}, maxFrameBytes = MAX_FRAME_BYTES } = {}) {
   if (!body) throw new TypeError('no response body to read events from');
   const decoder = new TextDecoder();
   let buf = '';
@@ -27,7 +27,7 @@ export async function readSse(body, onFrame, { onActivity = () => {}, maxFrameBy
   };
   const line = async (l) => {
     if (l === '') return finish();
-    if (l.startsWith(':')) return undefined; // a comment: a heartbeat
+    if (l.startsWith(':')) return onComment(); // a comment: a heartbeat
     const i = l.indexOf(':');
     const field = i < 0 ? l : l.slice(0, i);
     let value = i < 0 ? '' : l.slice(i + 1);
