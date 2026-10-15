@@ -1,0 +1,39 @@
+{
+  "standard": "skp/1",
+  "id": "com.dprtmnt.alerts",
+  "name": "Alerts",
+  "version": "1.0.0",
+  "description": "Subscriptions, gifted subs, cheers, raids, memberships, Super Chats and tips from every connected platform, one at a time, in the D/PRTMNT look, with an optional sound.",
+  "author": { "name": "D/PRTMNT" },
+  "license": "proprietary",
+  "category": "alerts",
+  "tags": ["alerts", "dprtmnt", "multi-platform"],
+  "entry": "index.html",
+  "previews": ["previews/alerts.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Alerts", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "events": ["alert.*"]
+  },
+  "alerts": { "mode": "serial", "durationMs": 7000, "durationSetting": "holdMs", "gapMs": 600 },
+  "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@500;800;900&family=Space+Mono:wght@700&display=swap"],
+  "settings": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accent": { "type": "string", "format": "color", "title": "Accent", "default": "#16E0FF" },
+      "holdMs": { "type": "integer", "title": "How long each alert shows (ms)", "minimum": 2000, "maximum": 20000, "default": 7000, "x-skp-widget": "slider" },
+      "position": { "type": "string", "title": "Where", "enum": ["top", "center", "bottom"], "x-skp-labels": ["Top", "Centre", "Bottom"], "default": "top" },
+      "showMessage": { "type": "boolean", "title": "Show the viewer's message", "default": true },
+      "platformTags": { "type": "boolean", "title": "Show which platform it's from", "default": true },
+      "sound": { "type": "string", "title": "Sound (optional)", "x-skp-widget": "media", "x-skp-accept": "audio/*" },
+      "volume": { "type": "integer", "title": "Sound volume (%)", "minimum": 0, "maximum": 100, "default": 70, "x-skp-widget": "slider" }
+    }
+  }
+}

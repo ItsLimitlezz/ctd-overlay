@@ -36,7 +36,7 @@ function dirs(t) {
 
 const ID = 'dev.skp.sample';
 // The templates that ship with the platform, as `template list` sorts them.
-const BUNDLED = ['com.dprtmnt.takeover', 'dev.skp.diagnostic', 'dev.skp.viewers'];
+const BUNDLED = ['com.dprtmnt.alerts', 'com.dprtmnt.chat', 'com.dprtmnt.takeover', 'dev.skp.diagnostic', 'dev.skp.viewers'];
 const V1 = {
   type: 'object',
   properties: {
