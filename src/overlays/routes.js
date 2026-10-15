@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { readBody, sendJson, sendProblem } from '../http/server.js';
 import { attrNames, scanTags } from '../templates/html.js';
 import { pickCanvas } from '../templates/registry.js';
+import { resolveSettings } from '../templates/settings.js';
 import { createSseWriter } from './sse.js';
 
 const SDK_FILE = fileURLToPath(new URL('../sdk/sk.js', import.meta.url));
@@ -71,7 +72,8 @@ export function overlayRoutes({ overlays, templates, guard, log, heartbeatMs = H
   const previewOf = (slug) => {
     const m = PREVIEW.exec(slug);
     const template = m && templates?.get(m[1], m[2]);
-    return template ? { template, settings: {}, preview: true } : undefined;
+    // Its settings are the template's defaults, resolved as an overlay's are (a new overlay's look).
+    return template ? { template, settings: resolveSettings(template.manifest, {}), preview: true } : undefined;
   };
   // The SDK's content hash goes on its <script> URL, a second guard against OBS's sticky cache
   // beside no-store (H14).

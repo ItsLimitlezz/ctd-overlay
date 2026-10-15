@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { resolveSettings } from '../src/templates/settings.js';
 import { browserSkip, launchBrowser } from './cdp.js';
 import { DIAG, DIAG_DIR, defer, memoryLogger, packTemplate, signedIn, tempDir } from './helpers.js';
 
@@ -162,6 +163,9 @@ test('a template previews with sample data before any overlay uses it (08 §8.2)
   assert.match(page.headers.get('content-security-policy'), /sandbox allow-scripts/, 'the overlay CSP, not the admin one');
   const meta = JSON.parse(/<meta name="skp" content="([^"]*)"/.exec(page.body)[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
   assert.equal(meta.mock, true, 'sample data, always');
+  // With the template's defaults, as a new overlay of it would look.
+  assert.deepEqual(meta.settings, resolveSettings(platform.templates.get(DIAG.id, DIAG.version).manifest, {}));
+  assert.ok(Object.keys(meta.settings).length > 0);
   assert.equal(meta.slug, slug);
   // Its files, through its build.
   const css = /\/o\/[^"']+\/t\/[0-9a-f]+\/[^"']+/.exec(page.body);
