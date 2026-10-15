@@ -294,13 +294,15 @@ test('a conversion that runs past its time limit is stopped, and the video kept 
   const dir = tempDir(t);
   const logFile = path.join(dir, 'ffmpeg.log');
   fake(t, 'hang', { logFile });
-  const { media, root } = library(t, { limits: { conversionMs: 500 } });
+  // Long enough for the fake ffmpeg to start and log its pid on a busy machine.
+  const { media, root } = library(t, { limits: { conversionMs: 2500 } });
   const t0 = Date.now();
   const doc = await media.add(SAMPLES.mov, { name: 'clip.mov' });
-  assert.ok(Date.now() - t0 < 5000);
+  assert.ok(Date.now() - t0 < 10000);
   assert.match(doc.data.note, /took longer than/);
-  const { pid } = conversions(logFile).find((r) => r.hang);
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the ffmpeg process is gone');
+  const run = conversions(logFile).find((r) => r.hang);
+  assert.ok(run, 'the fake ffmpeg started');
+  assert.throws(() => process.kill(run.pid, 0), { code: 'ESRCH' }, 'the ffmpeg process is gone');
   assert.deepEqual(leftovers(root), []);
 });
 
@@ -701,7 +703,9 @@ test('skp media remove refuses a file an overlay uses, and names the overlay', a
   const file = path.join(root, 'poster.png');
   writeFileSync(file, SAMPLES.png);
   const doc = JSON.parse((await cli(['media', 'add', file, '--json'], env)).stdout);
-  const data = openData(loadConfig({ argv: [], env }), { log: memoryLogger().log, purpose: 'test' });
+  // As the platform opens it: an overlay's key is stored encrypted, with the master key the
+  // platform makes on its first start.
+  const data = openData(loadConfig({ argv: [], env }), { log: memoryLogger().log });
   try {
     const settings = { type: 'object', properties: { poster: { type: 'string', 'x-skp-widget': 'media' } } };
     data.templates.install(packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', version: '1.0.0', settings } }));

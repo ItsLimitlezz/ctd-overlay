@@ -18,11 +18,10 @@
 // origin if any (http/local.js), signed in (a session cookie, an API token, or the command line's
 // local token), with the CSRF header on a cookie's changes, and holding the route's scope.
 import { timingSafeEqual } from 'node:crypto';
-import { jsonBody, refusedHere } from '../http/local.js';
-import { sendJson, sendProblem } from '../http/server.js';
-import { AuthError } from './index.js';
+import { refusedHere } from '../http/local.js';
+import { sendProblem } from '../http/server.js';
+import { AuthError, newestFirst } from './index.js';
 
-const BODY_LIMIT = 16 * 1024;
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 const TITLES = { 401: 'Not signed in', 403: 'Forbidden', 404: 'Not found', 409: 'Conflict', 422: 'Not possible', 429: 'Too many requests' };
 const problemType = (code) => `https://skp.dev/errors/${code}`;
@@ -33,11 +32,13 @@ const safeEqual = (a, b) => {
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
-// guard(req, res, scope): the principal, or undefined once a problem has been sent.
+// guard(req, res, scope, { touch }): the principal, or undefined once a problem has been sent.
+// touch: false when checking again a principal already let in (an open stream, at each
+// heartbeat), which isn't a use: the session still ends when idle (auth.authenticate).
 export function createGuard({ auth, hosts }) {
-  return function guard(req, res, scope) {
+  return function guard(req, res, scope, { touch } = {}) {
     if (refusedHere(req, res, hosts)) return undefined;
-    const result = auth.authenticate(req);
+    const result = auth.authenticate(req, { touch });
     if (result.error) {
       sendProblem(res, 401, TITLES[401], result.error, { type: problemType('unauthenticated'), headers: { 'www-authenticate': 'Bearer', ...(result.clear ? { 'set-cookie': auth.clearCookie(Boolean(req.client?.https)) } : {}) } });
       return undefined;
@@ -64,67 +65,45 @@ export function createGuard({ auth, hosts }) {
   };
 }
 
-export function authRoutes({ auth, audit, guard, hosts, log }) {
-  // open: no sign-in needed (setup, login). scope: what the principal must hold; null for any.
-  const route = (method, path, { open = false, scope = null } = {}, run) => ({
-    method,
-    path,
-    async handler({ req, res, params, url }) {
-      let who;
-      if (open) {
-        if (refusedHere(req, res, hosts)) return;
-      } else {
-        who = guard(req, res, scope);
-        if (!who) return;
-      }
-      const body = method === 'GET' ? {} : await jsonBody(req, res, BODY_LIMIT);
-      if (body === undefined) return;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendProblem(res, 400, 'Bad request', 'The body must be a JSON object.');
-      const ctx = { ip: req.client?.ip ?? req.socket.remoteAddress, https: Boolean(req.client?.https), ua: req.headers['user-agent'], actor: who?.label, keep: body.keep === true };
-      try {
-        const [status, value] = await run({ who, params, body, ctx, url });
-        // A sign-in's cookie goes in its header, never the body.
-        const isObject = value && typeof value === 'object' && !Array.isArray(value);
-        const { cookie, ...rest } = isObject ? value : {};
-        sendJson(res, status, isObject ? rest : value, cookie ? { 'set-cookie': cookie } : {});
-      } catch (err) {
-        if (err instanceof AuthError) {
-          return sendProblem(res, err.status, TITLES[err.status] || 'Refused', err.message, { type: problemType(err.code), headers: err.retryAfterS ? { 'retry-after': String(err.retryAfterS) } : {} });
-        }
-        if (err.name === 'ConflictError') return sendProblem(res, 409, 'Conflict', 'That changed meanwhile; read it again and retry.', { type: problemType('conflict') });
-        log.error('an account request failed', { method, path, err });
-        throw err;
-      }
-    },
-  });
-
+export function authRoutes({ api, auth, audit }) {
+  const tag = 'Accounts';
+  const ctxOf = (req, who, body) => ({ ip: req.client?.ip ?? req.socket.remoteAddress, https: Boolean(req.client?.https), ua: req.headers['user-agent'], actor: who?.label, keep: body?.keep === true });
+  // A sign-in's cookie goes in its header, never the body.
+  const signIn = (status, value) => {
+    const { cookie, ...rest } = value;
+    return { status, body: rest, headers: cookie ? { 'set-cookie': cookie } : {} };
+  };
+  // Nothing an answer here holds (a session, a token's secret) is kept for replay.
+  const r = (def) => api.route({ tag, idempotent: false, ...def });
   return [
-    route('GET', '/api/v1/setup', { open: true }, () => [200, { needed: auth.setupNeeded() }]),
-    route('POST', '/api/v1/setup', { open: true }, async ({ body, ctx }) => [201, await auth.createOwner(body, ctx)]),
-    route('POST', '/api/v1/auth/login', { open: true }, async ({ body, ctx }) => [200, await auth.login(body, ctx)]),
-    route('POST', '/api/v1/auth/logout', {}, ({ who, ctx }) => [200, auth.logout(who, ctx)]),
-    route('GET', '/api/v1/auth/session', {}, ({ who }) => [200, auth.describe(who)]),
-    route('GET', '/api/v1/auth/sessions', {}, ({ who }) => [200, auth.sessions.list(who)]),
-    route('DELETE', '/api/v1/auth/sessions/:id', {}, ({ who, params, ctx }) => {
+    r({ method: 'GET', path: '/api/v1/setup', open: true, summary: 'Whether the owner account is still to be made', run: () => ({ needed: auth.setupNeeded() }) }),
+    r({ method: 'POST', path: '/api/v1/setup', open: true, summary: 'Make the owner with the setup code', body: { fields: ['code', 'username', 'password', 'keep'] }, status: 201, run: async ({ body, req }) => signIn(201, await auth.createOwner(body, ctxOf(req, undefined, body))) }),
+    r({ method: 'POST', path: '/api/v1/auth/login', open: true, summary: 'Sign in', body: { fields: ['username', 'password', 'code', 'keep'] }, run: async ({ body, req }) => signIn(200, await auth.login(body, ctxOf(req, undefined, body))) }),
+    r({ method: 'POST', path: '/api/v1/auth/logout', summary: 'Sign out', body: { fields: [] }, run: ({ who, req }) => signIn(200, auth.logout(who, ctxOf(req, who))) }),
+    r({ method: 'GET', path: '/api/v1/auth/session', summary: 'Who is asking: user, role, scopes, CSRF token', run: ({ who }) => auth.describe(who) }),
+    r({ method: 'GET', path: '/api/v1/auth/sessions', summary: 'Your sessions, newest first', paged: true, run: ({ who, url }) => api.paginate(auth.sessions.list(who), url, (s) => newestFirst(s.id)) }),
+    r({ method: 'DELETE', path: '/api/v1/auth/sessions/:id', summary: 'End one of your sessions', run: ({ who, params, req }) => {
+      const ctx = ctxOf(req, who);
       const out = auth.sessions.revoke(who, params.id, ctx);
-      return [200, out.current ? { ...out, cookie: auth.clearCookie(ctx.https) } : out];
-    }),
-    route('POST', '/api/v1/auth/password', {}, async ({ who, body, ctx }) => [200, await auth.changePassword(who, body, ctx)]),
-    route('POST', '/api/v1/auth/totp/enroll', {}, async ({ who, body }) => [200, await auth.totp.enroll(who, body)]),
-    route('POST', '/api/v1/auth/totp/verify', {}, ({ who, body, ctx }) => [200, auth.totp.verify(who, body, ctx)]),
-    route('DELETE', '/api/v1/auth/totp', {}, async ({ who, body, ctx }) => [200, await auth.totp.disable(who, body, ctx)]),
-    route('GET', '/api/v1/users', { scope: 'users:admin' }, () => [200, auth.users.list()]),
-    route('POST', '/api/v1/users', { scope: 'users:admin' }, async ({ body, ctx }) => [201, await auth.users.create(body, ctx)]),
-    route('GET', '/api/v1/users/:ref', { scope: 'users:admin' }, ({ params }) => [200, auth.users.get(params.ref)]),
-    route('PATCH', '/api/v1/users/:ref', { scope: 'users:admin' }, async ({ params, body, ctx }) => [200, await auth.users.update(params.ref, body, ctx)]),
-    route('DELETE', '/api/v1/users/:ref', { scope: 'users:admin' }, ({ params, ctx }) => [200, auth.users.remove(params.ref, ctx)]),
-    route('GET', '/api/v1/tokens', {}, ({ who, url }) => [200, auth.tokens.list(who, { all: url.searchParams.get('all') === 'true' })]),
-    route('POST', '/api/v1/tokens', {}, ({ who, body, ctx }) => [201, auth.tokens.create(who, body, ctx)]),
-    route('DELETE', '/api/v1/tokens/:id', {}, ({ who, params, ctx }) => [200, auth.tokens.revoke(who, params.id, ctx)]),
-    route('GET', '/api/v1/system/audit', { scope: 'audit:read' }, ({ url }) => {
+      return signIn(200, out.current ? { ...out, cookie: auth.clearCookie(ctx.https) } : out);
+    } }),
+    r({ method: 'POST', path: '/api/v1/auth/password', summary: 'Change your password', body: { fields: ['current', 'password'] }, run: async ({ who, body, req }) => signIn(200, await auth.changePassword(who, body, ctxOf(req, who))) }),
+    r({ method: 'POST', path: '/api/v1/auth/totp/enroll', summary: 'Start two-factor: a secret for your authenticator app', body: { fields: ['password'] }, run: ({ who, body, req }) => auth.totp.enroll(who, body, ctxOf(req, who)) }),
+    r({ method: 'POST', path: '/api/v1/auth/totp/verify', summary: 'Turn two-factor on with a code: ten recovery codes, once', body: { fields: ['code'] }, run: ({ who, body, req }) => signIn(200, auth.totp.verify(who, body, ctxOf(req, who))) }),
+    r({ method: 'DELETE', path: '/api/v1/auth/totp', summary: 'Turn two-factor off (with your password)', body: { fields: ['password'] }, run: async ({ who, body, req }) => signIn(200, await auth.totp.disable(who, body, ctxOf(req, who))) }),
+    r({ method: 'GET', path: '/api/v1/users', scope: 'users:admin', summary: 'Accounts', paged: true, run: ({ url }) => api.paginate(auth.users.list(), url, (u) => `${u.createdAt}|${u.id}`) }),
+    r({ method: 'POST', path: '/api/v1/users', scope: 'users:admin', summary: 'Add an account', body: { fields: ['username', 'password', 'role'] }, status: 201, run: async ({ who, body, req }) => ({ status: 201, body: await auth.users.create(body, ctxOf(req, who)) }) }),
+    r({ method: 'GET', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'An account', run: ({ params }) => auth.users.get(params.ref) }),
+    // An account has an ETag like any resource: the admin UI changes the one it read (If-Match).
+    r({ method: 'PATCH', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'Change a role, set a password, or turn two-factor off', body: { fields: ['role', 'password', 'totp'] }, resource: (p) => auth.users.get(p.ref), run: ({ who, params, body, req, ifRev }) => auth.users.update(params.ref, body, { ...ctxOf(req, who), who, ifRev }) }),
+    r({ method: 'DELETE', path: '/api/v1/users/:ref', scope: 'users:admin', summary: 'Remove an account, its sessions and tokens', run: ({ who, params, req }) => auth.users.remove(params.ref, ctxOf(req, who)) }),
+    r({ method: 'GET', path: '/api/v1/tokens', summary: 'Your API tokens (?all=true: everyone\'s, for the owner)', paged: true, query: ['all'], run: ({ who, url }) => api.paginate(auth.tokens.list(who, { all: url.searchParams.get('all') === 'true' }), url) }),
+    r({ method: 'POST', path: '/api/v1/tokens', summary: 'Create an API token (its secret is shown once)', body: { fields: ['name', 'scopes', 'expiresAt', 'expiresInDays', 'ips'] }, status: 201, run: ({ who, body, req }) => ({ status: 201, body: auth.tokens.create(who, body, ctxOf(req, who)) }) }),
+    r({ method: 'DELETE', path: '/api/v1/tokens/:id', summary: 'Revoke an API token', run: ({ who, params, req }) => auth.tokens.revoke(who, params.id, ctxOf(req, who)) }),
+    r({ method: 'GET', path: '/api/v1/system/audit', scope: 'audit:read', tag: 'System', summary: 'The audit log, newest first (?action=, ?limit=, ?cursor=)', paged: true, query: ['action'], run: ({ url }) => {
       const limit = Number(url.searchParams.get('limit') ?? 50);
       if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new AuthError('"limit" is 1 to 200.', 'invalid');
-      return [200, audit.list({ limit, cursor: url.searchParams.get('cursor') || undefined, action: url.searchParams.get('action') || undefined })];
-    }),
+      return audit.list({ limit, cursor: url.searchParams.get('cursor') || undefined, action: url.searchParams.get('action') || undefined });
+    } }),
   ];
 }

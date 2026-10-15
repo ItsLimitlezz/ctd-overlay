@@ -1,23 +1,27 @@
 // Accounts and sign-in (07 §7.2–7.5): the setup code and the owner, users and roles, sessions,
 // API tokens, two-factor codes, login protection, and the command line's local token.
 //
-//   store collection "users"     id usr_…: { username, role, passwordHash, totp?, recovery?, … }
+//   store collection "users"     id usr_…: { username, role, passwordHash, passwordId, totp?, … }
 //   store collection "sessions"  id ses_…: { userId, hash (SHA-256 of the cookie's value), csrf, … }
 //   store collection "tokens"    id tok_…: { userId, name, hash (SHA-256 of the token), scopes, … }
 //
 // Secrets are never stored as they are: a session or API token is kept as its SHA-256, a password
-// as its scrypt hash, a recovery code as its SHA-256. The TOTP secret is kept as it is until secrets
-// at rest are encrypted (step 12).
+// as its scrypt hash, a recovery code as its SHA-256. The TOTP secret is encrypted with the master
+// key (07 §7.7), with totp:<user id> as associated data, so it can't be moved to another account.
 //
 // The command line on this machine drives the running platform with a local token: 32 random
-// bytes the platform writes, at each start, to <configDir>/local-token (0600), accepted only from a
-// loopback address. Whoever can read the config directory can read the master key there anyway.
+// bytes the platform writes, at each start, to <configDir>/local-token (0600 on POSIX; on Windows
+// the mode doesn't apply and the file takes the config directory's permissions, 07 §7.7), accepted
+// only from a loopback address. Whoever can read the config directory can read the master key
+// there anyway.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { newId } from '../ids.js';
+import { FORWARDING, isPrivateAddress } from '../net.js';
 import { isEncrypted } from '../secrets.js';
+import { cliActor } from './audit.js';
 import { BusyError, createHasher, passwordProblem } from './passwords.js';
 import { ASSIGNABLE, SCOPES, scopesOf } from './roles.js';
 import { createThrottle } from './throttle.js';
@@ -34,6 +38,7 @@ const RECOVERY_CODES = 10;
 const MAX_TOKENS = 100;
 const MAX_SESSIONS = 50; // per user: the oldest go first
 export const LOCAL_TOKEN_FILE = 'local-token';
+const ULID_CHARS = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export class AuthError extends Error {
   constructor(message, code, status = 422, extra = {}) {
@@ -66,6 +71,14 @@ export const isLoopback = (addr) => {
   return a === '::1' || (isIP(a) === 4 && a.startsWith('127.'));
 };
 
+// The sessions list's order, newest first, as a key that sorts the usual way (for paginate): a
+// session's id is a ULID, in the order sessions were made, with each character turned around in
+// its alphabet. Its pages stay put; lastSeenAt would move under a cursor as sessions are used.
+export const newestFirst = (id) => [...String(id)].map((c) => {
+  const i = ULID_CHARS.indexOf(c);
+  return i < 0 ? c : ULID_CHARS[ULID_CHARS.length - 1 - i];
+}).join('');
+
 export function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
@@ -84,6 +97,9 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   const seal = (secret, userId) => (secrets ? secrets.encrypt(secret, `totp:${userId}`) : secret);
   const unseal = (stored, userId) => (secrets && isEncrypted(stored) ? secrets.decrypt(stored, `totp:${userId}`) : stored);
   const throttle = createThrottle({ now });
+  // Changes made with the local token are the command line's (07 §7.12): cli:<user>, this
+  // platform's own OS user, the only one who can read the token's file.
+  const cliLabel = cliActor();
   const sessionsByHash = new Map(); // SHA-256 → session id
   const tokensByHash = new Map(); // SHA-256 → token id
   let setup = null; // { code, expiresAt, used }
@@ -103,6 +119,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   // ---- users -------------------------------------------------------------------------------
   const userView = (doc) => ({
     id: doc.id,
+    rev: doc.rev,
     username: doc.data.username,
     role: doc.data.role,
     totp: !!doc.data.totp,
@@ -141,12 +158,21 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     try { return await hasher.verify(typeof password === 'string' ? password : '', stored); } catch (err) { throw busy(err); }
   };
   const busy = (err) => (err instanceof BusyError ? new AuthError(err.message, 'busy', 429, { retryAfterS: err.retryAfterS }) : err);
+  // Which password is on file: a new one each time a password is set (setup, a new user, a change,
+  // a reset), kept by a rehash under new scrypt parameters, which is the same password. A request
+  // that waited for the hasher compares this, not the hash. A record from before it has none, on
+  // both sides, until its password is next set.
+  const newPasswordId = () => randomBytes(8).toString('hex');
 
   // ---- sessions ----------------------------------------------------------------------------
   function cookie(token, keep, secure) {
     return `${cookieName(secure)}=${token}; HttpOnly; SameSite=Lax; Path=/${keep ? `; Max-Age=${KEEP_MS / 1000}` : ''}${secure ? '; Secure' : ''}`;
   }
-  const clearCookie = (secure) => `${cookieName(secure)}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
+  // Over HTTPS both names go: a skp_session left from plain HTTP on the LAN is forgotten too.
+  const clearCookie = (secure) => {
+    const clear = (s) => `${cookieName(s)}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${s ? '; Secure' : ''}`;
+    return secure ? [clear(true), clear(false)] : clear(false);
+  };
 
   function dropSession(id) {
     const doc = store.get('sessions', id);
@@ -177,7 +203,10 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   // ---- who is asking -----------------------------------------------------------------------
   // { principal } for a valid credential, { error } for one that isn't, {} for none. A principal:
   // { kind: 'session' | 'token' | 'local', user?, role, scopes (a Set), label, csrf?, sessionId?, tokenId? }.
-  function authenticate(req) {
+  // touch: false for a check that isn't a use, such as an open /events stream's at each heartbeat:
+  // the session's last use stays, so a tab left open still ends after 12 idle hours (07 §7.3). A
+  // token's last use moves either way: a stream on it is that token in use, and it has no idle end.
+  function authenticate(req, { touch = true } = {}) {
     const authz = req.headers.authorization;
     if (authz !== undefined) {
       const m = /^Bearer\s+(\S+)\s*$/i.exec(authz);
@@ -185,12 +214,14 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
       if (m[1].startsWith('skp_cli_')) return local(m[1], req);
       return apiToken(m[1], req);
     }
+    // Only the name for the request's scheme: over HTTPS that is the __Host- one, which plain HTTP
+    // (another port, another app on this host) can't plant in a browser (07 §7.3).
     const jar = parseCookies(req.headers.cookie);
-    const value = jar[cookieName(true)] ?? jar[cookieName(false)];
-    return value ? session(value) : {};
+    const value = jar[cookieName(Boolean(req.client?.https))];
+    return value ? session(value, touch) : {};
   }
 
-  function session(value) {
+  function session(value, touch) {
     const id = sessionsByHash.get(sha256(value));
     const doc = id && store.get('sessions', id);
     if (!doc) return { error: 'Your session has ended. Sign in again.', clear: true };
@@ -203,7 +234,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
       dropSession(doc.id);
       return { error: 'Your session has ended. Sign in again.', clear: true };
     }
-    if (now() - doc.data.lastSeenAt >= TOUCH_MS) store.put('sessions', doc.id, { ...doc.data, lastSeenAt: now() });
+    if (touch && now() - doc.data.lastSeenAt >= TOUCH_MS) store.put('sessions', doc.id, { ...doc.data, lastSeenAt: now() });
     return { principal: { kind: 'session', user: userView(user), role: user.data.role, scopes: new Set(scopesOf(user.data.role)), label: user.data.username, csrf: doc.data.csrf, sessionId: doc.id } };
   }
 
@@ -229,9 +260,12 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
 
   function local(value, req) {
     if (!localToken || !safeEqual(value, localToken)) return { error: 'The command line\'s local token doesn\'t match: is the platform running with this config directory?' };
-    // From this machine, and not through a proxy that is (a local reverse proxy forwards others).
-    if (!isLoopback(req.socket?.remoteAddress) || req.client?.proxied || req.headers['x-forwarded-for']) return { error: 'The local token works only from this machine.' };
-    return { principal: { kind: 'local', role: 'owner', scopes: new Set(SCOPES), label: 'local' } };
+    // From this machine, and not through a proxy (a local reverse proxy forwards others). Such a
+    // proxy connects from loopback too, so what gives it away is a forwarding header (a trusted one
+    // sends X-Forwarded-Proto at least, 07 §7.8): the command line's own requests carry none, and
+    // work beside a proxy this platform trusts.
+    if (!isLoopback(req.socket?.remoteAddress) || FORWARDING.some((h) => req.headers[h] !== undefined)) return { error: 'The local token works only from this machine.' };
+    return { principal: { kind: 'local', role: 'owner', scopes: new Set(SCOPES), label: cliLabel } };
   }
 
   // ---- setup (07 §7.2) ---------------------------------------------------------------------
@@ -243,6 +277,10 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
 
   async function createOwner({ code, username, password } = {}, { ip, ua, keep, https } = {}) {
     if (ownerDoc()) throw new AuthError('The owner account exists already: sign in instead.', 'setup-done', 409);
+    // From this machine or its local network only (07 §7.2), so a stranger who sees the code in a
+    // log can't claim an exposed fresh install. In local mode only this machine reaches setup, and
+    // lan mode serves its network only: this refuses in public mode (or behind a trusted proxy).
+    if (!isPrivateAddress(String(ip ?? ''))) throw new AuthError('The owner account is made from this machine or its local network: run skp setup on the platform\'s machine, or open the admin UI from the local network.', 'setup-not-local', 403);
     const wait = throttle.wait(`setup:${ip}`);
     if (wait) throw new AuthError(`Too many wrong setup codes. Try again in ${Math.ceil(wait / 1000)} s.`, 'throttled', 429, { retryAfterS: Math.ceil(wait / 1000) });
     if (!setup || setup.used || now() >= setup.expiresAt) throw new AuthError('The setup code has expired. Restart the platform for a new one: it is printed in the log.', 'setup-expired', 403);
@@ -261,7 +299,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     }
     if (ownerDoc()) throw new AuthError('The owner account exists already: sign in instead.', 'setup-done', 409);
     const t = new Date(now()).toISOString();
-    const user = store.put('users', newId('usr'), { username: name, role: 'owner', passwordHash, createdAt: t, lastLoginAt: t }, { ifRev: 0 });
+    const user = store.put('users', newId('usr'), { username: name, role: 'owner', passwordHash, passwordId: newPasswordId(), createdAt: t, lastLoginAt: t }, { ifRev: 0 });
     audit.record({ action: 'setup', actor: name, ip, target: user.id });
     log.info('owner account created', { username: name });
     return signedIn(user, startSession(user, { keep, ip, ua, https }));
@@ -278,34 +316,46 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     const doc = USERNAME.test(name) ? findUser(name) : undefined;
     // An unknown name costs one hash too: the answer and its timing say nothing about who exists.
     const { ok, rehash } = await verify(password, doc?.data.passwordHash);
+    // Under older scrypt parameters: the new hash now, so nothing waits after the record is read again.
+    const newHash = ok && rehash ? await hash(password) : undefined;
     const failed = (what) => {
       throttle.fail(...keys);
       audit.record({ action: 'login.failure', actor: name || 'anonymous', ip, reason: what });
     };
-    if (!doc || !ok) {
+    // The record again, now the hash is done: a removal or a new password that came meanwhile
+    // stands (the password checked is no longer the one on file; another sign-in's rehash of it
+    // is still it), and a code another sign-in used meanwhile is used up. From here to the session
+    // nothing waits, so nothing comes in between.
+    let user = doc && ok ? store.get('users', doc.id) : undefined;
+    if (!user || user.data.passwordId !== doc.data.passwordId) {
       failed('password');
       throw new AuthError('The username or password is wrong.', 'bad-credentials', 401);
     }
-    let user = doc;
     if (user.data.totp) {
       if (code === undefined || code === null || code === '') throw new AuthError('Enter the six-digit code from your authenticator app, or a recovery code.', 'totp-required', 401);
-      const step = verifyTotp(unseal(user.data.totp.secret, user.id), String(code), now(), { lastStep: user.data.totp.lastStep ?? -1 });
-      if (step !== undefined) user = store.put('users', user.id, { ...user.data, totp: { ...user.data.totp, lastStep: step } });
+      // A secret that doesn't decrypt (restored without its master key) leaves the recovery codes,
+      // which are kept as hashes: they still work.
+      let secret;
+      let sealed;
+      try { secret = unseal(user.data.totp.secret, user.id); } catch (err) {
+        sealed = err;
+        log.warn('a two-factor secret does not decrypt: only recovery codes work for this user', { user: user.id, err: err.message });
+      }
+      const step = secret === undefined ? undefined : verifyTotp(secret, String(code), now(), { lastStep: user.data.totp.lastStep ?? -1 });
+      if (step !== undefined) user = store.put('users', user.id, { ...user.data, totp: { ...user.data.totp, lastStep: step } }, { ifRev: user.rev });
       else {
         const used = sha256(normalizeCode(code));
         const i = (user.data.recovery || []).indexOf(used);
         if (i < 0) {
           failed('code');
-          throw new AuthError('That code is wrong, or was used already.', 'bad-code', 401);
+          throw sealed ?? new AuthError('That code is wrong, or was used already.', 'bad-code', 401);
         }
-        user = store.put('users', user.id, { ...user.data, recovery: user.data.recovery.filter((_, j) => j !== i) });
+        user = store.put('users', user.id, { ...user.data, recovery: user.data.recovery.filter((_, j) => j !== i) }, { ifRev: user.rev });
         audit.record({ action: 'totp.recovery-used', actor: name, ip, left: user.data.recovery.length });
       }
     }
     throttle.succeed(`account:${name}`);
-    const next = { ...user.data, lastLoginAt: new Date(now()).toISOString() };
-    if (rehash) next.passwordHash = await hash(password);
-    user = store.put('users', user.id, next);
+    user = store.put('users', user.id, { ...user.data, lastLoginAt: new Date(now()).toISOString(), ...(newHash ? { passwordHash: newHash } : {}) }, { ifRev: user.rev });
     audit.record({ action: 'login', actor: name, ip, keep: !!keep });
     return signedIn(user, startSession(user, { keep, ip, ua, https }));
   }
@@ -335,24 +385,51 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     return userDoc(who.user.id);
   }
 
+  // The password asked for again (to change it, or two-factor) counts with the sign-ins: a stolen
+  // session can't guess at it without limit, or unseen (07 §7.3).
+  async function recheck(doc, password, ip, wrong) {
+    const keys = [`account:${doc.data.username}`, `ip:${ip}`];
+    const wait = throttle.wait(...keys);
+    if (wait) throw new AuthError(`Too many wrong passwords. Try again in ${Math.ceil(wait / 1000)} s.`, 'throttled', 429, { retryAfterS: Math.ceil(wait / 1000) });
+    if ((await verify(password, doc.data.passwordHash)).ok) return;
+    throttle.fail(...keys);
+    audit.record({ action: 'login.failure', actor: doc.data.username, ip, reason: 'recheck' });
+    throw new AuthError(wrong, 'bad-credentials', 403);
+  }
+
+  // The signed-in user's record again after a wait for the hasher: what is decided and written
+  // from here on comes from it, with nothing waiting before the write. Refused when the session
+  // ended meanwhile (signed out, revoked, a role change, the user removed) or the password just
+  // checked is no longer the one on file (a sign-in's rehash of it is still it), so this request's
+  // write can't bring either back.
+  function stillSelf(who, doc) {
+    const user = store.get('users', doc.id);
+    if (!user || !store.get('sessions', who.sessionId)) throw new AuthError('Your session has ended. Sign in again.', 'unauthenticated', 401);
+    if (user.data.passwordId !== doc.data.passwordId) throw new AuthError('Your password changed while this was being checked. Sign in again.', 'changed', 409);
+    return user;
+  }
+
   async function changePassword(who, { current, password } = {}, { ip, ua, https } = {}) {
     const doc = self(who);
-    if (!(await verify(current, doc.data.passwordHash)).ok) throw new AuthError('The current password is wrong.', 'bad-credentials', 403);
+    await recheck(doc, current, ip, 'The current password is wrong.');
     checkPassword(password, doc.data.username);
-    const saved = store.put('users', doc.id, { ...doc.data, passwordHash: await hash(password) });
+    const passwordHash = await hash(password);
+    const user = stillSelf(who, doc);
+    const saved = store.put('users', user.id, { ...user.data, passwordHash, passwordId: newPasswordId() }, { ifRev: user.rev });
     endSessions(doc.id);
     audit.record({ action: 'password.change', actor: who.label, ip, target: doc.id });
     return signedIn(saved, startSession(saved, { ip, ua, https, keep: false }));
   }
 
   // ---- two-factor (07 §7.4) ----------------------------------------------------------------
-  async function totpEnroll(who, { password } = {}) {
+  async function totpEnroll(who, { password } = {}, { ip } = {}) {
     const doc = self(who);
-    if (!(await verify(password, doc.data.passwordHash)).ok) throw new AuthError('The password is wrong.', 'bad-credentials', 403);
-    if (doc.data.totp) throw new AuthError('Two-factor is on already; turn it off first to set up another device.', 'totp-on', 409);
+    await recheck(doc, password, ip, 'The password is wrong.');
+    const user = stillSelf(who, doc);
+    if (user.data.totp) throw new AuthError('Two-factor is on already; turn it off first to set up another device.', 'totp-on', 409);
     const secret = newSecret();
-    store.put('users', doc.id, { ...doc.data, totpPending: { secret: seal(secret, doc.id), at: now() } });
-    return { secret, uri: otpauthUri(secret, doc.data.username) };
+    store.put('users', user.id, { ...user.data, totpPending: { secret: seal(secret, user.id), at: now() } }, { ifRev: user.rev });
+    return { secret, uri: otpauthUri(secret, user.data.username) };
   }
 
   function totpVerify(who, { code } = {}, { ip, ua, https } = {}) {
@@ -375,12 +452,13 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
 
   async function totpDisable(who, { password } = {}, { ip, ua, https } = {}) {
     const doc = self(who);
-    if (!(await verify(password, doc.data.passwordHash)).ok) throw new AuthError('The password is wrong.', 'bad-credentials', 403);
-    const next = { ...doc.data };
+    await recheck(doc, password, ip, 'The password is wrong.');
+    const user = stillSelf(who, doc);
+    const next = { ...user.data };
     delete next.totp;
     delete next.recovery;
     delete next.totpPending;
-    const saved = store.put('users', doc.id, next);
+    const saved = store.put('users', user.id, next, { ifRev: user.rev });
     endSessions(doc.id);
     audit.record({ action: 'totp.disable', actor: who.label, ip, target: doc.id });
     return signedIn(saved, startSession(saved, { ip, ua, https }));
@@ -394,25 +472,42 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
     checkPassword(password, name);
     const passwordHash = await hash(password);
     if (findUser(name)) throw new AuthError(`There is already a user "${name}".`, 'name-taken', 409);
-    const doc = store.put('users', newId('usr'), { username: name, role, passwordHash, createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
+    const doc = store.put('users', newId('usr'), { username: name, role, passwordHash, passwordId: newPasswordId(), createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
     audit.record({ action: 'user.create', actor, ip, target: doc.id, username: name, role });
     return userView(doc);
   }
 
-  // { role?, password?, totp: false? }: each ends the user's sessions.
-  async function updateUser(ref, patch = {}, { actor, ip } = {}) {
-    let doc = byRef(ref);
+  // { role?, password?, totp: false? }: each ends the user's sessions. The owner's account is the
+  // owner's: its role never changes (there is one owner), and its password and two-factor are
+  // changed by the owner with the current password (/auth/password, /auth/totp), or reset from
+  // the command line on this machine (07 §7.3), never by a session or a token that may not be
+  // the owner's. who: the principal asking; ifRev: the revision the caller read (If-Match).
+  async function updateUser(ref, patch = {}, { actor, ip, who, ifRev } = {}) {
+    const read = byRef(ref);
+    const newRole = patch.role !== undefined && patch.role !== read.data.role;
+    if (read.data.role === 'owner') {
+      if (newRole) throw new AuthError('The owner stays the owner.', 'owner', 409);
+      if ((patch.password !== undefined || patch.totp === false) && who?.kind !== 'local') {
+        throw new AuthError('The owner changes their own password and two-factor, with the current password (POST /auth/password, DELETE /auth/totp); a forgotten one is reset on the platform\'s machine: skp user password.', 'owner', 403);
+      }
+    }
+    if (newRole && !ASSIGNABLE.includes(patch.role)) throw new AuthError(`"role" is one of ${ASSIGNABLE.join(', ')} (there is one owner).`, 'invalid');
+    if (patch.password !== undefined) checkPassword(patch.password, read.data.username);
+    const passwordHash = patch.password !== undefined ? await hash(patch.password) : undefined;
+    // The record again, now the hash is done: the change goes onto it as it is, so nothing made
+    // meanwhile (a removal, a role, two-factor turned on) is undone; with If-Match, only onto the
+    // revision the caller read.
+    let doc = store.get('users', read.id);
+    if (!doc) throw new AuthError(`There is no user "${ref}".`, 'not-found', 404);
     const next = { ...doc.data };
     const changed = [];
     if (patch.role !== undefined && patch.role !== doc.data.role) {
-      if (doc.data.role === 'owner') throw new AuthError('The owner stays the owner.', 'owner', 409);
-      if (!ASSIGNABLE.includes(patch.role)) throw new AuthError(`"role" is one of ${ASSIGNABLE.join(', ')} (there is one owner).`, 'invalid');
       next.role = patch.role;
       changed.push('role');
     }
-    if (patch.password !== undefined) {
-      checkPassword(patch.password, doc.data.username);
-      next.passwordHash = await hash(patch.password);
+    if (passwordHash) {
+      next.passwordHash = passwordHash;
+      next.passwordId = newPasswordId();
       changed.push('password');
     }
     if (patch.totp === false && doc.data.totp) {
@@ -421,7 +516,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
       changed.push('totp');
     }
     if (!changed.length) return userView(doc);
-    doc = store.put('users', doc.id, next);
+    doc = store.put('users', doc.id, next, { ifRev: ifRev ?? doc.rev });
     endSessions(doc.id);
     for (const what of changed) audit.record({ action: what === 'role' ? 'user.role' : what === 'password' ? 'user.password' : 'user.totp-reset', actor, ip, target: doc.id, username: doc.data.username, ...(what === 'role' ? { role: next.role } : {}) });
     return userView(doc);
@@ -513,7 +608,7 @@ export function createAuth({ store, audit, secrets, log, now = Date.now, hasher 
   // ---- a user's own sessions ---------------------------------------------------------------
   function listSessions(who) {
     const user = self(who);
-    return sessionsOf(user.id).filter((s) => !expired(s.data)).sort((a, b) => b.data.lastSeenAt - a.data.lastSeenAt).map((s) => ({
+    return sessionsOf(user.id).filter((s) => !expired(s.data)).sort((a, b) => (newestFirst(a.id) < newestFirst(b.id) ? -1 : 1)).map((s) => ({
       id: s.id,
       current: s.id === who.sessionId,
       createdAt: new Date(s.data.createdAt).toISOString(),

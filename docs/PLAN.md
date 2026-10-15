@@ -171,6 +171,18 @@ option that keeps a live show running with nobody touching it.
     template download's resolved address against DNS rebinding (step 8b).
 13. **API v1 conventions.** OpenAPI document, problem+json, ETag/`If-Match`, idempotency keys,
     rate limits, pagination (03).
+    Done in `src/http/api.js`: every `/api/v1` route is declared once (scope, fields, resource for
+    If-Match) and gets the conventions; the declarations make `/api/v1/openapi.json`. The resources
+    the admin UI needs came with it: overlays (CRUD, upgrade, revert, slug rename), templates
+    (install by upload or URL, validate, previews, sources), media (streamed uploads), system,
+    live events, custom events and state. Lists are `{ items, next }`; shows' instants are ISO.
+    Template downloads connect only to the address they checked (`net.js` pinnedFetch), closing
+    step 8b's DNS-rebinding gap. The review of steps 11–13 closed races in sign-in (a removal, a
+    new password or a used code that lands meanwhile now stands), made setup local-only in every
+    mode, kept the local token off proxied requests, made the command line reach lan, public and
+    TLS installs (recorded as `cli:<user>`), and left "no key required" to the owner. The API now
+    ends an `/events` stream when its sign-in ends, gives `POST /events` its own budget, compares
+    `If-Match` strongly, never replays an overlay's new key, and puts time limits on bodies.
 14. **Admin UI.** Live console first, built for a phone; then Overlays (sandboxed lite previews
     loaded on tap, settings form from the schema, Copy URL), Shows/lineup/timeline, Templates,
     Settings (08, H13, H17, H20).

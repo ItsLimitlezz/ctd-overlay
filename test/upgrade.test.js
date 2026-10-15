@@ -6,7 +6,7 @@ import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { DIAG_DIR, FIXTURE_TEMPLATES, defer, memoryLogger, packTemplate, startWithOverlay, tempDir } from './helpers.js';
+import { DIAG_DIR, FIXTURE_TEMPLATES, defer, memoryLogger, packTemplate, signedIn, startWithOverlay, tempDir } from './helpers.js';
 
 const ID = 'dev.skp.sample';
 const settingsV1 = {
@@ -234,6 +234,7 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   ended.catch(() => {}); // awaited below; aborted at cleanup if an assertion fails first
   const channel = platform.overlays.resolve('main').channel;
   assert.equal(channel.subscriberCount, 1);
+  const storedKey = platform.store.get('overlays', overlay.id).data.key;
   // Values the operator set are dropped: a minor version too needs a confirmation.
   await assert.rejects(platform.overlays.upgrade('main', '1.1.0'), (err) => err.code === 'confirm-changes' && err.detail.confirm === true && err.detail.major === false);
   assert.equal(platform.store.get('overlays', overlay.id).rev, overlay.rev);
@@ -247,7 +248,8 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   const { previous, ...data } = platform.store.get('overlays', overlay.id).data;
   const { key, keyRequired, ...stored } = data;
   assert.deepEqual(stored, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
-  assert.match(key, /^enc:v1:/, 'the key, encrypted, and unchanged by the upgrade');
+  assert.match(key, /^enc:v1:/, 'the key, encrypted');
+  assert.equal(key, storedKey, 'and unchanged by the upgrade');
   assert.deepEqual({ ...previous, at: undefined }, { template: { id: ID, version: '1.0.0' }, settings: { size: 7, old: 'x' }, at: undefined });
   const snap = await (await fetch(`${base}/snapshot`)).json();
   assert.notEqual(snap.build, build);
@@ -256,6 +258,22 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   platform.bus.setState('viewers.total', 12);
   assert.equal((await (await fetch(`${base}/snapshot`)).json()).state['viewers.total'], 12, 'the new version\'s consumes apply');
   assert.equal((await fetch(base)).status, 200);
+});
+
+test('an overlay keeps its key through an upgrade, a revert, a rename and a restart: its URL in OBS keeps working (H2)', async (t) => {
+  const { platform, config, key } = await startWithOverlay(t, { slug: 'main', template: { id: ID, version: '1.0.0' }, settings: {}, keyed: true, install: [v('1.0.0', settingsV1), v('1.1.0', settingsV1)] });
+  const status = async (p, slug = 'main') => (await fetch(`${p.url}/o/${slug}/snapshot?key=${key}`)).status;
+  assert.equal(await status(platform), 200);
+  await platform.overlays.upgrade('main', '1.1.0');
+  assert.equal(await status(platform), 200, 'after the upgrade');
+  platform.overlays.revert('main');
+  assert.equal(await status(platform), 200, 'after the revert');
+  platform.overlays.rename('main', 'main-h');
+  assert.equal(await status(platform, 'main-h'), 200, 'renamed: another URL, the same key');
+  await platform.stop();
+  const again = await start(t, config);
+  assert.equal(again.overlays.key('main-h'), key, 'the key as stored, not only the one in memory');
+  assert.equal(await status(again, 'main-h'), 200);
 });
 
 test('a minor upgrade that drops a value the operator set, or a scene, action or canvas, needs a confirmation', async (t) => {
@@ -470,7 +488,9 @@ test('settings migrate.js returns that an overlay can\'t save are refused, by a 
   assert.deepEqual(doc.data.settings, {});
 });
 
-test('migrate.js from a template that comes with the platform runs on upgrade without being asked', async (t) => {
+// A platform whose templates ship with it: dev.skp.shipped 1.0.0, and 1.1.0 whose migrate.js
+// renames "accent" to "colour"; an overlay "main" on 1.0.0.
+async function withShipped(t) {
   const shipped = tempDir(t);
   const manifest = JSON.parse(readFileSync(path.join(DIAG_DIR, 'template.json'), 'utf8'));
   const bundle = (name, fields, files = {}) => {
@@ -488,11 +508,33 @@ test('migrate.js from a template that comes with the platform runs on upgrade wi
   const platform = await start(t, config, [shipped]);
   assert.equal(platform.templates.fromPlatform(platform.templates.get('dev.skp.shipped', '1.1.0')), true);
   platform.overlays.create({ slug: 'main', template: { id: 'dev.skp.shipped', version: '1.0.0' }, settings: { accent: '#123456' } });
+  return platform;
+}
+
+test('migrate.js from a template that comes with the platform runs on upgrade without being asked', async (t) => {
+  const platform = await withShipped(t);
   assert.equal((await platform.overlays.upgrade('main', '1.1.0', { dryRun: true })).migrated, true);
   const plan = await platform.overlays.upgrade('main', '1.1.0');
   assert.equal(plan.migrated, true);
   assert.deepEqual(plan.settings, { colour: '#123456' });
   assert.deepEqual(platform.overlays.resolve('main').doc.data.settings, { colour: '#123456' });
+});
+
+test('over the API too: an upgrade that leaves runMigrate out runs a shipped template\'s migrate.js; runMigrate: false skips it', async (t) => {
+  const platform = await withShipped(t);
+  const upgrade = async (body) => {
+    const res = await fetch(`${platform.url}/api/v1/overlays/main/upgrade`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  const skipped = await upgrade({ version: '1.1.0', dryRun: true, runMigrate: false });
+  assert.equal(skipped.status, 200);
+  assert.equal(skipped.body.migrated, 'skipped', 'the operator said not to');
+  assert.deepEqual(skipped.body.changes.map((c) => `${c.change} ${c.path}`), ['removed /accent', 'added /colour']);
+  const done = await upgrade({ version: '1.1.0' });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.equal(done.body.migrated, true);
+  assert.deepEqual(done.body.overlay.settings, { colour: '#123456' });
+  assert.deepEqual(platform.audit.list({ action: 'overlay.upgrade' }).items.map((e) => e.details.migrated), [true]);
 });
 
 test('what counts as a major upgrade', async () => {

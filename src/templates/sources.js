@@ -28,7 +28,7 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { newId } from '../ids.js';
-import { isPrivateAddress } from '../net.js';
+import { isPrivateAddress, pinnedFetch } from '../net.js';
 import { compareVersions, TemplateError, validateTemplate } from './registry.js';
 import { ZipError } from './zip.js';
 
@@ -89,8 +89,10 @@ export function describeSource(source) {
 export { isPrivateAddress };
 
 // A host a download may go to: its addresses, looked up, are all public, unless the owner allowed
-// private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). The lookup and the request resolve separately, so a
-// DNS-rebinding host could still slip between them; the check stops everything else.
+// private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). This refuses early, with a clear message. The default
+// fetch (net.js pinnedFetch) checks again in the lookup it connects with, so a DNS-rebinding host
+// can't answer this check with a public address and the connection with a private one; a fetch
+// passed in (a test hook) has only this check.
 async function checkHost(hostname, net) {
   if (!net || net.allowPrivate) return;
   const host = hostname.replace(/^\[|\]$/g, '');
@@ -126,6 +128,7 @@ async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE
     try {
       res = await fetchFn(target.href, { headers: h, redirect: 'manual', signal });
     } catch (err) {
+      if (err?.code === 'EPRIVATE') throw new SourceError(`${err.message}; downloads go to the public internet only, unless the owner sets SKP_ALLOW_PRIVATE_DOWNLOADS=true.`, 'private-address');
       throw failure(err, signal, `${target.host} could not be reached`, 'unreachable');
     }
     if ([301, 302, 303, 307, 308].includes(res.status)) {
@@ -275,7 +278,9 @@ function tooLarge(rel, max) {
 // Fetches one package from a source, once, for `skp template install <source>`: { file, origin,
 // label } (the caller installs it, then removes the file). allowPrivate: the owner's
 // SKP_ALLOW_PRIVATE_DOWNLOADS. lookup and limits: test hooks.
-export async function fetchPackage(input, { dir, token, fetch: fetchFn = globalThis.fetch, signal, limits, lookup: lookupFn = defaultLookup, allowPrivate = false } = {}) {
+export async function fetchPackage(input, { dir, token, fetch, signal, limits, lookup: lookupFn = defaultLookup, allowPrivate = false } = {}) {
+  // The default connects only to the address it checked (net.js pinnedFetch).
+  const fetchFn = fetch || pinnedFetch({ lookup: lookupFn, allowPrivate });
   const max = { ...SOURCE_LIMITS, ...limits };
   const net = { lookup: lookupFn, allowPrivate };
   const source = typeof input === 'string' ? parseSource(input) : input;
@@ -296,7 +301,8 @@ const LASTING = new Set(['invalid', 'wrong-template', 'id-taken', 'reserved-id',
 // The sources the platform follows. record(action, details) writes the audit log. onAir(overlayId):
 // whether the overlay's show is live (an upgrade reloads its pages, so it waits). allowPrivate:
 // the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. limits and lookup: test hooks.
-export function createTemplateSources({ store, templates, overlays, log, token, fetch: fetchFn = globalThis.fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
+export function createTemplateSources({ store, templates, overlays, log, token, fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
+  const fetchFn = fetch || pinnedFetch({ lookup: lookupFn, allowPrivate });
   const max = { minuteMs: 60000, ...SOURCE_LIMITS, ...limits };
   const net = { lookup: lookupFn, allowPrivate };
   let chain = Promise.resolve();

@@ -310,10 +310,42 @@ test('what a show must be: refusals say what to fix', async (t) => {
   bad({ lineup: [{ time: '10pm', name: 'X' }] }, 'invalid', /time/);
   bad({ lineup: [{ time: '22:00', name: 'X', logo: 'javascript:alert(1)' }] }, 'invalid', /logo/);
   bad({ lineup: Array.from({ length: 101 }, () => ({ time: '22:00', name: 'X' })) }, 'invalid');
-  // Fields outside the shape are dropped, not stored.
-  const show = platform.shows.create({ ...SHOW, lineup: [{ time: '22:00', name: '  Trimmed  ', extra: 'x', headliner: 'yes' }], admin: true });
+  // A slot field outside the shape is refused (07 §7.11, 03 §3.1); a top-level one never reaches
+  // the store (the API refuses it before, http/api.js). Names are trimmed; flags are true or absent.
+  bad({ lineup: [{ time: '22:00', name: 'X', extra: 'x' }] }, 'unknown-field', /unknown field extra/);
+  const show = platform.shows.create({ ...SHOW, lineup: [{ time: '22:00', name: '  Trimmed  ', headliner: 'yes' }], admin: true });
   assert.deepEqual(show.lineup.map(({ startAt, ...s }) => s), [{ time: '22:00', name: 'Trimmed' }]);
   assert.equal(show.admin, undefined);
+});
+
+test('a show read, edited and sent back whole goes through: the lineup with what it resolved to, members since deleted', async (t) => {
+  const { platform, api } = await setup(t);
+  overlaysFor(platform);
+  // 02:30 on 8 March 2026 doesn't exist in Toronto, so that slot comes back with clockGap too.
+  const made = await api('POST', '/shows', { ...SHOW, date: '2026-03-07', lineup: [{ time: '22:30', name: 'A' }, { time: '02:30', name: 'Gap' }] });
+  assert.equal(made.status, 201);
+  assert.ok(made.body.lineup.every((s) => typeof s.startAt === 'string') && made.body.lineup[1].clockGap === true);
+  const edited = [...made.body.lineup, { time: '03:30', name: 'Late' }];
+  const changed = await api('PATCH', `/shows/${made.body.id}`, { lineup: edited });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  assert.deepEqual(platform.store.get('shows', made.body.id).data.lineup, [{ time: '22:30', name: 'A' }, { time: '02:30', name: 'Gap' }, { time: '03:30', name: 'Late' }], 'what it resolved to is never stored');
+  const unknown = await api('PATCH', `/shows/${made.body.id}`, { lineup: [{ ...edited[0], vip: true }] });
+  assert.deepEqual([unknown.status, unknown.body.type], [422, 'https://skp.dev/errors/unknown-field']);
+  // A member deleted over the API leaves the show; one deleted before that did (an id the show still
+  // held) goes from a list sent back as it was read.
+  const ids = made.body.overlays;
+  assert.equal((await api('DELETE', '/overlays/main-v')).status, 200);
+  const after = await api('GET', `/shows/${made.body.id}`);
+  assert.deepEqual([after.body.overlays, after.body.members], [[ids[0]], ['main-h']]);
+  assert.equal((await api('PATCH', `/shows/${made.body.id}`, { overlays: after.body.overlays })).status, 200);
+  platform.overlays.remove(ids[0]);
+  const stale = (await api('GET', `/shows/${made.body.id}`)).body.overlays;
+  assert.deepEqual(stale, [ids[0]]);
+  const back = await api('PATCH', `/shows/${made.body.id}`, { overlays: [...stale, 'solo'] });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.members, ['solo']);
+  assert.equal(back.body.overlays.length, 1);
+  assert.equal((await api('PATCH', `/shows/${made.body.id}`, { overlays: [ids[0]] })).status, 422, 'gone from the show, it is just an unknown overlay');
 });
 
 test('the show API: signed in, JSON, problems with reasons', async (t) => {
@@ -322,7 +354,7 @@ test('the show API: signed in, JSON, problems with reasons', async (t) => {
   const created = await api('POST', '/shows', SHOW);
   assert.equal(created.status, 201);
   const id = created.body.id;
-  assert.equal((await api('GET', '/shows')).body.length, 1);
+  assert.equal((await api('GET', '/shows')).body.items.length, 1);
   assert.equal((await api('GET', `/shows/${encodeURIComponent('saturday takeover')}`)).body.id, id, 'by name too');
   watch('main-h');
   assert.equal((await api('PUT', `/shows/${id}/scene`, { scene: 'brb' })).status, 200);
@@ -358,7 +390,7 @@ test('the show API: signed in, JSON, problems with reasons', async (t) => {
   assert.equal(await raw('GET', `attacker.example:${port}`), 403);
   assert.equal(await raw('GET', `localhost:${port}`), 200);
   assert.equal((await api('DELETE', `/shows/${id}`)).status, 200);
-  assert.equal((await api('GET', '/shows')).body.length, 0);
+  assert.equal((await api('GET', '/shows')).body.items.length, 0);
 });
 
 async function cli(argv, env) {

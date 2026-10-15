@@ -6,7 +6,7 @@ import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { BOOT_BADGE, injectRuntime, overlayCsp } from '../src/overlays/routes.js';
-import { DIAG, DIAG_DIR, defer, memoryLogger, packTemplate, startWithOverlay, tempDir } from './helpers.js';
+import { DIAG, DIAG_DIR, defer, FIXTURE_TEMPLATES, memoryLogger, packTemplate, startWithOverlay, tempDir, withKey } from './helpers.js';
 
 // Reads SSE frames from a fetch response; each call returns the next frame or throws on timeout.
 function frames(res) {
@@ -153,11 +153,21 @@ test('template files and the SDK allow any origin, errors included, for the sand
   assert.equal(wrongMethod.headers.get('access-control-allow-origin'), '*');
 });
 
-test('an unknown slug is a 404 that says so', async (t) => {
-  const { platform } = await startWithOverlay(t);
-  const res = await fetch(`${platform.url}/o/nope`);
-  assert.equal(res.status, 404);
-  assert.match((await res.json()).detail, /No overlay has the slug "nope"/);
+test('an unknown slug answers as a missing or wrong key does: nothing says which slugs exist', async (t) => {
+  const { platform } = await startWithOverlay(t, { slug: 'main', keyed: true });
+  // Each answer with its slug taken out, which the path (instance) and the hint name.
+  const answer = async (slug, query) => {
+    const res = await fetch(`${platform.url}/o/${slug}/snapshot${query}`);
+    return { status: res.status, type: res.headers.get('content-type'), body: (await res.text()).replaceAll(slug, '<slug>') };
+  };
+  for (const query of ['', '?key=skp_ovl_wrong']) {
+    const known = await answer('main', query);
+    assert.equal(known.status, 401);
+    assert.deepEqual(await answer('nope', query), known, query);
+  }
+  const { detail } = JSON.parse((await answer('nope', '')).body);
+  assert.match(detail, /No overlay here has this slug and key/);
+  assert.match(detail, /skp overlay url <slug>/, 'still says what to do');
 });
 
 test('the snapshot has the cursor, the build, the overlay settings and what the template consumes', async (t) => {
@@ -287,14 +297,37 @@ test('deleting the overlay ends its open streams', async (t) => {
   await next();
   platform.overlays.remove(overlay.id);
   assert.deepEqual(await next(), { done: true });
-  assert.equal((await fetch(base)).status, 404);
+  assert.equal((await fetch(base)).status, 401, 'gone: answered as an unknown slug');
+});
+
+test('a new key ends the streams opened with the old one, and asking for the key ends those opened without', async (t) => {
+  const { platform, base, key } = await startWithOverlay(t, { keyed: true });
+  const open = async (k) => {
+    const { cursor } = await (await fetch(withKey(`${base}/snapshot`, k))).json();
+    const ctrl = new AbortController();
+    defer(t, () => ctrl.abort());
+    const next = frames(await fetch(withKey(`${base}/stream?cursor=${cursor}`, k), { signal: ctrl.signal }));
+    assert.match((await next()).comment, /^open /);
+    return next;
+  };
+  const old = await open(key);
+  platform.overlays.rotateKey('diag-1');
+  assert.deepEqual(await old(), { done: true }, 'a leaked URL stops showing anything at once');
+  platform.overlays.setKeyRequired('diag-1', false);
+  const keyless = await open(undefined);
+  platform.overlays.setKeyRequired('diag-1', false); // no change: the stream goes on
+  platform.bus.publish('custom.diag.tick', { n: 1 });
+  assert.equal((await keyless()).env.data.n, 1);
+  platform.overlays.setKeyRequired('diag-1', true);
+  assert.deepEqual(await keyless(), { done: true });
+  assert.equal((await fetch(`${base}/snapshot`)).status, 401);
 });
 
 // Opens a stream with plain http (Node's fetch pools connections, like a browser) and resolves
 // with the status once the response starts.
-function openStream(t, url, userAgent = 'OBS/31.1') {
+function openStream(t, url, userAgent = 'OBS/31.1', headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, { headers: { 'user-agent': userAgent } }, (res) => {
+    const req = http.get(url, { headers: { 'user-agent': userAgent, ...headers } }, (res) => {
       if (res.statusCode !== 200) { res.resume(); resolve({ status: res.statusCode, headers: res.headers, close: () => {} }); return; }
       res.once('data', () => resolve({ status: 200, close: () => req.destroy() }));
     });
@@ -325,6 +358,26 @@ test('one browser gets four live streams; further overlays are told to poll (01 
   await new Promise((r) => setTimeout(r, 100));
   assert.equal((await openStream(t, url)).status, 200);
   assert.equal(entries.filter((e) => /live-stream limit/.test(e.msg)).length, 1);
+});
+
+test('behind a trusted proxy, a browser is the address it forwarded: two sites never share four streams', async (t) => {
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'd'), SKP_CONFIG_DIR: path.join(root, 'c'), SKP_TRUST_PROXY: '127.0.0.1' } });
+  const { log, entries } = memoryLogger();
+  const platform = await startPlatform(config, { log, templateDirs: [FIXTURE_TEMPLATES] });
+  defer(t, () => platform.stop());
+  platform.overlays.create({ slug: 'diag-1', template: DIAG, settings: {} });
+  platform.overlays.setKeyRequired('diag-1', false);
+  const base = `${platform.url}/o/diag-1`;
+  const { cursor } = await (await fetch(`${base}/snapshot`)).json();
+  // Two sites, both on the same OBS version, through the one proxy.
+  const from = (address) => openStream(t, `${base}/stream?cursor=${cursor}`, 'OBS/31.1', { 'x-forwarded-for': address });
+  const site = [];
+  for (let i = 0; i < 4; i++) site.push(await from('203.0.113.10'));
+  assert.deepEqual(site.map((s) => s.status), [200, 200, 200, 200]);
+  assert.equal((await from('203.0.113.10')).status, 429);
+  assert.equal((await from('198.51.100.20')).status, 200, 'the other site has its own four');
+  assert.deepEqual(entries.filter((e) => /live-stream limit/.test(e.msg)).map((e) => e.context.address), ['203.0.113.10']);
 });
 
 test('overlays survive a restart, with the same slug and settings', async (t) => {

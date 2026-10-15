@@ -422,18 +422,18 @@ test('the timeline API and skp show build|cues|cue|plan|plans', async (t) => {
   const id = created.body.id;
   const built = await api('POST', `/shows/${id}/cues/build`, { recipe: { nowPlayingEveryMin: 30, introOffsetMin: null } });
   assert.equal(built.status, 200);
-  assert.equal(built.body.length, 2 + 4 + 2 + 3 + 2 + 3, 'on + card (or intro) per slot, and now-playing every half hour');
-  assert.ok(!built.body.some((c) => c.label?.includes('Event Intro')));
+  assert.equal(built.body.items.length, 2 + 4 + 2 + 3 + 2 + 3, 'on + card (or intro) per slot, and now-playing every half hour');
+  assert.ok(!built.body.items.some((c) => c.label?.includes('Event Intro')));
   const added = await api('POST', `/shows/${id}/cues`, { at: '23:59', action: { type: 'show.scene', scene: 'brb' }, label: 'Midnight break' });
   assert.equal(added.status, 201);
   const cueId = added.body.id;
   assert.equal((await api('PATCH', `/shows/${id}/cues/${cueId}`, { label: 'Break' })).body.label, 'Break');
   assert.equal((await api('POST', `/shows/${id}/cues/${cueId}/skip`)).body.status, 'skipped');
   assert.equal((await api('POST', `/shows/${id}/cues/${cueId}/rearm`)).body.status, 'armed');
-  assert.equal((await api('GET', `/shows/${id}/cues`)).body.length, built.body.length + 1);
+  assert.equal((await api('GET', `/shows/${id}/cues`)).body.items.length, built.body.items.length + 1);
   const plan = await api('POST', `/shows/${id}/plans`, { date: '2028-06-24' });
   assert.equal(plan.status, 201);
-  assert.equal((await api('GET', `/shows/${id}/plans`)).body.length, 1);
+  assert.equal((await api('GET', `/shows/${id}/plans`)).body.items.length, 1);
   assert.equal((await api('DELETE', `/shows/${id}/plans/${plan.body.id}`)).status, 200);
   const problems = [
     [await api('POST', `/shows/${id}/cues`, { at: 'soon', action: { type: 'show.scene', scene: 'brb' } }), 422, 'invalid'],
@@ -484,7 +484,7 @@ test('the timeline API and skp show build|cues|cue|plan|plans', async (t) => {
   assert.match((await cli(['show', 'plans', 'Saturday TAKEOVER'])).stdout, /activates .* go-live 22:00, settings for tk/);
   const stop = await cli(['show', 'build', 'Saturday TAKEOVER', '--recipe', 'none']);
   assert.match(stop.stdout, /no more generated cues/);
-  assert.ok(!(await api('GET', `/shows/${id}/cues`)).body.some((c) => c.generated));
+  assert.ok(!(await api('GET', `/shows/${id}/cues`)).body.items.some((c) => c.generated));
   assert.equal((await cli(['show', 'cue', 'skip', 'Saturday TAKEOVER', 'cue_nope', '--json'])).code, 1);
 });
 
@@ -512,14 +512,14 @@ test('H19: spring forward: a lineup time the clock skips fires at the instant it
   const id = created.body.id;
   watch('tk');
   const built = await api('POST', `/shows/${id}/cues/build`, { recipe: { titleCard: true, introOffsetMin: null, nowPlayingEveryMin: null } });
-  assert.deepEqual(built.body.filter((c) => c.label.startsWith('Gap')).map((c) => [c.at, c.status]), [['2026-03-08T07:30:00.000Z', 'armed'], ['2026-03-08T07:30:00.000Z', 'armed']]);
-  assert.ok(built.body.filter((c) => c.label.startsWith('Early')).every((c) => c.status === 'missed'), 'hours ago: missed from the start');
+  assert.deepEqual(built.body.items.filter((c) => c.label.startsWith('Gap')).map((c) => [c.at, c.status]), [['2026-03-08T07:30:00.000Z', 'armed'], ['2026-03-08T07:30:00.000Z', 'armed']]);
+  assert.ok(built.body.items.filter((c) => c.label.startsWith('Early')).every((c) => c.status === 'missed'), 'hours ago: missed from the start');
   const byHand = await api('POST', `/shows/${id}/cues`, { at: '03:30', action: { type: 'show.scene', scene: 'brb' } });
   assert.equal(byHand.body.at, '2026-03-08T07:30:00.000Z', '03:30 EDT is the same instant');
   assert.ok(await until(() => local('tk')['show.currentSlot'] === 1), 'Gap is on, on the server\'s clock');
   assert.ok(await until(() => local('tk')['show.scene'] === 'brb'));
   assert.deepEqual(of(got.tk, 'show.trigger').map((e) => e.data.args), [{ name: 'Gap' }]);
-  const cues = (await api('GET', `/shows/${id}/cues`)).body;
+  const cues = (await api('GET', `/shows/${id}/cues`)).body.items;
   assert.ok(cues.filter((c) => c.at === '2026-03-08T07:30:00.000Z').every((c) => c.status === 'fired' && c.firedAt >= c.at));
 });
 
@@ -535,14 +535,14 @@ test('H19: fall back: a repeated lineup time fires once, at its first occurrence
   assert.equal(cue.at, '2026-11-01T05:30:00.000Z', 'the first 01:30');
   assert.equal(cue.clockOverlap, true, 'flagged: the clock reads 01:30 twice that night');
   assert.ok(await until(() => of(first.got.tk, 'show.trigger').length === 1), 'fired at the first 01:30');
-  const { firedAt } = (await first.api('GET', `/shows/${id}/cues`)).body[0];
+  const { firedAt } = (await first.api('GET', `/shows/${id}/cues`)).body.items[0];
   await first.platform.stop();
   // An hour later the clock reads 01:30 again: the cue has fired, and does not again (from
   // startup on: nothing fires in the new process, and the cue keeps its first firing).
   const second = await onClock(t, Date.UTC(2026, 10, 1, 6, 30, 1), { dataRoot, overlays: false });
   await new Promise((r) => setTimeout(r, 1500));
   assert.deepEqual(second.entries.filter((e) => e.msg === 'cue fired'), []);
-  const [after] = (await second.api('GET', `/shows/${id}/cues`)).body;
+  const [after] = (await second.api('GET', `/shows/${id}/cues`)).body.items;
   assert.deepEqual([after.status, after.firedAt], ['fired', firedAt]);
 });
 
@@ -553,7 +553,7 @@ test('H19: a cue set a moment ahead fires on a running server on the real clock'
   const cue = await api('POST', `/shows/${created.body.id}/cues`, { at, action: { type: 'show.scene', scene: 'outro' } });
   assert.equal(cue.body.status, 'armed');
   assert.ok(await until(() => local('tk')['show.scene'] === 'outro'));
-  const [after] = (await api('GET', `/shows/${created.body.id}/cues`)).body;
+  const [after] = (await api('GET', `/shows/${created.body.id}/cues`)).body.items;
   assert.equal(after.status, 'fired');
   assert.ok(Date.parse(after.firedAt) - Date.parse(at) < 1500, 'within a tick or so');
 });
@@ -707,6 +707,43 @@ test('plans follow the show\'s zone; only its members get settings; activation c
   assert.equal(platform.overlays.resolve('tk').doc.data.settings.look, undefined, 'tk is another show\'s now: left alone');
   assert.equal(plan.warnings.length, 1);
   assert.match(plan.warnings[0], /^tk: no longer one of the show's overlays/);
+});
+
+test('a plan\'s settings follow their overlay through a rename, and never go to a new one that took the old slug', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  const settings = { look: 'event', address: 'Toronto' };
+  timeline.plans.add(show.id, { date: '2026-10-18', overlaySettings: { tk: settings } });
+  assert.equal((await api('PATCH', '/overlays/tk', { slug: 'tk-old' })).status, 200);
+  assert.deepEqual(timeline.plans.list(show.id)[0].overlaySettings, { 'tk-old': settings }, 'shown by the slug it has now');
+  platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
+  platform.shows.update(show.id, { overlays: ['tk-old', 'main-h', 'tk'] });
+  clock.to(Date.UTC(2026, 9, 18, 16, 1));
+  const plan = timeline.plans.list(show.id)[0];
+  assert.ok(plan.activatedAt);
+  assert.equal(plan.warnings, undefined);
+  assert.deepEqual(platform.overlays.resolve('tk-old').doc.data.settings, settings, 'the renamed overlay got them');
+  assert.deepEqual(platform.overlays.resolve('tk').doc.data.settings, {}, 'the new "tk" did not');
+});
+
+test('a plan\'s settings for an overlay deleted since are shown by the slug it had, never by its bare id or another overlay\'s slug', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  const id = platform.overlays.resolve('tk').doc.id;
+  timeline.plans.add(show.id, { date: '2026-10-18', overlaySettings: { tk: { look: 'event' }, 'main-h': {} } });
+  assert.equal((await api('DELETE', '/overlays/tk')).status, 200);
+  assert.deepEqual(Object.keys(timeline.plans.list(show.id)[0].overlaySettings), ['tk', 'main-h'], 'the slug it had when the plan was saved');
+  assert.deepEqual(Object.keys((await api('GET', `/shows/${show.id}/plans`)).body.items[0].overlaySettings), ['tk', 'main-h']);
+  // Another overlay takes the slug: "tk" names that one now, so the deleted one is shown by its id.
+  assert.equal((await api('PATCH', '/overlays/main-h', { slug: 'tk' })).status, 200);
+  assert.deepEqual(Object.keys(timeline.plans.list(show.id)[0].overlaySettings), [id, 'tk'], 'two entries still, neither hiding the other');
+  assert.equal((await api('PATCH', '/overlays/tk', { slug: 'main-h' })).status, 200);
+  clock.to(Date.UTC(2026, 9, 18, 16, 1));
+  const plan = timeline.plans.list(show.id)[0];
+  assert.ok(plan.activatedAt);
+  assert.deepEqual(plan.warnings, ['tk: no longer one of the show\'s overlays; its settings were left alone']);
 });
 
 test('at startup only the latest plan whose day has begun is the show, by the show day\'s real end', async (t) => {

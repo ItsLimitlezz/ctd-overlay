@@ -66,6 +66,27 @@ test('options shape what is sent, within bounds', async (t) => {
   assert.equal(chat.data.user.name.length, 60);
 });
 
+test('a misspelt option is refused, not ignored; an Idempotency-Key makes a button pressed twice send once (03 §3.1)', async (t) => {
+  const { got, post } = await setup(t);
+  const typo = await post('bed', { kind: 'raid', viewer: 5000 });
+  assert.equal(typo.status, 422);
+  const problem = await typo.json();
+  assert.equal(problem.type, 'https://skp.dev/errors/unknown-field');
+  assert.match(problem.detail, /viewer\b.*viewers/);
+  assert.deepEqual(got.bed, [], 'nothing sent with the default instead');
+  const press = () => post('bed', { kind: 'follow' }, { 'idempotency-key': 'deck-follow-1' });
+  const first = await press();
+  const second = await press();
+  assert.deepEqual([first.status, second.status], [200, 200]);
+  assert.equal(second.headers.get('idempotent-replayed'), 'true');
+  assert.deepEqual(await second.json(), await first.json());
+  assert.equal(got.bed.length, 1, 'sent once');
+  const reused = await post('bed', { kind: 'raid' }, { 'idempotency-key': 'deck-follow-1' });
+  assert.equal(reused.status, 422, 'the same key for another request');
+  assert.equal((await reused.json()).type, 'https://skp.dev/errors/idempotency-mismatch');
+  assert.equal(got.bed.length, 1);
+});
+
 test('simulated state shows on that overlay only and comes back real at "reset"; the platform\'s state is untouched', async (t) => {
   const { platform, got, send, snapshot } = await setup(t);
   platform.bus.setState('viewers.total', 1000);

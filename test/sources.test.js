@@ -690,6 +690,32 @@ test('downloads go to the public internet only, unless the owner allows otherwis
   assert.throws(() => loadConfig({ argv: [], env: { ...dirs(t).env, SKP_ALLOW_PRIVATE_DOWNLOADS: 'maybe' } }), ConfigError);
 });
 
+test('without a fetch passed in, a download connects only to the address it checked: a host that rebinds to a private one is refused (07 §7.11)', async (t) => {
+  // Public to the first lookup (the check), cloud metadata to the next (the connection). The name
+  // is .invalid, so nothing here reaches the network.
+  const rebinding = () => {
+    const calls = [];
+    const lookup = async (host) => {
+      calls.push(host);
+      return [{ address: calls.length === 1 ? '93.184.216.34' : '169.254.169.254', family: 4 }];
+    };
+    return Object.assign(lookup, { calls });
+  };
+  const { config } = dirs(t);
+  const followed = rebinding();
+  const d = openData(config, { log: memoryLogger().log, lookup: followed });
+  defer(t, () => d.close());
+  const once = rebinding();
+  await assert.rejects(fetchPackage('https://rebind.invalid/t.skp', { dir: d.templates.downloadDir, lookup: once }), (err) => err.code === 'private-address' && /169\.254\.169\.254/.test(err.message));
+  assert.deepEqual(once.calls, ['rebind.invalid', 'rebind.invalid'], 'looked up by the check, then again by the connection');
+  // A followed source, checked by the platform, the same.
+  d.sources.add('https://rebind.invalid/t.skp');
+  const [r] = await d.sources.check();
+  assert.equal(r.error.code, 'private-address');
+  assert.equal(followed.calls.length, 2);
+  assert.deepEqual(downloadsLeft(config), []);
+});
+
 test('a release\'s validation warnings are shown, though nobody watched it install (04 §4.11)', async (t) => {
   const gh = fakeGithub();
   const { config, env } = dirs(t);

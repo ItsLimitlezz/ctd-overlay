@@ -11,13 +11,16 @@
 //
 // The answer says what was sent and whether the overlay takes it (its template consumes it).
 //
-// It needs overlays:control, like taking a scene (auth/routes.js), and a JSON body.
+// It needs overlays:control, like taking a scene (auth/routes.js), and a JSON body with the fields
+// below only: a misspelt option is refused, not ignored (07 §7.11). The answer goes through the
+// API's conventions, so an Idempotency-Key makes a button pressed twice send once (03 §3.1).
 import { BusError } from '../bus/index.js';
-import { jsonBody } from '../http/local.js';
-import { sendJson, sendProblem } from '../http/server.js';
+import { ApiError } from '../http/api.js';
 import { newId } from '../ids.js';
 
 const BODY_LIMIT = 16 * 1024;
+// Every option a kind below reads.
+const FIELDS = ['kind', 'name', 'text', 'roles', 'months', 'count', 'viewers', 'bits', 'title', 'artist', 'value', 'url', 'mediaId'];
 const SIM = { connector: 'simulator' };
 export const SIM_HOLD_MS = 60000;
 // 02 §2.3: the closed set of chat roles.
@@ -92,20 +95,16 @@ function track(o) {
   };
 }
 
-// guard(req, res, scope): who asks (auth/routes.js). holdMs: how long simulated state lasts
-// (tests shorten it).
-export function simulateRoutes({ overlays, bus, log, guard, holdMs = SIM_HOLD_MS }) {
-  async function simulate({ req, res, params }) {
-    if (!guard(req, res, 'overlays:control')) return undefined;
-    const body = await jsonBody(req, res, BODY_LIMIT);
-    if (body === undefined) return undefined;
+// api: the API's conventions (http/api.js). holdMs: how long simulated state lasts (tests shorten it).
+export function simulateRoutes({ api, overlays, bus, log, holdMs = SIM_HOLD_MS }) {
+  function simulate({ params, body }) {
     // By slug or by id.
     const found = overlays.resolve(params.ref) || overlays.resolve(overlays.list().find((d) => d.id === params.ref)?.data.slug);
-    if (!found) return sendProblem(res, 404, 'Not found', `There is no overlay "${params.ref}".`);
+    if (!found) throw new ApiError(404, 'not-found', `There is no overlay "${params.ref}".`);
     const make = body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(KINDS, body.kind) ? KINDS[body.kind] : null;
     const items = make && make(body);
     if (!items) {
-      return sendProblem(res, 422, 'Unknown simulation', `"kind" must be one of ${Object.keys(KINDS).join(', ')} (media.play needs a /media/… url).`);
+      throw new ApiError(422, 'invalid', `"kind" must be one of ${Object.keys(KINDS).join(', ')} (media.play needs a /media/… url).`);
     }
     seq++;
     const { channel } = found;
@@ -128,14 +127,14 @@ export function simulateRoutes({ overlays, bus, log, guard, holdMs = SIM_HOLD_MS
           env = bus.publish(item.type, item.data, { src: SIM, target: found.doc.id });
         } catch (err) {
           // What the caller sent doesn't make an envelope (too large): their mistake, not a crash.
-          if (err instanceof BusError) return sendProblem(res, 422, 'Not sendable', err.message);
+          if (err instanceof BusError) throw new ApiError(422, 'invalid', err.message);
           throw err;
         }
         sent.push({ type: env.type, id: env.id, delivered: takes });
       }
     }
     log.info('simulated', { overlay: found.doc.data.slug, kind: body.kind });
-    return sendJson(res, 200, { overlay: found.doc.data.slug, sent });
+    return { overlay: found.doc.data.slug, sent };
   }
-  return [{ method: 'POST', path: '/api/v1/overlays/:ref/simulate', handler: simulate }];
+  return [api.route({ method: 'POST', path: '/api/v1/overlays/:ref/simulate', scope: 'overlays:control', command: true, tag: 'Overlays', summary: 'Send sample events or state to one overlay (08 §8.5)', body: { limit: BODY_LIMIT, fields: FIELDS }, run: simulate })];
 }

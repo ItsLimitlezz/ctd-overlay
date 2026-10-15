@@ -17,7 +17,8 @@ vikkstar-event/
 ├── template.css
 ├── template.js
 ├── assets/              images, fonts, video, Lottie JSON
-├── previews/            screenshots shown in the gallery (REQUIRED: at least one)
+├── previews/            screenshots shown in the gallery (REQUIRED: at least one; PNG, JPEG,
+│                        WebP, GIF, SVG or AVIF, subfolders allowed)
 └── LICENSE
 ```
 
@@ -366,7 +367,8 @@ include them.
 ## 4.11 Validation
 
 `POST /templates/validate` (and the same check on install) **MUST** verify: manifest against
-the schema; `standard` is supported; every referenced file exists; previews exist; no path
+the schema; `standard` is supported; every referenced file exists; previews exist and are images
+(PNG, JPEG, WebP, GIF, SVG or AVIF) in `previews/` (error `preview-invalid`); no path
 escapes; scene and action IDs unique; `show` templates provide the required core scenes; the
 entry renders without throwing under `?mock=1` in a headless check when available. Errors
 block install; warnings (e.g. a missing `bg` scene) are shown.

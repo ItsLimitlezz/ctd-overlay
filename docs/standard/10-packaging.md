@@ -60,6 +60,7 @@ services:
       TZ: America/Toronto
       SKP_EXPOSURE: lan
       SKP_PUBLIC_URL: ""            # set when exposed publicly (OAuth redirects, Kick webhooks)
+      SKP_HOSTS: "<NAS LAN IP>,<NAS DNS name>"   # a container's own addresses aren't the NAS's
     volumes:
       - /mnt/tank/apps/skp/data:/data
       - /mnt/tank/apps/skp/config:/config
@@ -111,7 +112,7 @@ Precedence: **command-line flags > environment variables > `config.json` > defau
 | `SKP_GITHUB_TOKEN` | — | Read access to private template repositories (environment only; 04 §4.13) |
 | `SKP_ALLOW_PRIVATE_DOWNLOADS` | `false` | Let template downloads reach private and local addresses (07 §7.11) |
 | `SKP_AUDIT_DAYS` | `90` | How long the audit log keeps entries (07 §7.12), 1–3650 |
-| `SKP_HOSTS` | — | More names the platform answers to in `lan`/`public` mode (a NAS's DNS name), besides its addresses, host name and `SKP_PUBLIC_URL` |
+| `SKP_HOSTS` | — | More names the platform answers to in `lan`/`public` mode, besides its addresses, host name and `SKP_PUBLIC_URL`: in a container, the host's LAN address and DNS name; on a machine, its own addresses are read as they change |
 
 The platform **MUST** validate configuration at startup and exit with a specific message on
 any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_PROXY").
@@ -136,9 +137,10 @@ any error ("SKP_EXPOSURE=public requires TLS: set SKP_TLS_CERT/KEY or SKP_TRUST_
 - One process uses a data directory at a time (`<data>/skp.lock`). Offline tools that change it
   (installing templates, upgrading overlays) refuse while the platform runs; a lock left by a
   process that is gone (or from before a reboot, where the OS can tell) is taken over, by
-  exactly one process when several start at once. Each change they make is appended to
-  `<data>/operations.log`. Run them as the user that owns the data directory: as root on
-  another user's directory they refuse, since the files they wrote would be root's.
+  exactly one process when several start at once. Each change they make is recorded in the audit
+  log (07 §7.12), with `cli:<OS user>` as the actor. Run them as the user that owns the data
+  directory: as root on another user's directory they refuse, since the files they wrote would
+  be root's.
 
 ## 10.7 Updates and backups
 

@@ -1,18 +1,21 @@
-// The show API (03 §3.4):
+// The show API (03 §3.4), on the API's conventions (http/api.js): signed in with a scope, JSON
+// with known fields only, ETag and If-Match on shows, cues and plans, paged lists, and instants
+// as ISO 8601 (epoch ms is for live envelopes only, 03 §3.1).
 //
-//   GET    /api/v1/shows                           every show, with resolved times and live
+//   GET    /api/v1/shows                           every show, paged
 //   POST   /api/v1/shows                           { name, overlays, date, timezone, dayBoundary?, goLive?, lineup? }
 //   GET    /api/v1/shows/:ref                      by id or name
-//   PATCH  /api/v1/shows/:ref                      any of the above
+//   PATCH  /api/v1/shows/:ref                      any of the above (If-Match)
 //   DELETE /api/v1/shows/:ref
-//   PUT    /api/v1/shows/:ref/scene                { scene, transition? }: on every member
+//   PUT    /api/v1/shows/:ref/scene                { scene, transition? }: on every member (a command)
 //   POST   /api/v1/shows/:ref/triggers/:name       { args? }: to every member with the action
 //   PUT    /api/v1/shows/:ref/slot                 { slot }: a lineup position or act, or null
 //   POST   /api/v1/shows/:ref/rec                  { action: "start" | "reset" }
-//   GET    /api/v1/shows/:ref/cues                 the timeline (09 §9.3)
+//   GET    /api/v1/shows/:ref/cues                 the timeline (09 §9.3), paged
 //   POST   /api/v1/shows/:ref/cues                 { at: "HH:MM" | ISO, action, label? }
 //   POST   /api/v1/shows/:ref/cues/build           { recipe? }: generate cues from the lineup (09 §9.5)
-//   PATCH  /api/v1/shows/:ref/cues/:cueId          { at?, action?, label? }
+//   GET    /api/v1/shows/:ref/cues/:cueId
+//   PATCH  /api/v1/shows/:ref/cues/:cueId          { at?, action?, label? } (If-Match)
 //   DELETE /api/v1/shows/:ref/cues/:cueId
 //   POST   /api/v1/shows/:ref/cues/:cueId/fire|skip|rearm   operator overrides (09 §9.4)
 //   GET    /api/v1/shows/:ref/plans · POST (a planned show, 09 §9.6) · DELETE …/plans/:planId
@@ -21,60 +24,58 @@
 //
 // Reading needs timeline:read; changing a show, its cues or plans timeline:write; taking scenes,
 // triggers, the slot, REC and cue overrides overlays:control (07 §7.5, 03 §3.3).
-import { jsonBody } from '../http/local.js';
-import { sendJson, sendProblem } from '../http/server.js';
-import { ShowError } from './registry.js';
-
-const BODY_LIMIT = 64 * 1024;
-const TITLES = { 404: 'Not found', 409: 'Conflict', 422: 'Not possible' };
 const READ = 'timeline:read';
 const WRITE = 'timeline:write';
 const CONTROL = 'overlays:control';
+const SHOW_FIELDS = ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup'];
+const iso = (ms) => (typeof ms === 'number' ? new Date(ms).toISOString() : ms);
 
-export function showRoutes({ shows, timeline, guard, log }) {
-  // Every route: signed in with its scope (auth/routes.js), the JSON body, and ShowErrors as
-  // problems. run(params, body, actor): actor is who asked, for the log and the audit log.
-  const route = (method, path, scope, run) => ({
-    method,
-    path,
-    async handler({ req, res, params }) {
-      const who = guard(req, res, scope);
-      if (!who) return;
-      const body = method === 'GET' || method === 'DELETE' ? {} : await jsonBody(req, res, BODY_LIMIT);
-      if (body === undefined) return;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendProblem(res, 400, 'Bad request', 'The body must be a JSON object.');
-      try {
-        const [status, value] = run(params, body, who.label);
-        sendJson(res, status, value);
-      } catch (err) {
-        if (err instanceof ShowError) return sendProblem(res, err.status, TITLES[err.status] || 'Refused', err.message, { type: `https://skp.dev/errors/${err.code}` });
-        if (err.name === 'ConflictError') return sendProblem(res, 409, 'conflict', 'The show changed meanwhile; read it again and retry.');
-        log.error('a show request failed', { method, path, err });
-        throw err;
-      }
-    },
-  });
+// A show as a resource: its instants as ISO 8601.
+export function showResource(s) {
+  const out = { ...s };
+  delete out.actor;
+  for (const k of ['goLiveAt', 'recStartedAt', 'sceneTakenAt']) if (out[k] !== undefined) out[k] = iso(out[k]);
+  if (out.sceneReturn) out.sceneReturn = { ...out.sceneReturn, at: iso(out.sceneReturn.at) };
+  if (out.lineup) out.lineup = out.lineup.map((slot) => ({ ...slot, startAt: iso(slot.startAt) }));
+  return out;
+}
+const cueKey = (c) => `${c.at}|${String(c.order).padStart(2, '0')}|${c.id}`;
+
+export function showRoutes({ api, shows, timeline }) {
+  const tag = 'Shows';
+  const showRev = (p) => {
+    const s = shows.get(p.ref);
+    return { id: s.id, rev: s.rev };
+  };
+  const r = (def) => api.route({ tag, ...def });
   return [
-    route('GET', '/api/v1/shows', READ, () => [200, shows.list()]),
-    route('POST', '/api/v1/shows', WRITE, (_p, body, actor) => [201, shows.create(body, { actor })]),
-    route('GET', '/api/v1/shows/:ref', READ, (p) => [200, shows.get(p.ref)]),
-    route('PATCH', '/api/v1/shows/:ref', WRITE, (p, body) => [200, shows.update(p.ref, body)]),
-    route('DELETE', '/api/v1/shows/:ref', WRITE, (p) => [200, shows.remove(p.ref)]),
-    route('PUT', '/api/v1/shows/:ref/scene', CONTROL, (p, body, actor) => [200, shows.take(p.ref, body.scene, { transition: body.transition ?? 'fade', actor })]),
-    route('POST', '/api/v1/shows/:ref/triggers/:name', CONTROL, (p, body, actor) => [200, shows.trigger(p.ref, p.name, { args: body.args ?? {}, actor })]),
-    route('PUT', '/api/v1/shows/:ref/slot', CONTROL, (p, body) => [200, shows.setSlot(p.ref, body.slot === undefined ? undefined : body.slot)]),
-    route('POST', '/api/v1/shows/:ref/rec', CONTROL, (p, body) => [200, shows.rec(p.ref, body.action)]),
+    r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows', paged: true, run: ({ url }) => api.paginate(shows.list().map(showResource), url) }),
+    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, status: 201, run: ({ body, who }) => ({ status: 201, body: showResource(shows.create(body, { actor: who.label })) }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref', scope: READ, summary: 'A show, by id or name', run: ({ params }) => showResource(shows.get(params.ref)) }),
+    r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: { fields: SHOW_FIELDS }, resource: showRev, run: ({ params, body, ifRev }) => showResource(shows.update(params.ref, body, { ifRev })) }),
+    r({ method: 'DELETE', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Delete a show', resource: showRev, run: ({ params }) => shows.remove(params.ref) }),
+    r({ method: 'PUT', path: '/api/v1/shows/:ref/scene', scope: CONTROL, command: true, summary: 'Take a scene on every member', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => showResource(shows.take(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label })) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/triggers/:name', scope: CONTROL, command: true, summary: 'Fire an action on every member that has it', body: { fields: ['args'] }, run: ({ params, body, who }) => {
+      const out = shows.trigger(params.ref, params.name, { args: body.args ?? {}, actor: who.label });
+      return { ...out, startAt: iso(out.startAt) };
+    } }),
+    r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null', body: { fields: ['slot'] }, run: ({ params, body }) => showResource(shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot)) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/rec', scope: CONTROL, command: true, summary: 'Start or reset REC', body: { fields: ['action'] }, run: ({ params, body }) => showResource(shows.rec(params.ref, body.action)) }),
     // The timeline (09 §9.3–9.6).
-    route('GET', '/api/v1/shows/:ref/cues', READ, (p) => [200, timeline.list(p.ref)]),
-    route('POST', '/api/v1/shows/:ref/cues', WRITE, (p, body, actor) => [201, timeline.add(p.ref, body, { actor })]),
-    route('POST', '/api/v1/shows/:ref/cues/build', WRITE, (p, body) => [200, timeline.build(p.ref, body.recipe)]),
-    route('PATCH', '/api/v1/shows/:ref/cues/:cueId', WRITE, (p, body) => [200, timeline.update(p.ref, p.cueId, body)]),
-    route('DELETE', '/api/v1/shows/:ref/cues/:cueId', WRITE, (p) => [200, timeline.remove(p.ref, p.cueId)]),
-    route('POST', '/api/v1/shows/:ref/cues/:cueId/:op', CONTROL, (p, _body, actor) => [200, timeline.override(p.ref, p.cueId, p.op, { actor })]),
-    route('GET', '/api/v1/shows/:ref/plans', READ, (p) => [200, timeline.plans.list(p.ref)]),
-    route('POST', '/api/v1/shows/:ref/plans', WRITE, (p, body) => [201, timeline.plans.add(p.ref, body)]),
-    route('DELETE', '/api/v1/shows/:ref/plans/:planId', WRITE, (p) => [200, timeline.plans.remove(p.ref, p.planId)]),
-    route('PUT', '/api/v1/overlays/:ref/scene', CONTROL, (p, body, actor) => [200, shows.takeOverlay(p.ref, body.scene, { transition: body.transition ?? 'fade', actor })]),
-    route('POST', '/api/v1/overlays/:ref/actions/:name', CONTROL, (p, body, actor) => [200, shows.fireOverlay(p.ref, p.name, { args: body.args ?? {}, actor })]),
+    r({ method: 'GET', path: '/api/v1/shows/:ref/cues', scope: READ, summary: 'The show\'s cues, in time order', paged: true, run: ({ params, url }) => api.paginate(timeline.list(params.ref), url, cueKey) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/cues', scope: WRITE, summary: 'Add a cue', body: { fields: ['at', 'action', 'label'] }, status: 201, run: ({ params, body, who }) => ({ status: 201, body: timeline.add(params.ref, body, { actor: who.label }) }) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/cues/build', scope: WRITE, summary: 'Generate cues from the lineup with a recipe', body: { fields: ['recipe'] }, run: ({ params, body }) => ({ items: timeline.build(params.ref, body.recipe) }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref/cues/:cueId', scope: READ, summary: 'A cue', run: ({ params }) => timeline.get(params.ref, params.cueId) }),
+    r({ method: 'PATCH', path: '/api/v1/shows/:ref/cues/:cueId', scope: WRITE, summary: 'Change a cue', body: { fields: ['at', 'action', 'label'] }, resource: (p) => timeline.get(p.ref, p.cueId), run: ({ params, body }) => timeline.update(params.ref, params.cueId, body) }),
+    r({ method: 'DELETE', path: '/api/v1/shows/:ref/cues/:cueId', scope: WRITE, summary: 'Delete a cue', resource: (p) => timeline.get(p.ref, p.cueId), run: ({ params }) => timeline.remove(params.ref, params.cueId) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/cues/:cueId/:op', scope: CONTROL, command: true, summary: 'Fire now, skip or re-arm a cue (op: fire | skip | rearm)', body: { fields: [] }, run: ({ params, who }) => timeline.override(params.ref, params.cueId, params.op, { actor: who.label }) }),
+    r({ method: 'GET', path: '/api/v1/shows/:ref/plans', scope: READ, summary: 'The show\'s planned dates', paged: true, run: ({ params, url }) => api.paginate(timeline.plans.list(params.ref), url, (p) => `${p.date}|${p.id}`) }),
+    r({ method: 'POST', path: '/api/v1/shows/:ref/plans', scope: WRITE, summary: 'Plan the show for a date', body: { fields: ['date', 'lineup', 'goLive', 'dayBoundary', 'overlaySettings'] }, status: 201, run: ({ params, body }) => ({ status: 201, body: timeline.plans.add(params.ref, body) }) }),
+    r({ method: 'DELETE', path: '/api/v1/shows/:ref/plans/:planId', scope: WRITE, summary: 'Delete a plan', run: ({ params }) => timeline.plans.remove(params.ref, params.planId) }),
+    r({ method: 'PUT', path: '/api/v1/overlays/:ref/scene', scope: CONTROL, command: true, tag: 'Overlays', summary: 'Take a scene on an overlay outside a show', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => shows.takeOverlay(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label }) }),
+    r({ method: 'POST', path: '/api/v1/overlays/:ref/actions/:name', scope: CONTROL, command: true, tag: 'Overlays', summary: 'Fire an overlay\'s action', body: { fields: ['args'] }, run: ({ params, body, who }) => {
+      const out = shows.fireOverlay(params.ref, params.name, { args: body.args ?? {}, actor: who.label });
+      return { ...out, startAt: iso(out.startAt) };
+    } }),
   ];
 }
