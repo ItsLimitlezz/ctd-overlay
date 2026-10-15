@@ -96,6 +96,13 @@ test('an operator-typed address: local network only over plain http, never link-
   assert.match(lanRefusal('0.0.0.0'), /unspecified/);
   assert.match(lanRefusal('239.1.2.3'), /multicast/);
   assert.equal(lanRefusal('192.168.1.50'), undefined);
+  // IPv4 inside IPv6 gets the IPv4 rules: NAT64, IPv4-translated and IPv4-compatible spellings.
+  for (const a of ['64:ff9b::a9fe:a9fe', '64:ff9b::169.254.169.254', '::a9fe:a9fe', '::169.254.169.254', '::ffff:0:a9fe:a9fe']) assert.match(lanRefusal(a) || '', /link-local/, a);
+  assert.match(lanRefusal('64:ff9b::e000:1'), /multicast/);
+  assert.equal(lanRefusal('64:ff9b::c0a8:132'), undefined, '192.168.1.50 through NAT64');
+  assert.equal(lanRefusal('::1'), undefined, 'loopback stays loopback');
+  await assert.rejects(createHttpClient().request('http://[64:ff9b::a9fe:a9fe]/latest', { egress: 'lan' }), (err) => err.code === 'egress' && /link-local/.test(err.message));
+  await assert.rejects(createHttpClient().request('http://[::a9fe:a9fe]/', { egress: 'lan' }), (err) => err.code === 'egress' && /link-local/.test(err.message));
   const lookups = [];
   const lookup = async (host) => { lookups.push(host); return host === 'evil.example' ? [{ address: '169.254.169.254', family: 4 }] : [{ address: '8.8.8.8', family: 4 }]; };
   const c = createHttpClient({ lookup });
@@ -112,6 +119,38 @@ test('an operator-typed address: local network only over plain http, never link-
   const r = await local.request(`http://nas.local:${server.address().port}/api/v1/status`, { egress: 'lan', headers: { authorization: 'Bearer ctd_pat_x' } });
   assert.deepEqual(r.data, { ok: true });
   assert.deepEqual(got, ['Bearer ctd_pat_x']);
+});
+
+test('a stream\'s socket closes when its request or the instance stops, or its reader cancels, however long after the headers', async (t) => {
+  let open = 0;
+  const server = http.createServer((req, res) => {
+    open++;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const beat = setInterval(() => res.write(': ping\n\n'), 20);
+    res.on('close', () => { clearInterval(beat); open--; });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  defer(t, () => new Promise((r) => { server.closeAllConnections(); server.close(r); }));
+  const url = `http://127.0.0.1:${server.address().port}/events`;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settled = async (n, what) => { for (let i = 0; i < 200 && open !== n; i++) await wait(10); assert.equal(open, n, what); };
+  // Read for a while (well past the headers), then stop: by the request's signal, then the instance's.
+  for (const which of ['request', 'instance']) {
+    const instance = new AbortController();
+    const request = new AbortController();
+    const res = await createHttpClient({ signal: instance.signal }).request(url, { egress: 'lan', expect: 'stream', retries: 0, signal: request.signal });
+    const reading = (async () => { for await (const _ of res.body) { /* heartbeats */ } })().catch((err) => err);
+    await settled(1, `${which}: open while read`);
+    await wait(100);
+    (which === 'request' ? request : instance).abort();
+    await settled(0, `${which}: closed when it stopped`);
+    assert.ok(await reading instanceof Error, 'the reader hears it ended');
+  }
+  // A reader that stops reading (cancels) closes it too.
+  const res = await createHttpClient().request(url, { egress: 'lan', expect: 'stream', retries: 0 });
+  await settled(1, 'open');
+  await res.body.cancel();
+  await settled(0, 'closed when cancelled');
 });
 
 test('a self-signed https service is trusted by its fingerprint, checked before the request (and its token) is sent', async (t) => {

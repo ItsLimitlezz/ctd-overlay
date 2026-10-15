@@ -61,7 +61,10 @@ on any failure (a throw, a rejection, a hang, a timer that throws) stops it, hol
 over, and a service's `Retry-After` or quota reset (at most a day) is waited out. A callback from
 an instance that has been stopped changes nothing. Settings that don't fit are an `error` with no
 retry until they change; a sign-in that is missing or refused is `needs-reauth`, never retried in
-a loop. An instance publishes at most 200 events a second and sends at most 20 requests.
+a loop. An instance publishes at most 200 events a second that overlays play as they arrive (and
+5000 of moderation and backfill), and sends at most 20 requests. Past the limit a publish is
+refused with an error, which fails the instance, never dropped unnoticed; a connector reading a
+fast feed waits for room instead.
 
 #### 6.1.1 The HTTP client
 Retries only what is safe to send twice (`GET`, `HEAD`, `PUT`, `DELETE`, or a request marked
