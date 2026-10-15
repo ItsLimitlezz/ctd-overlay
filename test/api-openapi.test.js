@@ -184,7 +184,11 @@ test('a tour of every route: each success it answers, the type it answers in, th
   const { secret } = (await call('POST', '/auth/totp/enroll', { as: 'ui', body: { password: NEW_PASSWORD } })).body;
   signIn(await call('POST', '/auth/totp/verify', { as: 'ui', body: { code: hotp(secret, stepAt(clock.t)) } }));
   signIn(await call('DELETE', '/auth/totp', { as: 'ui', body: { password: NEW_PASSWORD } }));
-  const bo = (await call('POST', '/users', { body: { username: 'bo', password: PASSWORD, role: 'operator' } })).body;
+  // The admin UI's look (a person's), and the installation's name.
+  await call('PUT', '/auth/preferences', { as: 'ui', body: { theme: 'dark', density: 'compact' } });
+  await call('PUT', '/system/settings', { as: 'ui', body: { name: 'D/PRTMNT' } });
+  await call('GET', '/system/settings', { as: 'ui' });
+  const bo =(await call('POST', '/users', { body: { username: 'bo', password: PASSWORD, role: 'operator' } })).body;
   await call('GET', '/users');
   await call('GET', `/users/${bo.id}`);
   await call('PATCH', `/users/${bo.id}`, { body: { role: 'viewer' } });
@@ -203,6 +207,9 @@ test('a tour of every route: each success it answers, the type it answers in, th
   const testbed = (await call('GET', `/templates/${TESTBED.id}`)).body;
   await call('GET', testbed.previews[0].slice('/api/v1'.length));
   await call('GET', '/templates/dev.skp.sample/versions?limit=1');
+  const pinned = (await call('GET', `/templates/${TESTBED.id}/versions/${TESTBED.version}`)).body;
+  assert.deepEqual([pinned.version, pinned.manifest.id, pinned.previews], [TESTBED.version, TESTBED.id, testbed.previews], 'one version, with its own manifest');
+  assert.ok(testbed.canvases.length && Array.isArray(testbed.tags), 'a summary has what a gallery card shows');
   await call('POST', '/templates/sources', { body: { source: 'a/missing' } });
   await call('GET', '/templates/sources');
   await call('POST', '/templates/sources/check?source=a/missing', { body: {} });

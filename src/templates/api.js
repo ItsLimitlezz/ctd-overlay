@@ -29,7 +29,19 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
     const versions = templates.versions(id);
     if (!versions.length) throw new ApiError(404, 'not-found', `${id} isn't installed.`);
     const m = versions[0].manifest;
-    return { id, name: m.name, category: m.category, description: m.description, latest: versions[0].version, versions: versions.map(versionView) };
+    // What a gallery card shows (08 §8.2), from the newest version: no request per card.
+    return {
+      id,
+      name: m.name,
+      category: m.category,
+      description: m.description,
+      ...(m.author ? { author: typeof m.author === 'string' ? m.author : m.author.name } : {}),
+      tags: m.tags || [],
+      canvases: (m.canvases || []).map((c) => ({ id: c.id, width: c.width, height: c.height, ...(c.default ? { default: true } : {}) })),
+      previews: previewsOf(versions[0]),
+      latest: versions[0].version,
+      versions: versions.map(versionView),
+    };
   }
   // The URLs of a version's previews, each part encoded (a space, # or % in a name); only those the
   // route serves (a version installed before previews had to be images in previews/ may list others).
@@ -100,6 +112,13 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
       const rest = new URL(url);
       rest.searchParams.delete('cursor');
       return api.paginate(versions.filter((v) => compareVersions(v.version, after) < 0), rest, (v) => v.version);
+    } }),
+    // An overlay pins a version (04 §4.10): its settings form and scenes come from that version's
+    // manifest, which may not be the newest's.
+    r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version', scope: 'templates:read', summary: 'One installed version: its manifest, previews and the overlays pinned to it', run: ({ params }) => {
+      const t = templates.get(params.id, params.version);
+      if (!t) throw new ApiError(404, 'not-found', `${params.id}@${params.version} isn't installed.`);
+      return { id: t.id, ...versionView(t), manifest: t.manifest, previews: previewsOf(t) };
     } }),
     r({ method: 'GET', path: '/api/v1/templates/:id/versions/:version/previews/*', scope: 'templates:read', summary: 'A preview image (its path in previews/)', produces: 'image/*', run: async ({ params, res }) => {
       const t = templates.get(params.id, params.version);

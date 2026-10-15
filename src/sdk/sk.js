@@ -60,7 +60,8 @@
   const override = {
     scene: params.get('scene'),
     dark: params.get('bg') === 'dark',
-    mock: params.get('mock') === '1',
+    // A template's own preview (no overlay yet, 08 §8.2) has no live data: sample data always.
+    mock: params.get('mock') === '1' || meta.mock === true,
     debug: params.get('debug') === '1',
     settings: decodeSettings(params.get('settings')),
   };

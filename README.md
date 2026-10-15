@@ -34,9 +34,10 @@ npm run demo
 It starts a throwaway server on port 4950 with the TAKEOVER template in both looks (the cyan
 TAKEOVER and the gold headliner event) and a sample night: a lineup, a headliner, go-live in
 three minutes, a viewer count. Add the printed URLs to OBS as browser sources, 1920 × 1080 (or
-1080 × 1920 for the `?canvas=v` ones). Then type a scene name (`starting`, `program`, `brb`,
-`lineup`, `outro`, `bg`, `intro`, `headliner`, `line`, `pov`, `auto`) or an action (`title`,
-`np`, `opening`, `onat`) and Enter, as an operator would.
+1080 × 1920 for the `?canvas=v` ones). Then run the night from the admin UI it prints (signed in
+as the demo owner, also printed), or type a scene name (`starting`, `program`, `brb`, `lineup`,
+`outro`, `bg`, `intro`, `headliner`, `line`, `pov`, `auto`) or an action (`title`, `np`,
+`opening`, `onat`) and Enter.
 
 ```bash
 npm run diag
@@ -63,6 +64,26 @@ the same names as flags (`--port 5000`), or `config.json` in the config folder.
 ```bash
 npm test
 ```
+
+### The admin UI
+
+Open the platform's address (`http://127.0.0.1:4848/`) in a browser, on the computer or a phone
+on the same network (with `SKP_EXPOSURE=lan`). The first visit makes the owner account with the
+setup code from the log; after that it opens on **Live**, the show-night console: scenes,
+title cards and other actions, who's on, REC, the next cue with Trigger now and Skip, and the
+viewer count, all reachable with one thumb. **Overlays** has each overlay's preview, its settings
+(a form made from the template), the URL to paste into OBS with the browser-source size, and a
+Simulate panel. **Templates** previews a template with sample data before you use it, installs
+new ones and follows them for updates. **Shows** holds the night: details, lineup, timeline and
+planned dates. **Settings** has your look (theme, accent colour, density), accounts, two-factor,
+API tokens and the audit log. Deleting and key changes always sit behind a menu and ask first.
+
+```bash
+node scripts/ui-smoke.js /live /overlays --phone --shots shots
+```
+
+opens pages in a headless Chrome or Edge on a throwaway platform and reports console errors,
+CSP violations and sideways scrolling, with screenshots.
 
 ### Overlay URLs and reaching it from elsewhere
 

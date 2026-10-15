@@ -36,6 +36,12 @@ export class MediaError extends Error {
   }
 }
 
+// A size in plain words: "600 MiB", "64 KiB", "1000 bytes".
+const inWords = (bytes) => (bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MiB` : bytes >= 1024 ? `${+(bytes / 1024).toFixed(1)} KiB` : `${bytes} bytes`);
+
+// The refusal of an upload over the cap (fileBytes), whether it says its size or only shows it.
+export const tooLarge = (fileBytes) => new MediaError(`The file is larger than ${inWords(fileBytes)}, the most an upload can be.`, 'too-large');
+
 // A file name that is safe in a URL path segment and on every OS: letters, digits, ".", "_" and
 // "-", not starting with a dot; its extension is the one its content has.
 export function mediaName(original, ext) {
@@ -108,7 +114,7 @@ function syncDir(dir) {
 
 // lowerPriority: false runs ffmpeg at normal priority (tests only).
 export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', limits = {}, readOnly = false, lowerPriority = true }) {
-  const max = { ...MEDIA_LIMITS, ...limits };
+  const max = Object.freeze({ ...MEDIA_LIMITS, ...limits });
   const root = path.join(dataDir, 'media');
   const command = ffmpegCommand(ffmpeg);
   const byFileId = new Map(); // fileId → record
@@ -189,14 +195,16 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
   }
 
   // Copies the upload to a staging file, refusing more than the cap: a path, a Buffer or a
-  // readable stream (an HTTP request body, later). Returns its path and size.
+  // readable stream. A stream is destroyed when anything fails, so an HTTP request is handed in
+  // through a stream of the caller's own (api.js): destroyed, the request would take its
+  // connection with it, before the answer. Returns its path and size.
   async function stage(input) {
     const staging = path.join(root, `.incoming-${randomBytes(8).toString('hex')}`);
     let size = 0;
     const cap = new Transform({
       transform(chunk, _enc, done) {
         size += chunk.length;
-        if (size > max.fileBytes) done(new MediaError(`The file is larger than ${Math.round(max.fileBytes / 1024 / 1024)} MiB.`, 'too-large'));
+        if (size > max.fileBytes) done(tooLarge(max.fileBytes));
         else done(null, chunk);
       },
     });
@@ -277,7 +285,7 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
     const size = existsSync(output) ? statSync(output).size : 0;
     if (size === 0) throw new FfmpegError('ffmpeg finished without writing a file.', 'failed');
     // ffmpeg stops at the cap (-fs) and calls that success: a cut-off file is no conversion.
-    if (size > max.fileBytes) throw new FfmpegError(`the converted file would be larger than ${Math.round(max.fileBytes / 1024 / 1024)} MiB`, 'too-large');
+    if (size > max.fileBytes) throw new FfmpegError(`the converted file would be larger than ${inWords(max.fileBytes)}`, 'too-large');
     syncFile(output);
     return { output };
   }
@@ -422,6 +430,8 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
 
   return {
     add,
+    // The limits in force (MEDIA_LIMITS, with the ones given): fileBytes is the upload cap.
+    limits: max,
     get: (id) => store.get('media', id),
     // Newest first.
     list: () => [...all()].sort((a, b) => (a.data.createdAt < b.data.createdAt ? 1 : a.data.createdAt > b.data.createdAt ? -1 : 0)),

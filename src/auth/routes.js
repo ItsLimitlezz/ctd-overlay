@@ -88,6 +88,7 @@ export function authRoutes({ api, auth, audit }) {
       return signIn(200, out.current ? { ...out, cookie: auth.clearCookie(ctx.https) } : out);
     } }),
     r({ method: 'POST', path: '/api/v1/auth/password', summary: 'Change your password', body: { fields: ['current', 'password'] }, run: async ({ who, body, req }) => signIn(200, await auth.changePassword(who, body, ctxOf(req, who))) }),
+    r({ method: 'PUT', path: '/api/v1/auth/preferences', command: true, summary: 'Your admin UI look: theme, accent, density (08 §8.6)', body: { fields: ['theme', 'accent', 'density'] }, run: ({ who, body }) => auth.setPreferences(who, body) }),
     r({ method: 'POST', path: '/api/v1/auth/totp/enroll', summary: 'Start two-factor: a secret for your authenticator app', body: { fields: ['password'] }, run: ({ who, body, req }) => auth.totp.enroll(who, body, ctxOf(req, who)) }),
     r({ method: 'POST', path: '/api/v1/auth/totp/verify', summary: 'Turn two-factor on with a code: ten recovery codes, once', body: { fields: ['code'] }, run: ({ who, body, req }) => signIn(200, auth.totp.verify(who, body, ctxOf(req, who))) }),
     r({ method: 'DELETE', path: '/api/v1/auth/totp', summary: 'Turn two-factor off (with your password)', body: { fields: ['password'] }, run: async ({ who, body, req }) => signIn(200, await auth.totp.disable(who, body, ctxOf(req, who))) }),

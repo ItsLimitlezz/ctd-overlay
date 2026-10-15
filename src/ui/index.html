@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Stream Kit</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+  <link rel="icon" href="/ui/icon.svg" type="image/svg+xml">
+  <script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="top" data-shell hidden>
+    <a class="brand" href="#/live" data-brand><span class="brand-mark" aria-hidden="true"></span><span data-brand-name>Stream Kit</span></a>
+    <button type="button" class="menu-toggle" aria-expanded="false" aria-controls="nav" data-menu-toggle>Menu</button>
+    <nav id="nav" class="nav" aria-label="Sections" data-nav>
+      <a href="#/live">Live</a>
+      <a href="#/overlays">Overlays</a>
+      <a href="#/templates">Templates</a>
+      <a href="#/shows">Shows</a>
+      <a href="#/connections">Connections</a>
+      <a href="#/media">Media</a>
+      <a href="#/settings">Settings</a>
+    </nav>
+  </header>
+  <main id="main" class="main" tabindex="-1" data-view>
+    <p class="loading">Loading…</p>
+  </main>
+  <div class="toasts" role="status" aria-live="polite" data-toasts></div>
+  <noscript>The admin UI needs JavaScript.</noscript>
+</body>
+</html>

@@ -91,6 +91,20 @@ test('ETag and If-Match (H16): a session must send it on PATCH and PUT; a stale 
   assert.equal((await api('PATCH', '/shows/Night', { goLive: '23:00' })).status, 200, 'a token (the command line) may omit it');
   // A command takes no If-Match.
   assert.notEqual((await ui('PUT', '/shows/Night/scene', { scene: 'brb' })).status, 428);
+  // Live control isn't an edit: an ETag read before who's on and REC changed still edits the
+  // lineup mid-show; stateRev follows every change instead.
+  assert.equal((await api('PATCH', '/shows/Night', { lineup: [{ time: '22:00', name: 'Opener' }, { time: '23:00', name: 'Closer', closer: true }] })).status, 200);
+  const read = await ui('GET', '/shows/Night');
+  assert.equal((await ui('PUT', '/shows/Night/slot', { slot: 1 })).status, 200);
+  assert.equal((await ui('POST', '/shows/Night/rec', { action: 'start' })).status, 200);
+  const live = await ui('GET', '/shows/Night');
+  assert.equal(live.headers.get('etag'), read.headers.get('etag'), 'the ETag is the edit revision');
+  assert.ok(live.body.stateRev > read.body.stateRev, 'stateRev moved');
+  const edit = await ui('PATCH', '/shows/Night', { lineup: [{ time: '22:00', name: 'Opener' }, { time: '23:30', name: 'Closer', closer: true }] }, { 'if-match': read.headers.get('etag') });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  assert.equal(edit.body.currentSlot, 1, 'who\'s on is kept');
+  // An edit made meanwhile still makes it stale.
+  assert.equal((await ui('PATCH', '/shows/Night', { goLive: '21:00' }, { 'if-match': read.headers.get('etag') })).status, 412);
 });
 
 test('Idempotency-Key: a repeat within 24 hours answers the first answer, once; another request with the same key is refused', async (t) => {

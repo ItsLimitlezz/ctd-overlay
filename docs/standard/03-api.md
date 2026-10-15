@@ -83,6 +83,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | Your active sessions, newest first (device, IP, last seen), and revoking one |
 | `POST /auth/password` | `{ current, password }`: ends your other sessions |
 | `POST /auth/totp/enroll` · `POST /auth/totp/verify` · `DELETE /auth/totp` | Two-factor |
+| `PUT /auth/preferences` | Your admin UI look (08 §8.6): `{ theme: system\|light\|dark, accent: "#rrggbb"\|null, density: comfortable\|compact }`, any of them; in `GET /auth/session`'s `user.preferences` |
 | `GET/POST /users` · `PATCH/DELETE /users/{id}` | Accounts and roles (users have an ETag: a session sends `If-Match`). The owner's own password and two-factor change only with the current password, above, or from the command line (07 §7.3) |
 | `GET/POST /tokens` · `DELETE /tokens/{id}` | API tokens (secret shown once) |
 
@@ -115,7 +116,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 ### Shows & timeline
 | Method · Path | Purpose |
 |---|---|
-| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays |
+| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
 | `GET /shows/{id}/alerts` · `POST /shows/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | The show's alert queue (05 §5.5) |
@@ -149,6 +150,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `GET/POST /webhooks` · `DELETE /webhooks/{id}` · `GET /webhooks/{id}/deliveries` | Outbound webhooks (06 §6.10) |
 | `POST /hooks/{connector}` · `POST /hooks/custom/{id}` | Inbound webhooks (outside `/api/v1`) |
 | `GET /system/health` · `GET /system/info` | Status, version, capabilities (e.g. `ffmpeg: false`) |
+| `GET /system/settings` · `PUT /system/settings` | The installation's display name and logo (an uploaded image's `/media/…` URL) for the admin UI (08 §8.6); setting them needs `system:admin` |
 | `GET /openapi.json` | This API, described (OpenAPI 3.1, each operation's scope as `x-skp-scope`); no sign-in needed |
 | `POST /system/backup` · `POST /system/restore` | Export/import (10 §10.7) |
 | `GET /system/audit` | Audit log, newest first (`audit:read`: owner and admin) |
@@ -157,6 +159,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | Path | Overlay key | Purpose |
 |---|---|---|
 | `GET /o/{slug}` | required | The overlay page |
+| `GET /o/~p.{templateId}@{version}` | sign-in (`templates:read`) | A template's preview with sample data before any overlay uses it (08 §8.2); takes `?canvas=` and `?scene=`, has no live data |
 | `GET /o/{slug}/snapshot` · `/stream` · `/poll` | required | Live data (01 §1.5) |
 | `POST /o/{slug}/log` | required | `SK.log` and runtime errors for the template log: `{ "entries": [{ "level", "msg", "context"? }] }`, at most 20 per request and 64 KiB, 30 entries a minute per overlay; answers `204` |
 | `GET /o/{slug}/t/{build}/*` | no | The pinned template version's files (04 §4.5) |

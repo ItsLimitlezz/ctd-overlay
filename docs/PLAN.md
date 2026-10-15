@@ -186,12 +186,34 @@ option that keeps a live show running with nobody touching it.
 14. **Admin UI.** Live console first, built for a phone; then Overlays (sandboxed lite previews
     loaded on tap, settings form from the schema, Copy URL), Shows/lineup/timeline, Templates,
     Settings (08, H13, H17, H20).
+    Done in `src/ui/` (conventions in its README): plain ES modules with no build step, served
+    no-store under the admin CSP, using only the public API (CSRF on changes, If-Match on every
+    edit). Live (scenes, actions, who's on, REC, the next cue with Trigger now and Skip, viewer
+    count), Overlays (previews per canvas, the settings form generated from the schema with a
+    preview of unsaved values, URLs to copy with the browser-source size, Simulate, upgrade and
+    revert, key and delete behind a menu), Templates (gallery, a live preview with sample data
+    before any overlay uses it, Use template, install with validation, followed sources), Shows
+    (details, lineup, timeline, plans), Media, Settings (appearance per user, the installation's
+    name and logo, account and two-factor, users, API tokens, security, audit, about).
+    Connections waits for step 16. `scripts/ui-smoke.js` opens every page in a headless browser
+    and reports console errors and CSP violations; `test/ui.test.js` does it at desktop and
+    phone width.
 15. **v0 importer.** Reads a v0 `/data` directory: `kit.json` and `shows.json` become a show,
     overlays and plans; `viewers.json` becomes Twitch and Kick connections.
 
 ### Milestone 4: connectors
 16. **Connector host.** Contract, backoff, health and `system.connection`, encrypted token
     storage, device-code and PKCE flows, setup guides in the UI (06 §6.1–6.4, 08 §8.7).
+16b. **CTD Multi-Stream** (added 2026-10-13 at the operator's request). The operator's
+    multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream))
+    merges chat from every destination it relays to (Twitch, YouTube, Kick, Facebook, X,
+    Instagram, TikTok) and publishes it in this standard's envelope over SSE (its
+    `docs/API.md`). A connector reads it with an API token: chat and moderation events, alerts
+    (subscriptions, gifts, cheers, raids, memberships, Super Chats, from its v1.1; their chat
+    lines are not shown twice), viewer counts and live status per platform, `Last-Event-ID`
+    resume with a backfill when the cursor is too old. It is the only chat source for the browser-read platforms; direct
+    connectors stay for Twitch, Kick and YouTube (alerts, and chat when Multi-Stream isn't
+    relaying).
 17. **Twitch and Kick viewers and live status**, ported from v0. **This reaches v0 parity:** run
     a Saturday next to v0, then cut over.
 18. **OBS.** obs-websocket v5 handshake, state, actions, OBS→overlay scene mapping, Add to OBS

@@ -124,6 +124,16 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-14.** From building the admin UI (plan step 14):
+
+1. Per-user appearance, `PUT /auth/preferences`, and the installation's name and logo,
+   `GET/PUT /system/settings`. *(03 §3.4, 08 §8.6)*
+2. A template previews with sample data before any overlay uses it, at
+   `/o/~p.{templateId}@{version}`, for someone signed in. *(03 §3.4, 08 §8.2)*
+3. A show's ETag is its edit revision: live control (a scene, who's on, REC) doesn't move it, so
+   an operator editing the lineup mid-show isn't refused at every act change; `stateRev` follows
+   every change. *(03 §3.4, H16)*
+
 **2026-10-13.** From the review of plan steps 11–13:
 
 1. Setup is refused from outside this machine and its network in every mode (behind a trusted

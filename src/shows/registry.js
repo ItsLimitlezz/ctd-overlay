@@ -20,6 +20,7 @@
 // A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
 // button work across templates: each member gets the name its own template knows.
 import { newId } from '../ids.js';
+import { ConflictError } from '../store/index.js';
 import { isDate, isTime, isTimezone, resolveTime } from './time.js';
 
 export const TRIGGER_LEAD_MS = 250;
@@ -106,12 +107,19 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }).filter(Boolean);
   }
 
+  // A show's revision as an edit sees it (its ETag, H16): it moves when what PATCH changes does
+  // (name, members, date, zone, day boundary, go-live, lineup), not with the night's live control
+  // (a scene, who's on, REC), so an operator editing the lineup mid-show isn't refused at every
+  // act change. stateRev moves with every change, for a client that follows the show.
+  const editRev = (d) => d.editRev ?? 1;
+
   // The show as the API shows it: its record, its resolved times, and whether it is live.
   function view(doc) {
-    const d = doc.data;
+    const { editRev: _, ...d } = doc.data;
     return {
       id: doc.id,
-      rev: doc.rev,
+      rev: editRev(doc.data),
+      stateRev: doc.rev,
       ...d,
       live: isLive(d),
       goLiveAt: d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined,
@@ -262,7 +270,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
-    const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
+    const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
     publish(doc);
     arm(doc);
     log.info('show created', { show: doc.id, name: data.name, overlays: data.overlays.length });
@@ -270,10 +278,12 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return view(doc);
   }
 
+  // ifRev: the edit revision the change was made on (If-Match); a stale one is a conflict.
   function update(ref, patch, { ifRev } = {}) {
     const doc = get(ref);
+    if (ifRev !== undefined && ifRev !== editRev(doc.data)) throw new ConflictError('shows', doc.id, editRev(doc.data), ifRev);
     const data = clean(patch || {}, { partial: true, id: doc.id });
-    const next = { ...doc.data, ...data };
+    const next = { ...doc.data, ...data, editRev: editRev(doc.data) + 1 };
     if (next.goLive === null) delete next.goLive;
     // Who's on follows the act through a lineup edit (an act added above it moves its position),
     // and is cleared if the act is gone.
@@ -286,7 +296,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }
     if (Number.isInteger(next.currentSlot) && next.currentSlot >= next.lineup.length) delete next.currentSlot;
     checkPublishable(next);
-    const saved = store.put('shows', doc.id, next, { ifRev: ifRev ?? doc.rev });
+    const saved = store.put('shows', doc.id, next, { ifRev: doc.rev });
     for (const left of doc.data.overlays.filter((o) => !next.overlays.includes(o))) release(left);
     publish(saved);
     // A go-live moved into the past while "auto" is on air counts from then.

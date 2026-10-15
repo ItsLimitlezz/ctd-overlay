@@ -41,6 +41,23 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
       return { status: unusable.length ? 'degraded' : 'ok', ...(unusable.length ? { overlaysOffAir: unusable } : {}), uptimeS: Math.round((now() - started) / 1000) };
     } }),
     r({ method: 'GET', path: '/api/v1/system/info', summary: 'Version, exposure, store and capabilities', run: info }),
+    // The installation's own name and logo, shown in the admin UI (08 §8.6).
+    r({ method: 'GET', path: '/api/v1/system/settings', summary: 'The installation\'s name and logo', run: () => store.get('system', 'settings')?.data || {} }),
+    r({ method: 'PUT', path: '/api/v1/system/settings', scope: 'system:admin', command: true, summary: 'Set the installation\'s name and logo', body: { fields: ['name', 'logo'] }, run: ({ body }) => {
+      const next = { ...(store.get('system', 'settings')?.data || {}) };
+      if (body.name !== undefined) {
+        if (body.name !== null && (typeof body.name !== 'string' || body.name.length > 60)) throw new ApiError(422, 'invalid', '"name" is text, at most 60 characters.');
+        if (body.name) next.name = body.name.trim();
+        else delete next.name;
+      }
+      if (body.logo !== undefined) {
+        if (body.logo !== null && body.logo !== '' && (typeof body.logo !== 'string' || !/^\/media\/[0-9a-f]{32}\/[^/\\?#%\s]+$/.test(body.logo))) throw new ApiError(422, 'invalid', '"logo" is an uploaded image\'s URL (/media/…), or null.');
+        if (body.logo) next.logo = body.logo;
+        else delete next.logo;
+      }
+      store.put('system', 'settings', next);
+      return next;
+    } }),
 
     r({ method: 'GET', path: '/api/v1/events', scope: 'events:read', tag: 'Live', summary: 'Server-Sent Events of what the platform publishes (?types=)', query: ['types'], produces: 'text/event-stream', run: ({ url, req, res, still }) => {
       let wants = () => true;

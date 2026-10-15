@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { startPlatform, StartupError } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { readBody, sendJson, sendProblem } from '../src/http/server.js';
+import { uiRoutes } from '../src/http/ui.js';
 import { defer, memoryLogger, tempDir } from './helpers.js';
 
 async function start(t, { routes = [], store = 'sqlite' } = {}) {
@@ -221,4 +222,26 @@ test('a port that is already taken is a clear StartupError', async (t) => {
     env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') },
   });
   await assert.rejects(startPlatform(config, { log: memoryLogger().log }), (e) => e instanceof StartupError && /already in use/.test(e.message));
+});
+
+// The admin UI's files (src/http/ui.js): nothing but the files in its directory, whatever the
+// separator. On Windows a backslash separates too, so "pages\.hidden.js" and "pages\..\app.js"
+// must not slip past the checks made on "/"-separated parts.
+test('the UI files: a backslash in the path is refused like a dot file or a step outside', async (t) => {
+  const dir = tempDir(t);
+  mkdirSync(path.join(dir, 'pages'));
+  writeFileSync(path.join(dir, 'app.js'), 'export {};');
+  writeFileSync(path.join(dir, 'pages', 'live.js'), 'export {};');
+  writeFileSync(path.join(dir, 'pages', '.hidden.js'), 'secret');
+  const handler = uiRoutes({ dir: `${dir}${path.sep}` }).find((r) => r.path === '/ui/*').handler;
+  const get = async (rel) => {
+    const res = { writeHead(status) { this.status = status; }, end() {} };
+    await handler({ res, params: { '*': rel } });
+    return res.status;
+  };
+  assert.equal(await get('app.js'), 200);
+  assert.equal(await get('pages/live.js'), 200);
+  for (const rel of ['pages/.hidden.js', 'pages\\.hidden.js', 'pages\\..\\app.js', 'pages\\live.js', '..\\package.json', 'pages/../app.js']) {
+    assert.equal(await get(rel), 404, rel);
+  }
 });
