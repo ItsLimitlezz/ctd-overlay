@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mega Show</title>
+  <!-- Relative URLs only: the runtime adds <base> so they resolve to this package's files. -->
+  <link rel="stylesheet" href="template.css">
+</head>
+<body>
+  <!-- One <template> per scene id from template.json (the declarative way, 04 §4.7). The runtime
+       clones it into <section data-skp-scene-root="…"> and runs the enter/exit (05 §5.4).
+       "auto" is built in template.js instead (the imperative way: SK.defineScene). -->
+
+  <template data-skp-scene="starting">
+    <div class="scene solid">
+      <video class="bgvideo" muted loop playsinline data-bg-video hidden></video>
+      <div class="grain"></div>
+      <div class="center">
+        <img class="logo" alt="" data-logo hidden>
+        <div class="eyebrow" data-text="tagline"></div>
+        <h1 class="title" data-text="title"></h1>
+        <div class="date" data-date></div>
+        <div class="countdown" data-countdown hidden><span class="k">STARTS IN</span><b></b></div>
+        <div class="headliner" data-headliner hidden><span class="k">HEADLINER</span><b></b></div>
+      </div>
+      <div class="ticker" data-ticker hidden><div class="run"></div></div>
+    </div>
+  </template>
+
+  <template data-skp-scene="program">
+    <!-- Transparent: OBS shows the camera underneath (template.json "transparent": true). -->
+    <div class="scene live">
+      <div class="bug">
+        <img class="logo small" alt="" data-logo hidden>
+        <span class="live-pill"><i></i>LIVE</span>
+        <span class="viewers" data-viewers hidden><b></b> watching</span>
+        <span class="rec" data-rec hidden>REC <b></b></span>
+      </div>
+      <div class="onnow" data-onnow hidden><span class="k">ON NOW</span><b></b></div>
+      <div class="np" data-np hidden>
+        <img class="art" alt="" data-np-art hidden>
+        <div class="np-text"><span class="k">NOW PLAYING</span><b data-np-title></b><span data-np-artist></span></div>
+        <div class="bar"><i data-np-bar></i></div>
+      </div>
+      <div class="chat" data-skp-chat data-chat></div>
+      <div class="actions" data-actions></div>
+      <div class="alerts" data-skp-alerts></div>
+      <div class="ticker" data-ticker hidden><div class="run"></div></div>
+    </div>
+  </template>
+
+  <template data-skp-scene="brb">
+    <div class="scene solid">
+      <div class="grain"></div>
+      <div class="center">
+        <img class="logo" alt="" data-logo hidden>
+        <h1 class="title">BE RIGHT BACK</h1>
+        <p class="brb" data-text="brbText"></p>
+      </div>
+    </div>
+  </template>
+
+  <template data-skp-scene="lineup">
+    <div class="scene solid">
+      <div class="grain"></div>
+      <div class="lineup">
+        <div class="eyebrow">TONIGHT</div>
+        <h1 class="title" data-text="title"></h1>
+        <ol class="acts" data-acts></ol>
+      </div>
+    </div>
+  </template>
+
+  <template data-skp-scene="outro">
+    <div class="scene solid">
+      <div class="grain"></div>
+      <div class="center">
+        <div class="eyebrow">THAT'S A WRAP</div>
+        <h1 class="title">THANKS FOR WATCHING</h1>
+        <img class="logo" alt="" data-logo hidden>
+      </div>
+    </div>
+  </template>
+
+  <template data-skp-scene="bg">
+    <div class="scene solid">
+      <video class="bgvideo" muted loop playsinline data-bg-video hidden></video>
+      <div class="grain"></div>
+      <div class="glow"></div>
+    </div>
+  </template>
+
+  <template data-skp-scene="intro">
+    <!-- A timed scene: the server returns to "program" after durationMs (template.json "then"). -->
+    <div class="scene solid intro">
+      <div class="center">
+        <div class="eyebrow" data-text="tagline"></div>
+        <h1 class="title big" data-text="title"></h1>
+      </div>
+    </div>
+  </template>
+
+  <template data-skp-scene="shoutout">
+    <!-- An extra (no "core"): it appears as its own button only for this template. -->
+    <div class="scene solid intro">
+      <div class="center">
+        <div class="eyebrow">HEADLINER</div>
+        <h1 class="title big" data-shoutout></h1>
+      </div>
+    </div>
+  </template>
+
+  <script src="template.js"></script>
+</body>
+</html>

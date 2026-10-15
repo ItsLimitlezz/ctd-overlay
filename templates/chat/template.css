@@ -1,0 +1,41 @@
+/* D/PRTMNT chat. The canvas is the browser source's size: 560 x 1000 beside the set (side), or
+   1080 x 720 for the lower part of the vertical feed (?canvas=v). Newest at the bottom. */
+:root { --accent: #16e0ff; --size: 26px; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body, [data-skp-stage] { font-family: 'Archivo', system-ui, sans-serif; color: #fff; }
+
+.chat {
+  position: absolute; inset: 0; box-sizing: border-box; padding: 18px 18px 22px;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: calc(var(--size) * .32);
+  overflow: hidden; font-size: var(--size);
+}
+[data-skp-canvas="v"] .chat { padding: 24px 44px 28px; }
+
+.msg {
+  align-self: flex-start; max-width: 100%; box-sizing: border-box; flex: none;
+  padding: .32em .62em .38em; line-height: 1.24; overflow-wrap: anywhere;
+  border-left: 4px solid var(--accent);
+}
+.panel .msg { background: rgba(8, 10, 12, .8); }
+.msg .head { display: flex; align-items: center; flex-wrap: wrap; gap: .38em; margin-bottom: .1em; font-size: .74em; }
+.msg .plat, .msg .role {
+  font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; font-size: .72em; letter-spacing: .1em;
+  padding: .12em .42em .08em; line-height: 1.1;
+}
+.msg .plat { color: #0a0a0a; background: var(--plat, #8a8a8a); }
+.msg .role { color: var(--accent); box-shadow: inset 0 0 0 1px currentColor; }
+.msg .role.host { color: #ffd23f; }
+.msg .name { font-weight: 800; color: var(--name, var(--accent)); }
+.msg .text { font-weight: 500; }
+.msg .text .emote { height: 1.4em; width: auto; vertical-align: middle; margin: -.25em .04em -.15em; }
+.msg.action .text { font-style: italic; color: var(--name, var(--accent)); }
+.msg.event { border-left-color: #ffd23f; }
+.msg.event .text { color: #ffd23f; font-weight: 700; }
+.msg.highlighted { border-left-width: 9px; }
+
+/* The lifecycle (05 §5.2): the runtime sets data-skp-state, and times the exit from this CSS. */
+.msg[data-skp-state="enter"] { animation: chatIn .35s cubic-bezier(.2, .7, .2, 1) both; }
+.msg[data-skp-state="exit"] { animation: chatOut .3s ease-in both; }
+@keyframes chatIn { from { opacity: 0; transform: translateY(16px); } }
+@keyframes chatOut { to { opacity: 0; transform: translateX(-28px); } }
+[data-skp-lite] .msg, [data-skp-reduced-motion] .msg { animation-duration: .01s !important; }
