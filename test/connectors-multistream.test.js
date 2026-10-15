@@ -83,7 +83,7 @@ test('chat, deletions, alerts and counts reach an overlay bound to every connect
   ms.emit('destination.up', { destinationId: 'd-ig', name: 'Instagram', platform: 'instagram', downForSec: 41, recoveries: 1 }, { platform: 'instagram', destination: 'd-ig' });
   await until(() => get().health.status === 'connected', 3000, 'connected');
   // A clear on one platform takes that platform's lines only.
-  ms.emit('chat.message', { ...msg('y1', 'from youtube'), id: 'youtube:y1', platform: 'youtube', user: { id: 'youtube:UC1', name: 'Owl', roles: [] } }, { platform: 'youtube', destination: 'd-yt' });
+  ms.emit('chat.message', { ...msg('y1', 'from youtube'), id: 'youtube:y1', platform: 'youtube', destinationId: 'd-yt', user: { id: 'youtube:UC1', name: 'Owl', roles: [] } }, { platform: 'youtube', destination: 'd-yt' });
   ms.emit('chat.message', msg('m2', 'still here'), { platform: 'twitch', destination: 'd-tw' });
   await until(() => channel.snapshot().chat.recent.length === 3, 3000, 'three lines');
   ms.emit('chat.cleared', { platform: 'youtube', destinationId: 'd-yt' }, { platform: 'youtube', destination: 'd-yt' });
@@ -148,6 +148,120 @@ test('a revoked token is needs-reauth, saying where to make a new one, with no r
   const patched = await fetch(`${platform.url}/api/v1/connections/${get().id}`, { method: 'PATCH', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ secrets: { token: ms.token } }) });
   assert.equal(patched.status, 200);
   await until(() => ['connected', 'degraded'].includes(get().health.status), 8000, 'connected with the new token');
+});
+
+test('stopping closes its event stream: settings saves, off and on, a quiet reconnect and a delete never leave one open', { timeout: 60000 }, async (t) => {
+  const { ms, platform, get, conn } = await start(t);
+  const H = signedIn(platform, { 'content-type': 'application/json' });
+  const patch = async (body) => {
+    const r = await fetch(`${platform.url}/api/v1/connections/${conn.id}`, { method: 'PATCH', headers: H, body: JSON.stringify(body) });
+    assert.equal(r.status, 200, await r.text());
+  };
+  const streams = () => ms.requests.filter((r) => r.path === '/api/v1/events').length;
+  const one = (what) => until(() => ['connected', 'degraded'].includes(get().health.status) && ms.openStreams === 1, 5000, `${what}: connected over one stream`);
+  await one('started');
+  // More saves than the 5 streams CTD allows a token: each closes the stream it replaces.
+  for (let i = 1; i <= 6; i++) {
+    await patch({ config: { baseUrl: `${ms.url}/api/v1`, hideAlertChatLines: i % 2 === 0 } });
+    await one(`save ${i}`);
+  }
+  assert.equal(streams(), 7);
+  await patch({ enabled: false });
+  await until(() => get().health.status === 'disabled' && ms.openStreams === 0, 5000, 'off: no stream');
+  await patch({ enabled: true });
+  await one('on again');
+  // The watchdog's reconnect (it went quiet): the old stream closes, the new one opens.
+  const n = streams();
+  platform.connectors.runnerOf(conn.id).ctx.fail(new Error('CTD Multi-Stream went quiet for 45 s; reconnecting.'));
+  await until(() => streams() === n + 1, 8000, 'the reconnect');
+  await one('reconnected');
+  const del = await fetch(`${platform.url}/api/v1/connections/${conn.id}`, { method: 'DELETE', headers: H });
+  assert.equal(del.status, 200);
+  await until(() => ms.openStreams === 0, 3000, 'no stream after the delete');
+});
+
+test('a /clear removes that destination\'s lines from before a reconnect too; a replay over the publish limit and a /clear of a full buffer lose nothing', { timeout: 60000 }, async (t) => {
+  const { ms, platform, live, get } = await start(t);
+  const buffered = () => platform.bus.chatRecent().map((e) => e.data.id);
+  const reconnected = async (n) => until(() => ms.requests.filter((r) => r.path === '/api/v1/events').length === n && ms.openStreams === 1 && ['connected', 'degraded'].includes(get().health.status), 8000, 'reconnected');
+  for (const id of ['a', 'b', 'c']) ms.emit('chat.message', msg(id, id), { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('chat.message', { ...msg('y1', 'from youtube'), id: 'youtube:y1', platform: 'youtube', destinationId: 'd-yt', user: { id: 'youtube:UC1', name: 'Owl', roles: [] } }, { platform: 'youtube', destination: 'd-yt' });
+  await until(() => buffered().length === 4, 3000, 'four lines');
+  ms.dropStreams();
+  await reconnected(2);
+  ms.emit('chat.message', msg('d', 'd'), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => buffered().length === 5, 3000, 'd');
+  ms.emit('chat.cleared', { platform: 'twitch', destinationId: 'd-tw' }, { platform: 'twitch', destination: 'd-tw' });
+  await until(() => buffered().join() === 'youtube:y1', 3000, 'Twitch cleared, from before the reconnect too');
+  assert.deepEqual(['a', 'b', 'c', 'd'].map((id) => liveOf(live, 'chat.message.deleted', `twitch:${id}`).length), [1, 1, 1, 1]);
+  // 400 lines while it was away: the replay is twice the 200 a second overlays may get, and all of
+  // it arrives, in order (it waits for room rather than dropping the rest).
+  ms.dropStreams();
+  for (let i = 0; i < 400; i++) ms.emit('chat.message', msg(`r${i}`, `missed ${i}`), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => liveOf(live, 'chat.message').filter((e) => e.data.id.startsWith('twitch:r')).length === 400, 10000, 'the whole replay');
+  const order = liveOf(live, 'chat.message').filter((e) => e.data.id.startsWith('twitch:r')).map((e) => Number(e.data.id.slice(8)));
+  assert.deepEqual(order, [...order].sort((x, y) => x - y));
+  assert.equal(get().health.status === 'error', false, get().health.detail);
+  // A /clear right after it removes all 200 lines the buffer holds, the newest too.
+  ms.emit('chat.cleared', { platform: 'twitch', destinationId: 'd-tw' }, { platform: 'twitch', destination: 'd-tw' });
+  await until(() => !buffered().some((id) => id.startsWith('twitch:')), 3000, 'every Twitch line gone');
+  assert.equal(liveOf(live, 'chat.message.deleted', 'twitch:r399').length, 1);
+});
+
+test('an event line shows unless its alert follows; a ban by name only removes that user\'s lines', { timeout: 30000 }, async (t) => {
+  const { ms, live, platform } = await start(t);
+  // A Twitch /announce is an event line no alert follows: it is shown, briefly held.
+  const sent = Date.now();
+  ms.emit('chat.message', msg('ann', 'Giveaway at 10pm!', { kind: 'event', highlighted: true }), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => liveOf(live, 'chat.message', 'twitch:ann').length === 1, 3000, 'the announcement');
+  assert.ok(Date.now() - sent < 1500, 'held for a moment only');
+  assert.equal(liveOf(live, 'chat.message', 'twitch:ann')[0].data.kind, 'event');
+  // A sub's line is followed by its alert: the alert shows, the line doesn't.
+  ms.emit('chat.message', msg('e2', 'DJFan subscribed!', { kind: 'event' }), { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('alert.subscription', { kind: 'subscription', user: { id: 'twitch:144552210', name: 'DJFan' }, amount: { unit: 'months', value: 1 }, platform: 'twitch', destinationId: 'd-tw', messageId: 'twitch:e2', ts: Date.now() }, { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('chat.message', msg('after', 'after the sub'), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => liveOf(live, 'chat.message', 'twitch:after').length === 1, 3000, 'the next line');
+  await new Promise((r) => setTimeout(r, 500));
+  assert.deepEqual([liveOf(live, 'alert.subscription').length, liveOf(live, 'chat.message', 'twitch:e2').length], [1, 0]);
+  // A ban that names the user only ("kick:name:…"): their line, which carries an id, goes; others stay.
+  const kick = (id, user) => ({ ...msg(id, 'spam'), id: `kick:${id}`, platform: 'kick', destinationId: 'd-kk', user: { roles: [], ...user } });
+  ms.emit('chat.message', kick('k1', { id: 'kick:777', login: 'spammer', name: 'Spammer' }), { platform: 'kick', destination: 'd-kk' });
+  ms.emit('chat.message', kick('k2', { id: 'kick:778', login: 'fan', name: 'Fan' }), { platform: 'kick', destination: 'd-kk' });
+  await until(() => liveOf(live, 'chat.message', 'kick:k2').length === 1, 3000, 'the Kick lines');
+  ms.emit('chat.user.cleared', { userId: 'kick:name:SPAMMER', userName: 'SPAMMER', platform: 'kick', destinationId: 'd-kk' }, { platform: 'kick', destination: 'd-kk' });
+  await until(() => !platform.bus.chatRecent().some((e) => e.data.id === 'kick:k1'), 3000, 'the banned user\'s line gone');
+  assert.ok(platform.bus.chatRecent().some((e) => e.data.id === 'kick:k2'), 'the others stay');
+});
+
+test('ages are judged on CTD\'s clock, and only for the replay: a clock 150 s behind still plays live chat and alerts', { timeout: 30000 }, async (t) => {
+  const SKEW = -150 * 1000;
+  const ms = await startFakeMultistream();
+  ms.skewMs = SKEW;
+  defer(t, () => ms.close());
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  const platform = await startPlatform(config, { log: memoryLogger().log, templateDirs: [FIXTURE_TEMPLATES], connectors: { random: () => 0.5 } });
+  defer(t, () => platform.stop());
+  platform.overlays.create({ slug: 'main', template: TESTBED, settings: {} });
+  const live = [];
+  platform.overlays.resolve('main').channel.subscribe((env) => live.push(env));
+  const made = await fetch(`${platform.url}/api/v1/connections`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ connector: 'ctd-multistream', name: 'Multi-Stream', config: { baseUrl: `${ms.url}/api/v1` }, secrets: { token: ms.token } }) });
+  const conn = await made.json();
+  const get = () => platform.connectors.get(conn.id);
+  await until(() => ['connected', 'degraded'].includes(get().health.status), 5000, 'connected');
+  const sub = (id) => ({ kind: 'subscription', user: { id: 'twitch:1', name: 'DJFan' }, amount: { unit: 'months', value: 2 }, platform: 'twitch', destinationId: 'd-tw', messageId: `twitch:${id}`, ts: Date.now() });
+  ms.emit('chat.message', msg('now', 'said just now'), { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('alert.subscription', sub('s1'), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => liveOf(live, 'chat.message', 'twitch:now').length === 1 && liveOf(live, 'alert.subscription').length === 1, 3000, 'live chat and the alert, played');
+  // Missed while away and 200 s old on CTD's clock: the line goes to the buffer quietly, the alert is dropped.
+  ms.dropStreams();
+  ms.skewMs = SKEW - 200 * 1000;
+  ms.emit('chat.message', msg('old', 'said while away'), { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('alert.subscription', sub('s2'), { platform: 'twitch', destination: 'd-tw' });
+  ms.skewMs = SKEW;
+  await until(() => platform.bus.chatRecent().some((e) => e.data.id === 'twitch:old'), 8000, 'the old line, in the buffer');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual([liveOf(live, 'chat.message', 'twitch:old').length, liveOf(live, 'alert.subscription').length], [0, 1]);
 });
 
 test('chat and alerts in this standard\'s shapes: nulls left out, roles closed, text cut at 1000, money a string', () => {

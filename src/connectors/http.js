@@ -16,7 +16,7 @@
 // - 401 with auth 'user' or 'app': the token is refreshed once and the request sent again; a
 //   second 401 for the user's token means it needs signing in again (needs-reauth, no loop).
 // - A body over maxBytes is cut off (too-large); a request that takes over timeoutMs is dropped
-//   (for a stream: until its headers arrive).
+//   (for a stream: until its headers arrive). Stopping closes a stream's socket at any point.
 // - Egress (07 §7.11):
 //     service  the connector's own service: https only (a test may point an endpoint at a local
 //              http server; those origins are allowed by name);
@@ -64,6 +64,15 @@ export function lanRefusal(ip) {
     return undefined;
   }
   if (isIP(a) === 6) {
+    // An IPv4 address inside IPv6 reaches that IPv4 address: NAT64 (64:ff9b::/96, a NAT64
+    // network translates it), IPv4-translated (::ffff:0:0/96) and IPv4-compatible (::/96, two
+    // groups so "::1" stays loopback). It gets the IPv4 rules (normalizeIp unwraps ::ffff:).
+    const inner = /^(?:64:ff9b::(?:([0-9a-f]{1,4}):)?|::ffff:0:([0-9a-f]{1,4}):|::([0-9a-f]{1,4}):)([0-9a-f]{1,4})$/.exec(a);
+    if (inner) {
+      const hi = parseInt(inner[1] ?? inner[2] ?? inner[3] ?? '0', 16);
+      const lo = parseInt(inner[4], 16);
+      return lanRefusal(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
     if (a === '::') return 'an unspecified address';
     if (/^fe[89ab]/.test(a)) return 'a link-local address';
     if (a.startsWith('ff')) return 'a multicast address';
@@ -241,8 +250,13 @@ export function createHttpClient({ fetch = globalThis.fetch, lookup = defaultLoo
       }
 
       if (expect === 'stream') {
-        done(); // the timeout covered the headers; the body is the caller's to read (or abort)
-        return { status, headers: res.headers, body: res.body };
+        // The timeout covered the headers; the body is the caller's to read. Stopping (the
+        // instance's signal or the request's own) must still close the socket for as long as the
+        // body lives: a stream left open holds one of the service's stream slots (CTD
+        // Multi-Stream allows 5 per token) and keeps being read. So the listeners stay until the
+        // body ends, fails or is cancelled.
+        timers.clearTimeout(timer);
+        return { status, headers: res.headers, body: res.body ? untilDone(res.body, done, () => ctrl.abort()) : (done(), null) };
       }
       try {
         if (expect === 'none') {
@@ -269,6 +283,37 @@ export function createHttpClient({ fetch = globalThis.fetch, lookup = defaultLoo
   }
 
   return { request };
+}
+
+// A stream's body that calls done() once it ends, fails or is cancelled; cancelling it (a reader
+// that stops reading) also closes the socket (abort).
+function untilDone(body, done, abort) {
+  const reader = body.getReader();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    done();
+  };
+  return new ReadableStream({
+    async pull(c) {
+      try {
+        const { value, done: end } = await reader.read();
+        if (end) {
+          finish();
+          c.close();
+        } else c.enqueue(value);
+      } catch (err) {
+        finish();
+        c.error(err);
+      }
+    },
+    async cancel(reason) {
+      finish();
+      abort();
+      await reader.cancel(reason).catch(() => {});
+    },
+  });
 }
 
 async function discard(res) {
