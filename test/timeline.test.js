@@ -709,6 +709,43 @@ test('plans follow the show\'s zone; only its members get settings; activation c
   assert.match(plan.warnings[0], /^tk: no longer one of the show's overlays/);
 });
 
+test('a plan\'s settings follow their overlay through a rename, and never go to a new one that took the old slug', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  const settings = { look: 'event', address: 'Toronto' };
+  timeline.plans.add(show.id, { date: '2026-10-18', overlaySettings: { tk: settings } });
+  assert.equal((await api('PATCH', '/overlays/tk', { slug: 'tk-old' })).status, 200);
+  assert.deepEqual(timeline.plans.list(show.id)[0].overlaySettings, { 'tk-old': settings }, 'shown by the slug it has now');
+  platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
+  platform.shows.update(show.id, { overlays: ['tk-old', 'main-h', 'tk'] });
+  clock.to(Date.UTC(2026, 9, 18, 16, 1));
+  const plan = timeline.plans.list(show.id)[0];
+  assert.ok(plan.activatedAt);
+  assert.equal(plan.warnings, undefined);
+  assert.deepEqual(platform.overlays.resolve('tk-old').doc.data.settings, settings, 'the renamed overlay got them');
+  assert.deepEqual(platform.overlays.resolve('tk').doc.data.settings, {}, 'the new "tk" did not');
+});
+
+test('a plan\'s settings for an overlay deleted since are shown by the slug it had, never by its bare id or another overlay\'s slug', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  const id = platform.overlays.resolve('tk').doc.id;
+  timeline.plans.add(show.id, { date: '2026-10-18', overlaySettings: { tk: { look: 'event' }, 'main-h': {} } });
+  assert.equal((await api('DELETE', '/overlays/tk')).status, 200);
+  assert.deepEqual(Object.keys(timeline.plans.list(show.id)[0].overlaySettings), ['tk', 'main-h'], 'the slug it had when the plan was saved');
+  assert.deepEqual(Object.keys((await api('GET', `/shows/${show.id}/plans`)).body.items[0].overlaySettings), ['tk', 'main-h']);
+  // Another overlay takes the slug: "tk" names that one now, so the deleted one is shown by its id.
+  assert.equal((await api('PATCH', '/overlays/main-h', { slug: 'tk' })).status, 200);
+  assert.deepEqual(Object.keys(timeline.plans.list(show.id)[0].overlaySettings), [id, 'tk'], 'two entries still, neither hiding the other');
+  assert.equal((await api('PATCH', '/overlays/tk', { slug: 'main-h' })).status, 200);
+  clock.to(Date.UTC(2026, 9, 18, 16, 1));
+  const plan = timeline.plans.list(show.id)[0];
+  assert.ok(plan.activatedAt);
+  assert.deepEqual(plan.warnings, ['tk: no longer one of the show\'s overlays; its settings were left alone']);
+});
+
 test('at startup only the latest plan whose day has begun is the show, by the show day\'s real end', async (t) => {
   const dataRoot = tempDir(t);
   const { platform, timeline } = await setup(t, { dataRoot, clock: fakeClock(T0) });

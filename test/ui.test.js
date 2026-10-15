@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { browserSkip, launchBrowser } from './cdp.js';
-import { DIAG, defer, memoryLogger, signedIn, tempDir } from './helpers.js';
+import { DIAG, DIAG_DIR, defer, memoryLogger, packTemplate, signedIn, tempDir } from './helpers.js';
 
 const PASSWORD = 'correct horse battery staple';
 const UI_DIR = fileURLToPath(new URL('../src/ui/', import.meta.url));
@@ -166,8 +166,8 @@ test('a template previews with sample data before any overlay uses it (08 §8.2)
   // Its files, through its build.
   const css = /\/o\/[^"']+\/t\/[0-9a-f]+\/[^"']+/.exec(page.body);
   if (css) assert.equal((await fetch(`${platform.url}${css[0].replace(/&amp;/g, '&')}`)).status, 200);
-  // No live data: there is no overlay behind it.
-  for (const p of ['snapshot', 'poll', 'stream']) assert.equal((await ui('GET', `/o/${encodeURIComponent(slug)}/${p}`)).status, 404, p);
+  // No live data: there is no overlay behind it, so these answer as for any unknown slug (03 §3.4).
+  for (const p of ['snapshot', 'poll', 'stream']) assert.equal((await ui('GET', `/o/${encodeURIComponent(slug)}/${p}`)).status, 401, p);
   // A version that isn't installed, or a slug shaped like a preview's without a template.
   assert.equal((await ui('GET', `/o/${encodeURIComponent(`~p.${DIAG.id}@9.9.9`)}`)).status, 404);
   assert.equal((await ui('GET', `/o/${encodeURIComponent('~p.nope@1.0.0')}`)).status, 404);
@@ -228,4 +228,135 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
   await page.eval('location.hash = "#/overlays"');
   await page.waitFor('location.hash.startsWith("#/login") && document.querySelector("input[name=username]")', 15000);
   assert.equal(await page.eval('document.querySelector("[data-shell]").hidden'), true);
+});
+
+// What every page keeps to, read in the page: a card in a grid sits level with its row, thumbnails
+// and previews use the shared classes (no style set from script for what styles.css covers), the
+// menus of a list are named apart, and an overlay's frame stays light in a dark admin (or
+// see-through scenes would show white instead of the checkerboard).
+const LAYOUT = `(() => {
+  const view = document.querySelector('[data-view]');
+  const cards = [...view.querySelectorAll('.grid > .card')];
+  return {
+    pushed: cards.filter((c) => getComputedStyle(c).marginTop !== '0px' || c.style.marginTop).map((c) => c.textContent.slice(0, 40)),
+    unnamed: [...view.querySelectorAll('li details.menu > summary, article details.menu > summary, fieldset details.menu > summary')].filter((s) => !s.getAttribute('aria-label')).map((s) => s.textContent),
+    styled: [...view.querySelectorAll('.thumb, .preview')].filter((el) => el.style.objectFit || el.style.display || el.style.colorScheme).length,
+    frames: [...view.querySelectorAll('.preview iframe')].map((f) => getComputedStyle(f).colorScheme),
+  };
+})()`;
+
+test('the pages use each overlay\'s own template version and the gallery\'s summaries, on the shared styles', { skip: browserSkip, timeout: 180000 }, async (t) => {
+  const platform = await start(t);
+  const ui = await owner(platform);
+  // Two versions of a template; the overlay stays on the first, whose scenes and settings differ.
+  const accent = { type: 'string', title: 'Accent', maxLength: 32, default: '#16e0ff' };
+  const sample = (version, scenes, properties) => packTemplate(DIAG_DIR, { manifest: { id: 'dev.skp.sample', name: 'Sample', version, scenes, settings: { type: 'object', properties } } });
+  platform.templates.install(sample('1.0.0', [{ id: 'program', label: 'First scene', core: 'program' }], { accent }), { actor: 'test' });
+  platform.templates.install(sample('2.0.0', [{ id: 'program', label: 'Second scene', core: 'program' }, { id: 'later', label: 'Only in two' }], { accent, extra: { type: 'string', title: 'Only in version two' } }), { actor: 'test' });
+  platform.overlays.create({ slug: 'old', template: { id: 'dev.skp.sample', version: '1.0.0' }, settings: {} });
+  // Media with a picture (an image) and a placeholder (a font); a token and a user, for their lists.
+  const { csrf } = (await ui('GET', '/auth/session')).body;
+  for (const [name, body, type] of [['logo.png', PNG, 'image/png'], ['type.woff2', Buffer.concat([Buffer.from('wOF2'), Buffer.alloc(60)]), 'font/woff2']]) {
+    const res = await fetch(`${platform.url}/api/v1/media?name=${name}`, { method: 'POST', headers: { cookie: ui.cookie, 'x-skp-csrf': csrf, 'content-type': type }, body });
+    assert.equal(res.status, 201, name);
+  }
+  assert.equal((await ui('POST', '/tokens', { name: 'obs', scopes: ['overlays:read'] })).status, 201);
+  assert.equal((await ui('POST', '/users', { username: 'op', password: PASSWORD, role: 'operator' })).status, 201);
+  assert.equal((await ui('PUT', '/auth/preferences', { theme: 'dark' })).status, 200);
+
+  const browser = await launchBrowser(t);
+  const page = await browser.open(`${platform.url}/#/login`, { width: 1280, height: 900 });
+  await page.waitFor('document.querySelector("input[name=username]")', 15000);
+  assert.equal(await page.eval(`fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'juan', password: ${JSON.stringify(PASSWORD)} }) }).then((r) => r.status)`), 200);
+  await page.goto(`${platform.url}/?signed=1#/live`);
+  const before = page.problems.length;
+  const asked = () => page.eval('performance.getEntriesByType("resource").map((e) => new URL(e.name).pathname).filter((p) => p.startsWith("/api/v1/templates/"))');
+  const click = (selector, text) => page.eval(`[...document.querySelectorAll(${JSON.stringify(selector)})].find((b) => b.textContent.trim() === ${JSON.stringify(text)}).click()`);
+  async function visit(route, ready) {
+    if (route) await page.eval(`location.hash = ${JSON.stringify(`#${route}`)}`);
+    const where = route || '/live';
+    await page.waitFor(`document.documentElement.dataset.theme === "dark" && !document.querySelector("[data-view] > .loading") && (${ready})`, 15000);
+    const layout = await page.eval(LAYOUT);
+    assert.deepEqual(layout.pushed, [], `${where}: cards in a grid sit level`);
+    assert.deepEqual(layout.unnamed, [], `${where}: the menus of a list are named apart`);
+    assert.equal(layout.styled, 0, `${where}: thumbnails and previews use the shared classes`);
+    assert.ok(layout.frames.every((s) => s === 'light'), `${where}: overlay frames stay light (${layout.frames})`);
+    return page.eval('document.querySelector("[data-view]").innerText');
+  }
+
+  // Live with no show: each overlay's controls are its own version's scenes.
+  let text = await visit(undefined, '[...document.querySelectorAll("[data-view] .pad button")].length');
+  assert.match(text, /First scene/);
+  assert.doesNotMatch(text, /Second scene|Only in two/);
+
+  // The overlay's page: its version's settings and scenes, with no word about another version's.
+  text = await visit('/overlays/old', 'document.querySelector("[data-view] h1")?.textContent === "old" && document.querySelector("[data-view] .inline-form select")');
+  assert.match(text, /Accent/);
+  assert.match(text, /Update available/);
+  assert.doesNotMatch(text, /Only in version two|newest installed/);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .inline-form select option")].map((o) => o.textContent)'), ['As on air', 'First scene']);
+  const read = await asked();
+  assert.ok(read.includes('/api/v1/templates/dev.skp.sample/versions/1.0.0'), read.join(', '));
+  assert.ok(!read.includes('/api/v1/templates/dev.skp.sample'), 'not the newest version\'s manifest');
+  // The upgrade names the new version's settings as its form does.
+  await page.eval('document.querySelector("#tab-version").click()');
+  await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "Upgrade…")');
+  await click('[data-view] button', 'Upgrade…');
+  await page.waitFor('document.querySelector("dialog[open]")?.innerText.includes("From version 1.0.0 to 2.0.0")', 10000);
+  assert.match(await page.eval('document.querySelector("dialog[open]").innerText'), /New setting "Only in version two"/);
+  await click('dialog[open] button', 'Cancel');
+
+  // The gallery: one request for every card (author, tags, canvases and pictures come with it).
+  await page.eval('performance.clearResourceTimings()');
+  text = await visit('/templates', 'document.querySelectorAll("[data-view] .grid > .card").length === 4');
+  assert.deepEqual((await asked()).filter((p) => p.split('/').length === 5 && !p.endsWith('/sources')), [], 'no request per template');
+  assert.match(text, /By CTD Overlay/);
+  assert.match(text, /16:9 · 9:16/);
+  assert.ok(await page.eval('(() => { const imgs = [...document.querySelectorAll("[data-view] img.thumb")]; return imgs.length >= 2 && imgs.every((i) => i.classList.contains("contain") && getComputedStyle(i).objectFit === "contain"); })()'), 'whole pictures, not cropped');
+  await page.eval('(() => { const q = document.querySelector("input[name=q]"); q.value = "test"; q.dispatchEvent(new Event("input")); })()');
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .grid h2")].map((x) => x.textContent).sort()'), ['Diagnostic', 'Sample'], 'a tag finds its templates');
+  await visit('/templates/dev.skp.sample', 'document.querySelector("[data-view] .preview iframe")');
+
+  // A show of it: the timeline offers, and Live takes, the pinned version's scenes.
+  assert.equal((await ui('POST', '/shows', { name: 'Night', overlays: ['old'], date: '2026-10-17', timezone: 'America/Toronto', lineup: [{ time: '21:00', name: 'Opener' }] })).status, 201);
+  await visit('/shows/Night?tab=lineup', 'document.querySelector("[data-view] fieldset details.menu")');
+  assert.equal(await page.eval('document.querySelector("[data-view] fieldset details.menu > summary").getAttribute("aria-label")'), 'More for Opener');
+  await page.eval('document.querySelector("#tab-timeline").click()');
+  await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "Add a cue")', 10000);
+  await click('[data-view] button', 'Add a cue');
+  await page.waitFor('document.querySelector("dialog[open] select")', 10000);
+  const offered = await page.eval('[...document.querySelectorAll("dialog[open] option")].map((o) => o.textContent)');
+  assert.ok(offered.includes('First scene') && !offered.includes('Second scene') && !offered.includes('Only in two'), offered.join(', '));
+  await click('dialog[open] button', 'Cancel');
+  text = await visit('/live', '[...document.querySelectorAll("[data-view] .pad button")].some((b) => b.textContent.includes("First scene"))');
+  assert.doesNotMatch(text, /Second scene|Only in two/);
+
+  // Media: a picture whole, a placeholder centred, its menus named, the drop outline a class.
+  await visit('/media', 'document.querySelector("[data-view] img.thumb") && document.querySelector("[data-view] .thumb.icon")');
+  const media = await page.eval(`(() => {
+    const view = document.querySelector('[data-view]');
+    const icon = view.querySelector('.thumb.icon');
+    return {
+      fit: getComputedStyle(view.querySelector('img.thumb')).objectFit,
+      icon: [getComputedStyle(icon).display, getComputedStyle(icon).justifyContent, icon.textContent],
+      named: [...view.querySelectorAll('details.menu > summary')].map((s) => s.getAttribute('aria-label')).sort(),
+    };
+  })()`);
+  assert.deepEqual(media, { fit: 'contain', icon: ['flex', 'center', 'Font'], named: ['More for logo.png', 'More for type.woff2'] });
+  const drop = await page.eval(`(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['x'], 'a.png', { type: 'image/png' }));
+    document.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    const view = document.querySelector('[data-view]');
+    return { on: view.classList.contains('dropping'), outline: getComputedStyle(view).outlineStyle, inline: view.style.outline };
+  })()`);
+  assert.deepEqual(drop, { on: true, outline: 'dashed', inline: '' });
+  await page.waitFor('!document.querySelector("[data-view]").classList.contains("dropping")', 3000);
+
+  // Settings' lists: each menu says whose it is.
+  await visit('/settings/users', 'document.querySelector("[data-view] li details.menu")');
+  assert.equal(await page.eval('document.querySelector("[data-view] li details.menu > summary").getAttribute("aria-label")'), 'More for op');
+  await visit('/settings/tokens', 'document.querySelector("[data-view] li details.menu")');
+  await visit('/settings/account', 'document.querySelector("[data-view] li details.menu")'); // where you're signed in
+  assert.deepEqual(page.problems.slice(before), []);
 });

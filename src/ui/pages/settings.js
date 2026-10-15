@@ -144,13 +144,11 @@ function lines(...children) {
   return el;
 }
 
-// A checkbox or radio with its words, the whole row a 44 px target.
+// A checkbox or radio with its words, the whole row a 44 px target (label.field.check), the box
+// keeping its size when the words wrap.
 function choiceRow(input, title, hint) {
-  input.style.flex = 'none'; // the box keeps its size when the words wrap
   const el = h('label.field.check', input, h('span', title, hint ? [h('br'), h('span.hint', hint)] : null));
-  el.style.minHeight = 'var(--tap)';
   el.style.marginBottom = '4px';
-  el.style.cursor = 'pointer';
   return el;
 }
 
@@ -166,12 +164,6 @@ function segmented(label, options, value, { hint } = {}) {
     for (const b of buttons) b.addEventListener('click', () => { if (b.getAttribute('aria-pressed') !== 'true') fn(b.dataset.value, b); });
   };
   return el;
-}
-
-// A menu button whose name says what it is for ("More for alex"), for screen readers.
-function named(det, label) {
-  det.querySelector('summary')?.setAttribute('aria-label', label);
-  return det;
 }
 
 const passwordField = { name: 'password', label: 'Your password', type: 'password', required: true, autocomplete: 'current-password' };
@@ -402,7 +394,7 @@ async function accountTab(panel, ctx, life) {
     if (me.totp) {
       mount(twoFactor,
         h('div.card-head', h('h2', 'Two-factor sign-in'),
-          h('div.actions', named(menu('More', [{ label: 'Turn off two-factor…', danger: true, onSelect: turnOff }]), 'More for two-factor sign-in'))),
+          h('div.actions', menu('More', [{ label: 'Turn off two-factor…', danger: true, onSelect: turnOff }], { ariaLabel: 'More for two-factor sign-in' }))),
         statusLine('ok', 'On', h('strong', 'On.'), ' Signing in asks for a code from your authenticator app.'));
       return;
     }
@@ -564,8 +556,8 @@ function sessionsCard(life) {
         s.current ? 'active now' : s.lastSeenAt ? `last seen ${ago(s.lastSeenAt)}` : null,
         s.createdAt ? `signed in ${dateTime(s.createdAt)}` : null,
       ].filter(Boolean).join(' · '))),
-    named(menu('More', [{ label: s.current ? 'Sign out here…' : 'End this session…', danger: true, onSelect: () => end(s) }]),
-      `More for ${device(s.device)}${s.current ? ' (this device)' : ''}`));
+    menu('More', [{ label: s.current ? 'Sign out here…' : 'End this session…', danger: true, onSelect: () => end(s) }],
+      { ariaLabel: `More for ${device(s.device)}${s.current ? ' (this device)' : ''}` }));
 
   async function refresh() {
     try {
@@ -662,12 +654,12 @@ async function usersTab(panel, ctx, life) {
       ? h('a.btn', { href: '#/settings/account' }, 'Your account')
       : u.role === 'owner'
         ? null
-        : named(menu('More', [
+        : menu('More', [
           { label: 'Change role…', onSelect: () => changeRole(u) },
           { label: 'Set a new password…', onSelect: () => setPassword(u) },
           u.totp ? { label: 'Turn off two-factor…', danger: true, onSelect: () => resetTwoFactor(u) } : null,
           { label: `Remove ${u.username}…`, danger: true, onSelect: () => remove(u) },
-        ]), `More for ${u.username}`);
+        ], { ariaLabel: `More for ${u.username}` });
     return h('li',
       lines(
         h('div.row', h('strong', u.username || u.id), badge(roleLabel(u.role), u.role === 'owner' ? 'accent' : undefined),
@@ -764,7 +756,7 @@ async function tokensTab(panel, ctx, life) {
           t.lastUsedAt ? `last used ${ago(t.lastUsedAt)}` : 'never used',
           Array.isArray(t.ips) && t.ips.length ? `only from ${t.ips.join(', ')}` : null,
         ].filter(Boolean).join(' · '))),
-      named(menu('More', [{ label: 'Revoke…', danger: true, onSelect: () => revoke(t) }]), `More for token ${t.name}`));
+      menu('More', [{ label: 'Revoke…', danger: true, onSelect: () => revoke(t) }], { ariaLabel: `More for token ${t.name || 'Unnamed token'}` }));
   }
 
   const newButton = h('button.btn.primary', { type: 'button' }, 'New token');

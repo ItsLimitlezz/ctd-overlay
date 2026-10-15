@@ -6,6 +6,8 @@
   "required": ["id", "name", "overlays", "date", "timezone"],
   "properties": {
     "id": { "type": "string", "pattern": "^show_" },
+    "rev": { "type": "integer", "minimum": 1, "description": "The edit revision, the show's ETag (03 §3.1): it moves when what PATCH changes does, not with live control (a scene, who's on, REC)." },
+    "stateRev": { "type": "integer", "minimum": 1, "description": "Moves with every change, live control included: for a client following the show." },
     "name": { "type": "string" },
     "overlays": { "type": "array", "items": { "type": "string", "pattern": "^ovl_" } },
     "date": { "type": "string", "format": "date" },

@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { normalizeIp } from './net.js';
 
 export class ConfigError extends Error {}
 
@@ -63,6 +64,12 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
       `The config directory (${configDir}) and the data directory (${dataDir}) must be separate, neither inside the other: ` +
       'the master key lives in the config directory, and a backup of the data directory must never contain it (07 §7.7). ' +
       'Set SKP_CONFIG_DIR or SKP_DATA_DIR so they are siblings.');
+  }
+  // On Windows a file's mode (0600) restricts nothing: the master key and the command line's
+  // token take the config directory's permissions. In the user's profile (the default) only they
+  // can read it; elsewhere often anyone can (every user may read what is made under C:\).
+  if (platform === 'win32' && ![home, env.LOCALAPPDATA].some((d) => d && isInside(configDir, p.resolve(d), p))) {
+    warnings.push(`The config directory ${configDir} is outside your user profile. On Windows the master key and the command line's token in it can be read by anyone who can read that directory: check its permissions (icacls), or use the default, %LOCALAPPDATA%\\SKP\\config.`);
   }
 
   // exposure and binding (07 §7.8): local listens on this machine only; lan on every interface,
@@ -240,6 +247,8 @@ function parsePublicUrl(picked) {
   return url.origin;
 }
 
+// Written the way net.js writes a request's address (normalizeIp), so "::ffff:172.17.0.1" or
+// "FD00:0::2" matches the peer it names.
 function parseTrustProxy(picked) {
   const v = picked.value;
   if (v === undefined || v === null || v === '') return Object.freeze([]);
@@ -247,7 +256,7 @@ function parseTrustProxy(picked) {
   for (const addr of list) {
     if (!isIP(addr)) throw new ConfigError(`${picked.source} must list IP addresses separated by commas (got "${addr}").`);
   }
-  return Object.freeze(list);
+  return Object.freeze([...new Set(list.map(normalizeIp))]);
 }
 
 // Host names (and host:port) the platform also answers to: a NAS's DNS name, say.

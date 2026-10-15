@@ -27,10 +27,16 @@ const ENTRY_BYTES = 2 * 1024 * 1024;
 // Desktop clutter, and a version-control directory (a template packed from its repository).
 const JUNK = /(^|\/)(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini)$|(^|\/)(__MACOSX|\.git|\.svn|\.hg)(\/|$)/i;
 // SemVer 2.0.0 (semver.org), without build metadata: no leading zeros.
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
+export const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
 const CATEGORY_CORES = { show: ['starting', 'program', 'brb', 'outro'] };
 const ALL_CORES = ['auto', 'starting', 'program', 'brb', 'lineup', 'outro', 'bg', 'intro'];
 const KNOWN_FIELDS = new Set(['$schema', 'standard', 'id', 'name', 'version', 'description', 'author', 'license', 'category', 'tags', 'entry', 'previews', 'engines', 'canvases', 'scenes', 'consumes', 'settings', 'actions', 'alerts', 'transitions', 'fonts', 'definitions', '$defs']);
+
+// A preview (04 §4.1) is an image in previews/, at any depth, of a type the API serves it as
+// (templates/api.js): the validator and the route ask the same question, so every preview a
+// package lists can be shown in the gallery. previewType(path) → its content type, or undefined.
+const PREVIEW_TYPES = Object.freeze({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif' });
+export const previewType = (rel) => (typeof rel === 'string' && rel.startsWith('previews/') ? PREVIEW_TYPES[path.posix.extname(rel).toLowerCase()] : undefined);
 
 // The manifest schema is the standard's own file (single source of truth; packaging ships it).
 const TEMPLATE_SCHEMA = JSON.parse(readFileSync(new URL('../../docs/standard/schemas/template.schema.json', import.meta.url), 'utf8'));
@@ -202,7 +208,9 @@ export function validatePackage(pkg) {
     else if (pkg.size(manifest.entry) > ENTRY_BYTES) error('entry-too-large', '/entry', `The entry document is over ${ENTRY_BYTES / 1024 / 1024} MiB.`);
     else lintEntry(pkg.read(manifest.entry).toString('utf8'), manifest.entry, error, warn, fontHostsOf(manifest));
   }
-  manifest.previews.forEach((p, i) => file(`/previews/${i}`, p, 'The preview'));
+  manifest.previews.forEach((p, i) => {
+    if (file(`/previews/${i}`, p, 'The preview') && !previewType(p)) error('preview-invalid', `/previews/${i}`, `The preview "${p}" must be an image (PNG, JPEG, WebP, GIF, SVG or AVIF) in previews/, so the gallery can show it.`);
+  });
 
   // IDs are unique, so shows, buttons and cues can name them.
   for (const list of ['scenes', 'actions', 'canvases', 'transitions']) {

@@ -174,20 +174,6 @@ function inUse(what, slugs, detail) {
   });
 }
 
-// Runs fn over items, at most n at a time, in order.
-async function pool(items, n, fn) {
-  const out = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
-  return out;
-}
-
 // ---- the gallery -----------------------------------------------------------------------------
 export async function list(view, ctx) {
   ctx.setTitle('Templates');
@@ -195,18 +181,8 @@ export async function list(view, ctx) {
   let alive = true;
   const state = { category: ctx.query.get('category') || '', q: ctx.query.get('q') || '', templates: [], sources: [] };
 
-  // Each template's newest manifest and previews: the list answers with a summary only.
-  async function loadTemplates() {
-    const summaries = await api.all('/api/v1/templates');
-    return pool(summaries, 6, async (s) => {
-      try {
-        const t = await api.get(apiOf(s.id));
-        return { ...s, manifest: t?.manifest || {}, previews: arr(t?.previews) };
-      } catch {
-        return { ...s, manifest: {}, previews: [] }; // still listed, without its picture
-      }
-    });
-  }
+  // The summaries carry what a card shows (author, tags, canvases, previews): one request in all.
+  const loadTemplates = () => api.all('/api/v1/templates');
   const nameOf = (id) => state.templates.find((t) => t.id === id)?.name || id;
 
   // -- filters
@@ -232,21 +208,20 @@ export async function list(view, ctx) {
       present.map((c) => h('option', { value: c ?? '', selected: c === state.category }, `${categoryLabel(c)} (${counts.get(c) || 0})`)));
   }
 
-  const haystack = (t) => [t.name, t.id, authorOf(t.manifest), categoryLabel(t.category), ...arr(t.manifest?.tags)].filter((x) => typeof x === 'string').join(' ').toLowerCase();
+  const haystack = (t) => [t.name, t.id, authorOf(t), categoryLabel(t.category), ...arr(t.tags)].filter((x) => typeof x === 'string').join(' ').toLowerCase();
 
   function card(t) {
-    const m = t.manifest || {};
-    const name = t.name || m.name || t.id;
-    const author = authorOf(m);
-    const canvases = canvasesOf(m);
+    const name = t.name || t.id;
+    const author = authorOf(t);
+    const canvases = canvasesOf(t);
     const origin = arr(t.versions)[0]?.source;
     const blank = () => h('div.thumb', { role: 'img', 'aria-label': 'No preview image' });
-    const picture = t.previews[0]
-      ? h('img.thumb', { src: t.previews[0], alt: `Preview of ${name}`, loading: 'lazy', decoding: 'async', onerror: (e) => e.currentTarget.replaceWith(blank()) })
-      : blank();
+    const first = arr(t.previews).find((p) => typeof p === 'string');
     // The whole design, whatever its shape (a 4:1 chip is not cropped to 16:9).
-    picture.style.objectFit = 'contain';
-    const el = h('article.card.stack',
+    const picture = first
+      ? h('img.thumb.contain', { src: first, alt: `Preview of ${name}`, loading: 'lazy', decoding: 'async', onerror: (e) => e.currentTarget.replaceWith(blank()) })
+      : blank();
+    return h('article.card.stack',
       picture,
       h('div',
         h('h2', h('a', { href: pageOf(t.id) }, name)),
@@ -257,8 +232,6 @@ export async function list(view, ctx) {
         t.latest ? badge(`Version ${t.latest}`) : null,
         badge(originLabel(origin), origin === 'bundled' ? 'ok' : undefined)),
       h('div.row', h('a.btn.primary', { href: pageOf(t.id) }, 'Preview and use')));
-    el.style.marginTop = '0'; // a grid cell, not a stacked card (.card + .card)
-    return el;
   }
 
   function syncUrl() {
@@ -437,7 +410,7 @@ export async function list(view, ctx) {
       canWrite ? menu('Options', [
         { label: 'Check now', onSelect: () => check(null, s) },
         { label: 'Stop following', danger: true, onSelect: () => unfollow(s) },
-      ], { buttonClass: 'btn small' }) : null);
+      ], { buttonClass: 'btn small', ariaLabel: `Options for ${title}` }) : null);
   }
 
   function renderSources() {
@@ -606,7 +579,7 @@ export async function detail(view, ctx) {
   // -- remove: one version, or every one (H20: menu, then a confirmation naming the consequence)
   async function usedBy(version) {
     try {
-      const fresh = arr(await api.get(`${apiOf(t.id)}/versions`));
+      const fresh = await api.all(`${apiOf(t.id)}/versions`);
       return [...new Set(fresh.filter((v) => version === undefined || v.version === version).flatMap((v) => arr(v.overlays)))];
     } catch {
       return [];
@@ -671,11 +644,6 @@ export async function detail(view, ctx) {
       width: c.width, height: c.height, label: `${shapeOf(c)} ${ratio(c.width, c.height)}`,
       eager: shown.length < 2 ? undefined : false, title: `${name}, ${shapeOf(c).toLowerCase()} preview with sample data`,
     });
-    // A tall canvas fits the screen's height (.preview.v caps it at 70vh) at its own shape.
-    if (c.height > c.width) box.style.maxWidth = `calc(70vh * ${c.width / c.height})`;
-    // The overlay page is light-scheme; in a dark admin a frame of another scheme is painted
-    // opaque white, hiding the checkerboard behind see-through scenes. Inherited by the frame.
-    box.style.colorScheme = 'light';
     shown.push({ box, canvas: c });
   }
   const reloadPreviews = () => {
@@ -699,15 +667,11 @@ export async function detail(view, ctx) {
     shown.length
       ? h('div.stack', h('div.inline-form', scenePick ? field('Scene', scenePick) : null, field('Dark backdrop behind see-through parts', darkPick)), h('div.grid.wide', shown.map((p) => p.box)))
       : arr(t.previews)[0]
-        ? h('img.thumb', { src: t.previews[0], alt: `Preview of ${name}` })
+        ? h('img.thumb.contain', { src: t.previews[0], alt: `Preview of ${name}` })
         : h('p.muted', 'This template has no preview.'));
 
-  // -- what it has
-  const cell = (...children) => {
-    const el = h('section.card', ...children);
-    el.style.marginTop = '0'; // a grid cell, not a stacked card (.card + .card)
-    return el;
-  };
+  // -- what it has: cards in a grid
+  const cell = (...children) => h('section.card', ...children);
 
   const scenesCard = cell(
     h('h2', 'Scenes'),
@@ -770,7 +734,7 @@ export async function detail(view, ctx) {
             h('div.small.muted', used.length
               ? ['Used by ', used.map((s, j) => [j ? ', ' : '', h('a', { href: overlayHref(s) }, s)])]
               : v.source === 'bundled' ? 'No overlay uses it. It comes with the platform.' : 'No overlay uses it.')),
-          items.length ? menu('Options', items, { buttonClass: 'btn small' }) : null);
+          items.length ? menu('Options', items, { buttonClass: 'btn small', ariaLabel: `Options for version ${v.version}` }) : null);
       }))
       : h('p.muted', 'No versions are installed.'));
 

@@ -199,8 +199,13 @@ async function loadAll(path) {
 // uploaded media, for naming cues and offering choices.
 async function loadCatalog(show, overlays, media) {
   const members = overlays.filter((o) => (show.overlays || []).includes(o.id) || (show.members || []).includes(o.slug));
-  const ids = [...new Set(members.map((o) => o.template?.id).filter(Boolean))];
-  const manifests = (await Promise.all(ids.map((id) => api.get(`/api/v1/templates/${api.seg(id)}`).then((t) => t?.manifest, () => undefined)))).filter(Boolean);
+  // Each member's template at the version it is pinned to (04 §4.10), once per version.
+  const pins = new Map();
+  for (const o of members) {
+    const { id, version } = o.template || {};
+    if (typeof id === 'string' && typeof version === 'string') pins.set(`${id}@${version}`, { id, version });
+  }
+  const manifests = (await Promise.all([...pins.values()].map((t) => api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`).then((v) => v?.manifest, () => undefined)))).filter(Boolean);
   const scenes = new Map();
   const actions = new Map();
   const text = (v, fallback) => (typeof v === 'string' && v ? v : fallback);
@@ -478,14 +483,14 @@ export async function detail(view, ctx) {
         show = await api.patch(base(), patch, { ifMatch: formShow });
       } catch (err) {
         if (err.status !== 412) throw err;
-        // Changed meanwhile (H16): re-read it. If what this form edits is as it was, the change
-        // was elsewhere (a scene, who's on): the edits stay here to save again. Otherwise the
-        // form shows the latest, to redo the change on.
+        // Edited meanwhile (H16; live control doesn't count): re-read it. If what this form edits
+        // is as it was, the edit was elsewhere (the lineup tab, another user's members): the edits
+        // stay here to save again. Otherwise the form shows the latest, to redo the change on.
         const before = detailsOf(formShow);
         await fresh(true);
         const same = detailsOf(show) === before;
         toast(same
-          ? 'The show changed since you opened it (a scene or who\'s on), but not these details. Your changes are still here: save again.'
+          ? 'The show was edited since you opened it, but not these details. Your changes are still here: save again.'
           : 'These details changed since you opened them: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
         drawDetails(panel, overlays, same ? { name: name.value, date: date.value, timezone: zone.value, dayBoundary: boundary.value, goLive: goLive.value, overlays: picker.values() } : undefined);
         return;
@@ -576,9 +581,9 @@ export async function detail(view, ctx) {
       const tools = canWrite ? h('div.row',
         h('button.btn.small', { type: 'button', disabled: i === 0, 'aria-label': `Move ${label()} up`, dataset: { key: `up-${i}` }, onclick: () => move(i, -1, 'up') }, '↑ Up'),
         h('button.btn.small', { type: 'button', disabled: i === rows.length - 1, 'aria-label': `Move ${label()} down`, dataset: { key: `down-${i}` }, onclick: () => move(i, 1, 'down') }, '↓ Down'),
-        menu([h('span.sr-only', `More for ${label()}`), h('span', { 'aria-hidden': 'true' }, 'More')], [{
+        menu('More', [{
           label: 'Remove this act', danger: true, onSelect: () => { rows.splice(i, 1); drawRows(); touched(); toast(`Removed ${label()} from the lineup. Save to keep it that way.`); },
-        }], { buttonClass: 'btn small' })) : null;
+        }], { buttonClass: 'btn small', ariaLabel: `More for ${label()}` })) : null;
       return h('fieldset',
         h('legend', `${i + 1}. ${row.name || 'New act'}`),
         h('div.grid',
@@ -630,12 +635,13 @@ export async function detail(view, ctx) {
         show = await api.patch(base(), { lineup }, { ifMatch: formShow });
       } catch (err) {
         if (err.status !== 412) throw err;
-        // Changed meanwhile (H16): if the lineup itself is as it was, the change was elsewhere
-        // (a scene, who's on), and the edits stay to save again; otherwise the latest shows.
+        // Edited meanwhile (H16; live control doesn't count): if the lineup itself is as it was,
+        // the edit was elsewhere (the details), and the edits stay to save again; otherwise the
+        // latest shows.
         await fresh(true);
         const same = JSON.stringify(lineupOf(show)) === original;
         toast(same
-          ? 'The show changed since you opened it (a scene or who\'s on), but not its lineup. Your changes are still here: save again.'
+          ? 'The show was edited since you opened it, but not its lineup. Your changes are still here: save again.'
           : 'The lineup changed since you opened it: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
         drawLineup(panel, images, same ? rows : undefined);
         return;
@@ -962,7 +968,7 @@ export async function detail(view, ctx) {
           c.clockGap ? h('div.small', `The clocks go forward at ${timeLabel(c.time)} that night: it fires at ${clock(c.at, tz())}.`) : null,
           c.clockOverlap ? h('div.small', `${timeLabel(c.time)} happens twice that night (the clocks go back): it fires at the first.`) : null,
           c.error ? h('div.small', `Note: ${c.error}`) : null),
-        items.length ? menu([h('span.sr-only', `More for ${name}`), h('span', { 'aria-hidden': 'true' }, '⋯')], items, { buttonClass: 'btn small' }) : null);
+        items.length ? menu('⋯', items, { buttonClass: 'btn small', ariaLabel: `More for ${name}` }) : null);
     }
 
     drawRecipe();
@@ -1018,7 +1024,7 @@ export async function detail(view, ctx) {
           h('div.small.muted', p.activatedAt ? `Became the show ${instantLabel(p.activatedAt, tz())}` : `Becomes the show ${instantLabel(p.activateAt, tz())}${zoneNote(tz())}`),
           p.error ? h('div.small', `Not applied: ${p.error}`) : null,
           Array.isArray(p.warnings) ? p.warnings.map((w) => h('div.small', `Note: ${w}`)) : null),
-        items.length ? menu([h('span.sr-only', `More for the plan of ${dateLabel(p.date, true)}`), h('span', { 'aria-hidden': 'true' }, '⋯')], items, { buttonClass: 'btn small' }) : null);
+        items.length ? menu('⋯', items, { buttonClass: 'btn small', ariaLabel: `More for the plan of ${dateLabel(p.date, true)}` }) : null);
     }
 
     async function addPlan() {

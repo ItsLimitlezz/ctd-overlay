@@ -733,6 +733,9 @@ export async function applyV0(map, data, { replace = false, actor = 'cli', now =
   const { templates, overlays, media, shows, timeline, store, secrets, audit } = data;
   const check = checkV0(map, { templates, overlays, shows, media }, { replace });
   if (check.refusal) throw new ImportError(check.refusal.message, check.refusal.code);
+  // The master key before anything is written: without it (the platform never started here, or
+  // gets its key from elsewhere), the import would stop half way, at its first secret.
+  if (secrets) void secrets.kid;
   if (!map.overlay.considered) fitTemplate(map, check.template.manifest);
   const warnings = [];
   const skipped = [];

@@ -20,6 +20,7 @@
 // A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
 // button work across templates: each member gets the name its own template knows.
 import { newId } from '../ids.js';
+import { ConflictError } from '../store/index.js';
 import { isDate, isTime, isTimezone, resolveTime } from './time.js';
 
 export const TRIGGER_LEAD_MS = 250;
@@ -37,6 +38,9 @@ const TRANSITION = /^[a-z][a-z0-9-]{0,39}$/;
 const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const LOGO = /^(\/media\/[A-Za-z0-9_-]+\/[^/\\?#%\s]+|https:\/\/\S+)$/;
 const SLOT_FIELDS = ['time', 'name', 'b2b', 'headliner', 'closer', 'logo'];
+// What the show resource adds to each slot (09 §9.1–9.2): taken and ignored on a write, so a
+// lineup read, edited and sent back whole goes through.
+const SLOT_RESOLVED = ['startAt', 'clockGap', 'clockOverlap'];
 const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.goLiveAt', 'show.recStartedAt'];
 
 // A template's scene by id, else by core (04 §4.2).
@@ -104,12 +108,19 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }).filter(Boolean);
   }
 
+  // A show's revision as an edit sees it (its ETag, H16): it moves when what PATCH changes does
+  // (name, members, date, zone, day boundary, go-live, lineup), not with the night's live control
+  // (a scene, who's on, REC), so an operator editing the lineup mid-show isn't refused at every
+  // act change. stateRev moves with every change, for a client that follows the show.
+  const editRev = (d) => d.editRev ?? 1;
+
   // The show as the API shows it: its record, its resolved times, and whether it is live.
   function view(doc) {
-    const d = doc.data;
+    const { editRev: _, ...d } = doc.data;
     return {
       id: doc.id,
-      rev: doc.rev,
+      rev: editRev(doc.data),
+      stateRev: doc.rev,
       ...d,
       live: isLive(d),
       goLiveAt: d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined,
@@ -186,8 +197,11 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     if (!partial || input.overlays !== undefined) {
       if (!Array.isArray(input.overlays) || input.overlays.length > 20) bad('"overlays" must be a list of at most 20 overlays (slugs or ids).');
       const ids = [];
+      const held = (id && store.get('shows', id)?.data.overlays) || [];
       for (const ref of input.overlays) {
         const r = typeof ref === 'string' ? overlays.resolve(ref) || (OVERLAY_ID.test(ref) ? overlays.resolve(store.get('overlays', ref)?.data.slug) : undefined) : undefined;
+        // One of this show's overlays deleted since, in a list read and sent back: it is left out.
+        if (!r && held.includes(ref)) continue;
         if (!r) throw new ShowError(`There is no overlay "${ref}".`, 'no-overlay', 422);
         if (ids.includes(r.doc.id)) continue;
         const other = showOf(r.doc.id);
@@ -226,8 +240,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return lineup.map((s, i) => {
       if (!s || typeof s !== 'object' || Array.isArray(s)) bad(`slot ${i + 1} must be an object.`);
       // What a slot is, and nothing else (07 §7.11: unknown fields are refused, not dropped).
-      const unknown = Object.keys(s).filter((k) => !SLOT_FIELDS.includes(k));
-      if (unknown.length) bad(`slot ${i + 1}: unknown field${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; a slot has ${SLOT_FIELDS.join(', ')}.`);
+      const unknown = Object.keys(s).filter((k) => !SLOT_FIELDS.includes(k) && !SLOT_RESOLVED.includes(k));
+      if (unknown.length) throw new ShowError(`slot ${i + 1}: unknown field${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; a slot has ${SLOT_FIELDS.join(', ')}.`, 'unknown-field');
       if (!isTime(s.time)) bad(`slot ${i + 1}: "time" must be HH:MM.`);
       const name = str(s.name, 'name', 80);
       if (!name) bad(`slot ${i + 1}: "name" is required.`);
@@ -257,7 +271,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
-    const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString() }, { ifRev: 0 });
+    const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
     publish(doc);
     arm(doc);
     log.info('show created', { show: doc.id, name: data.name, overlays: data.overlays.length });
@@ -265,10 +279,12 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return view(doc);
   }
 
+  // ifRev: the edit revision the change was made on (If-Match); a stale one is a conflict.
   function update(ref, patch, { ifRev } = {}) {
     const doc = get(ref);
+    if (ifRev !== undefined && ifRev !== editRev(doc.data)) throw new ConflictError('shows', doc.id, editRev(doc.data), ifRev);
     const data = clean(patch || {}, { partial: true, id: doc.id });
-    const next = { ...doc.data, ...data };
+    const next = { ...doc.data, ...data, editRev: editRev(doc.data) + 1 };
     if (next.goLive === null) delete next.goLive;
     // Who's on follows the act through a lineup edit (an act added above it moves its position),
     // and is cleared if the act is gone.
@@ -281,7 +297,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }
     if (Number.isInteger(next.currentSlot) && next.currentSlot >= next.lineup.length) delete next.currentSlot;
     checkPublishable(next);
-    const saved = store.put('shows', doc.id, next, { ifRev: ifRev ?? doc.rev });
+    const saved = store.put('shows', doc.id, next, { ifRev: doc.rev });
     for (const left of doc.data.overlays.filter((o) => !next.overlays.includes(o))) release(left);
     publish(saved);
     // A go-live moved into the past while "auto" is on air counts from then.

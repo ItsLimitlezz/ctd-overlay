@@ -14,7 +14,9 @@
 // Exit codes: 0 done, 1 refused or invalid, 64 usage, 69 the platform isn't running (for the
 // commands that drive it), 75 the data directory is in use, 77 wrong user (root on a data
 // directory another user owns), 78 config.
+import { X509Certificate } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { request as httpsRequest } from 'node:https';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { openData, StartupError } from './app.js';
@@ -23,7 +25,8 @@ import { readLocalToken } from './auth/index.js';
 import { ConfigError, loadConfig } from './config.js';
 import { applyV0, checkV0, fitTemplate, ImportError, importJson, importSummary, mapV0, readV0 } from './import/v0.js';
 import { createLogger } from './log.js';
-import { MediaError, mediaUrl } from './media/library.js';
+import { MediaError, mediaUrl, mediaUsers } from './media/library.js';
+import { isLoopback } from './net.js';
 import { OverlayError, SLUG } from './overlays/registry.js';
 import { rotateMasterKey, SecretsError } from './secrets.js';
 import { ShowError } from './shows/registry.js';
@@ -59,7 +62,8 @@ export const USAGE = `Usage: skp <command> [options]
   media add <file> [--name <name>]        upload a clip, image, sound or font (phone video is
                                           converted for OBS when ffmpeg is available)
   media list                              uploaded files and their URLs
-  media remove <id>                       delete one (refused while an overlay uses it)
+  media remove <id>                       delete one (refused while an overlay, a show's lineup,
+                                          a cue or a plan uses it)
   import v0 <v0-data-dir>                 v0's setup as a show here (the platform must be stopped):
         [--name <show>] [--slug <slug>]   its lineup, a TAKEOVER overlay with v0's settings and
         [--timezone <zone>]               Line clip, its cues and planned dates; its Twitch and
@@ -161,7 +165,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     return Object.assign(data, { record: (details) => data.audit.record({ action: purpose.replace(/ /g, '.'), actor: cliActor(), ...details }) });
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
-  const platform = (method, apiPath, body) => callPlatform(config(), method, apiPath, body, fetchHook || globalThis.fetch);
+  const platform = (method, apiPath, body) => callPlatform(config(), method, apiPath, body, fetchHook);
   // A whole list, page by page (03 §3.1: { items, next }).
   const everything = async (apiPath) => {
     const items = [];
@@ -423,7 +427,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
           const r = rotateMasterKey(cfg, data.store, { log: logger() });
           data.record({ from: r.from, to: r.to, reencrypted: r.reencrypted });
           if (opts.json) json(r);
-          else out(`a new master key (${r.to}); ${r.reencrypted} secret${r.reencrypted === 1 ? '' : 's'} re-encrypted. The old key is in ${r.retired}: delete it once no backup needs it.`);
+          else out(`a new master key (${r.to}${r.resumed ? ', made by a rotation that had stopped part way, now finished' : ''}); ${r.reencrypted} secret${r.reencrypted === 1 ? '' : 's'} re-encrypted. The old key is in ${r.retired}: delete it once no backup needs it.`);
         } finally {
           data.close();
         }
@@ -482,7 +486,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('media remove takes <id>');
         const data = openFor('media remove');
         try {
-          const doc = data.media.remove(rest[0], { usedBy: (d) => data.overlays.mediaUsers(d.data.fileId) });
+          const doc = data.media.remove(rest[0], { usedBy: mediaUsers(data) });
           data.record({ media: doc.id, name: doc.data.name });
           if (opts.json) json({ removed: doc.id });
           else out(`removed ${doc.id} (${doc.data.name})`);
@@ -863,22 +867,33 @@ function platformBase(cfg) {
   return `${cfg.tlsCert ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${cfg.port}`;
 }
 
-// One request to the running platform's local API (http://<host>:<port>/api/v1…, the same
-// configuration the platform reads): its JSON answer, or a PlatformError with the platform's
-// reason.
+// One request to the running platform's local API (/api/v1…, found with the same configuration
+// the platform reads): its JSON answer, or a PlatformError with the platform's reason. It goes to
+// a loopback address, the only kind the local token is accepted from, and one of the platform's
+// own names (its Host check): 127.0.0.1 (or ::1) when the platform listens on every interface
+// (lan and public modes), else the address it listens on. With the platform's own certificate
+// (SKP_TLS_CERT) over HTTPS, trusting that certificate only: it names the public host, not
+// 127.0.0.1. fetchFn: a test hook in place of fetch.
 async function callPlatform(cfg, method, apiPath, body, fetchFn) {
-  const base = `http://${cfg.host.includes(':') ? `[${cfg.host}]` : cfg.host}:${cfg.port}`;
+  const host = cfg.host === '0.0.0.0' ? '127.0.0.1' : cfg.host === '::' ? '::1' : cfg.host;
+  if (host !== 'localhost' && !isLoopback(host)) {
+    throw new PlatformError(`The platform listens on ${cfg.host} only (SKP_HOST), and the command line reaches it from this machine, at a loopback address: set SKP_HOST=0.0.0.0 (or ::) so it listens there too, and restart it.`, 'not-loopback', 78);
+  }
+  const base = `${cfg.tlsCert ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${cfg.port}`;
+  const send = fetchFn || (cfg.tlsCert ? pinnedFetch(cfg.tlsCert) : globalThis.fetch);
   const token = readLocalToken(cfg.configDir);
   let res;
   try {
-    res = await fetchFn(`${base}/api/v1${apiPath}`, {
+    res = await send(`${base}/api/v1${apiPath}`, {
       method,
       headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.name}). Start it first (npm start): this command drives it.`, 'not-running', 69);
+    // The platform reads its certificate once, at startup: renewed on disk since, the two differ.
+    if (err.tls) throw new PlatformError(`${base} didn't answer with the platform's certificate, SKP_TLS_CERT (${err.code || err.message}), so the local token wasn't sent. Is the platform running with this configuration? If its certificate was renewed, restart the platform: it reads the certificate only when it starts.`, 'certificate', 69);
+    throw new PlatformError(`The platform isn't running at ${base} (${err.cause?.code || err.code || err.name}). Start it first (npm start): this command drives it.`, 'not-running', 69);
   }
   const value = await res.json().catch(() => null);
   if (!res.ok) {
@@ -887,6 +902,41 @@ async function callPlatform(cfg, method, apiPath, body, fetchFn) {
     throw new PlatformError(value?.detail || `The platform answered ${res.status}.`, code);
   }
   return value;
+}
+
+// A fetch for the platform's own HTTPS: only the certificate in certFile (its first, for a full
+// chain) is accepted, whatever names it carries, and it is checked in the handshake, before the
+// request (and its token) is sent. A connection that fails after it was made, in the handshake,
+// rejects with err.tls. A certificate that can't be read or isn't one is a configuration problem,
+// said as one (exit 78).
+function pinnedFetch(certFile) {
+  let pem;
+  let pinned;
+  try {
+    pem = readFileSync(certFile);
+    pinned = new X509Certificate(pem).fingerprint256;
+  } catch (err) {
+    const why = err.code === 'ENOENT' ? 'no such file' : err.syscall ? err.code : 'not a PEM certificate';
+    throw new PlatformError(`Can't read the platform's certificate, SKP_TLS_CERT ${certFile} (${why}): the command line trusts that certificate only. Check the file, and that this user can read it.`, 'certificate', 78);
+  }
+  return (url, { method, headers, body, signal }) => new Promise((resolve, reject) => {
+    let connected = false;
+    const req = httpsRequest(url, {
+      method, headers, signal, agent: false, ca: pem, allowPartialTrustChain: true,
+      checkServerIdentity: (_name, cert) => (cert.fingerprint256 === pinned ? undefined : Object.assign(new Error('another certificate'), { code: 'OTHER_CERTIFICATE' })),
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('error', reject);
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: async () => JSON.parse(text) });
+      });
+    });
+    req.on('socket', (socket) => socket.once('connect', () => { connected = true; }));
+    req.on('error', (err) => reject(connected && !req.socket?.authorized ? Object.assign(err, { tls: true }) : err));
+    req.end(body);
+  });
 }
 
 // A password typed at the terminal without echo (twice, for a new one), or the first line of

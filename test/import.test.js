@@ -14,6 +14,7 @@ import { run } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
 import { decodeCfg, ImportError, mapV0, matchHeadliner, PENDING_CONNECTIONS, readV0, upgradeSetup } from '../src/import/v0.js';
 import { mediaUrl } from '../src/media/library.js';
+import { loadMasterKey } from '../src/secrets.js';
 import { resolveTime } from '../src/shows/time.js';
 import { auditOf, DIAG, memoryLogger, tempDir } from './helpers.js';
 
@@ -44,10 +45,16 @@ async function cli(args, env = {}, { now = NOW, ffmpeg } = {}) {
   return { code, stdout, stderr };
 }
 
-function dirs(t) {
+// key: the master key the platform makes on its first start (a command line never makes one).
+function dirs(t, { key = true } = {}) {
   const root = tempDir(t);
   const env = { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') };
-  return { root, env, config: loadConfig({ argv: [], env }) };
+  const config = loadConfig({ argv: [], env });
+  if (key) {
+    mkdirSync(config.configDir, { recursive: true });
+    loadMasterKey(config);
+  }
+  return { root, env, config };
 }
 
 // The data directory, opened on the test's clock, closed when fn is done.
@@ -220,7 +227,7 @@ test('a directory with nothing to import is refused, as is one that isn\'t there
 // ---- the command -------------------------------------------------------------------------------
 
 test('skp import v0 --dry-run says what it would do and changes nothing, not even making the data directory', async (t) => {
-  const { env } = dirs(t);
+  const { env } = dirs(t, { key: false });
   const res = await cli([...IMPORT, '--dry-run'], env);
   assert.equal(res.code, 0, res.stderr);
   assert.match(res.stdout, /^A dry run: importing v0's data from .*full \(the setup from kit\.json\) would do this\./);
@@ -462,6 +469,16 @@ test('key rotate re-encrypts the kept credentials; the platform\'s lock keeps th
     const locked = await cli([...IMPORT, '--replace'], env);
     assert.equal(locked.code, 75);
     assert.match(locked.stderr, /already uses the data directory/);
+  });
+});
+
+test('with no master key yet (the platform never started here) the import is refused before anything is written', async (t) => {
+  const { env, config } = dirs(t, { key: false });
+  const res = await cli(IMPORT, env);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /There is no master key in .*the platform makes one in the config directory only when it starts/s);
+  await inspect(config, (data) => {
+    assert.deepEqual([data.shows.list().length, data.overlays.list().length, data.media.list().length], [0, 0, 0], 'nothing half made');
   });
 });
 

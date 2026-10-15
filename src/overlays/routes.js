@@ -44,7 +44,7 @@ const LOG_LEVELS = new Set(['info', 'warn', 'error']);
 const LOG_SHAPE = 'Send JSON: { "entries": [{ "level": "warn", "msg": "…" }] }';
 
 const OVERLAY_HEADERS = {
-  'access-control-allow-origin': '*', // lets the sandboxed admin preview fetch (04 §4.8)
+  'access-control-allow-origin': '*', // the page is sandboxed, in OBS and the admin preview alike (04 §4.8)
   'referrer-policy': 'no-referrer',
   'cache-control': 'no-store',
 };
@@ -80,15 +80,13 @@ export function overlayRoutes({ overlays, templates, guard, log, heartbeatMs = H
   const capped = new Set(); // clients we've told to poll, so the log says it once
 
   // The overlay a request names, if it carries the overlay's key (07 §7.6), or undefined once a
-  // problem has been sent. A wrong key and an unknown slug answer alike, so a guess learns nothing.
+  // problem has been sent. A missing or wrong key and an unknown slug answer alike, the same status
+  // and words, so these routes never tell someone without the key which slugs exist. (Slugs aren't
+  // secret, 07 §7.6, and the keyless template files answer for them; these routes add nothing.)
   const find = (res, slug, url) => {
     const found = overlays.resolve(slug);
-    if (found && !overlays.admits(found.doc, url?.searchParams.get('key') ?? undefined)) {
-      sendProblem(res, 401, 'Overlay key needed', `This overlay's URL needs its key (?key=…). Copy the URL again (skp overlay url ${slug}, or the admin UI) into the OBS browser source.`, { headers: OVERLAY_HEADERS, type: 'https://skp.dev/errors/overlay-key' });
-      return undefined;
-    }
-    if (!found) {
-      sendProblem(res, 404, 'No such overlay', `No overlay has the slug "${slug}". Check the URL in the OBS browser source.`, { headers: OVERLAY_HEADERS });
+    if (!found || !overlays.admits(found.doc, url?.searchParams.get('key') ?? undefined)) {
+      sendProblem(res, 401, 'Overlay key needed', `No overlay here has this slug and key: an overlay's URL carries its key (?key=…). Copy the URL again (skp overlay url ${slug}, or the admin UI) into the OBS browser source.`, { headers: OVERLAY_HEADERS, type: 'https://skp.dev/errors/overlay-key' });
       return undefined;
     }
     if (!found.template) {
@@ -163,12 +161,15 @@ export function overlayRoutes({ overlays, templates, guard, log, heartbeatMs = H
     const backlog = o.channel.since(cursor);
     if (backlog.gone) return gone(res);
 
-    const client = `${req.socket.remoteAddress}|${req.headers['user-agent'] || ''}`;
+    // The browser's own address: behind a trusted proxy, the one it forwarded (server.js), or every
+    // browser out there would share the proxy's four streams.
+    const address = req.client?.ip ?? req.socket.remoteAddress;
+    const client = `${address}|${req.headers['user-agent'] || ''}`;
     const open = streamsByClient.get(client) || 0;
     if (open >= maxStreamsPerClient) {
       if (!capped.has(client)) {
         capped.add(client);
-        log.info('a browser reached the live-stream limit; its further overlays poll instead', { address: req.socket.remoteAddress, streams: open });
+        log.info('a browser reached the live-stream limit; its further overlays poll instead', { address, streams: open });
       }
       return sendProblem(res, 429, 'Use polling',
         `This browser already holds ${open} live streams to this server. Over plain HTTP a browser keeps at most six connections per host, so further overlays poll instead (01 §1.5).`,
@@ -250,7 +251,7 @@ export function overlayRoutes({ overlays, templates, guard, log, heartbeatMs = H
 
   // SK.log's POST is CORS-simple (a string body, no preflight), so it is delivered from any page
   // whatever the answer says. The answers still carry Access-Control-Allow-Origin, beyond the GETs
-  // of 07 §7.10: without it the sandboxed preview logs a CORS error to its console on every flush.
+  // of 07 §7.10: without it the sandboxed page logs a CORS error to its console on every flush.
   // Allowing it exposes nothing: the answer is a bare 204, or a problem about the request itself.
   const templateLog = log.child('template');
   const buckets = new Map(); // slug → { tokens, at, template, dropped, reportedAt, timer }
@@ -413,11 +414,12 @@ export const BOOT_BADGE =
 // script, so SK exists before any template script runs (04 §4.4–4.5). The boot badge goes first in
 // <body>. Only real tags count: not text in comments, attribute values or a script's code.
 //
-// The SDK and the entry's own external scripts load with `crossorigin`. The admin preview frames
-// the page in <iframe sandbox="allow-scripts">, an opaque origin, so there every script is a
-// cross-origin load, and without CORS its errors reach window.onerror only as "Script error." and
-// its rejections never fire unhandledrejection (04 §4.8). Every /sdk/ and /o/<slug>/t/ response,
-// errors included, allows any origin. In OBS the page is same-origin and nothing changes.
+// The SDK and the entry's own external scripts load with `crossorigin`. The page is served with
+// CSP `sandbox allow-scripts` (overlayCsp), an opaque origin, in OBS and in the admin preview's
+// sandboxed iframe alike, so every script is a cross-origin load: without CORS the SDK wouldn't
+// load at all, and a script's errors would reach window.onerror only as "Script error." and its
+// rejections never fire unhandledrejection (04 §4.8). So every /sdk/ and /o/<slug>/t/ response,
+// errors included, allows any origin.
 export function injectRuntime(entry, slug, build, meta, sdkVersion = '') {
   return injectPrepared(prepareEntry(entry), slug, build, meta, sdkVersion);
 }

@@ -79,6 +79,20 @@ function catalog(manifests) {
   };
 }
 
+// Each overlay's template manifest, from the version it is pinned to (04 §4.10): its scenes and
+// actions, which may not be the newest version's. One request per template version.
+const pinnedKey = (o) => (typeof o?.template?.id === 'string' && typeof o.template.version === 'string' ? `${o.template.id}@${o.template.version}` : undefined);
+async function pinnedManifests(overlays, read = (p) => p) {
+  const pins = new Map();
+  for (const o of overlays) {
+    const key = pinnedKey(o);
+    if (key && !pins.has(key)) pins.set(key, o.template);
+  }
+  const found = await Promise.all([...pins.values()].map((t) => read(api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`))));
+  const manifests = new Map([...pins.keys()].map((key, i) => [key, found[i]?.manifest]));
+  return (o) => manifests.get(pinnedKey(o));
+}
+
 // The show's members: each overlay, its template's manifest and its URLs (one per canvas).
 // complete is false when something couldn't be read for a reason that may pass (offline, busy).
 async function loadMembers(slugs, { urls }) {
@@ -91,12 +105,10 @@ async function loadMembers(slugs, { urls }) {
     Promise.all(slugs.map((slug) => quiet(api.get(`/api/v1/overlays/${api.seg(slug)}`)))),
     Promise.all(slugs.map((slug) => (urls ? quiet(api.get(`/api/v1/overlays/${api.seg(slug)}/url`)) : undefined))),
   ]);
-  const ids = [...new Set(overlays.map((o) => o?.template?.id).filter((id) => typeof id === 'string'))];
-  const templates = await Promise.all(ids.map((id) => quiet(api.get(`/api/v1/templates/${api.seg(id)}`))));
-  const manifests = new Map(ids.map((id, i) => [id, templates[i]?.manifest]));
+  const manifestOf = await pinnedManifests(overlays, quiet);
   return {
     complete,
-    members: slugs.map((slug, i) => ({ slug, overlay: overlays[i], manifest: manifests.get(overlays[i]?.template?.id), urls: list(links[i]?.urls) })),
+    members: slugs.map((slug, i) => ({ slug, overlay: overlays[i], manifest: manifestOf(overlays[i]), urls: list(links[i]?.urls) })),
   };
 }
 
@@ -619,10 +631,11 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     returnNote.hidden = !returning;
     if (returning) set(returnNote, `Back to ${cat.sceneLabel(ret.then)} in ${until(back - now)}`);
   }
-  // A show as the API answered it (a poll, or a command's answer); an older revision is ignored.
+  // A show as the API answered it (a poll, or a command's answer); an older one is ignored. stateRev
+  // moves with every change, live control included (rev, the ETag, only with edits).
   function applyShow(next) {
     if (!next || typeof next !== 'object' || next.id !== show.id) return false;
-    if (Number.isInteger(next.rev) && Number.isInteger(show.rev) && next.rev < show.rev) return false;
+    if (Number.isInteger(next.stateRev) && Number.isInteger(show.stateRev) && next.stateRev < show.stateRev) return false;
     show = next;
     set(titleEl, show.name || 'Show');
     const option = select && [...select.options].find((o) => o.value === show.id);
@@ -757,9 +770,7 @@ async function standalone(view, ctx) {
     if (err.status === 401) return undefined;
     problem = err;
   }
-  const ids = [...new Set(overlays.map((o) => o.template?.id).filter((id) => typeof id === 'string'))];
-  const found = await Promise.all(ids.map((id) => api.get(`/api/v1/templates/${api.seg(id)}`).catch(() => undefined)));
-  const manifests = new Map(ids.map((id, i) => [id, found[i]?.manifest]));
+  const manifestOf = await pinnedManifests(overlays, (p) => p.catch(() => undefined));
   mount(view,
     pageHead('Live'),
     h('div.stack',
@@ -770,7 +781,7 @@ async function standalone(view, ctx) {
       h('section',
         h('h2', 'Overlays outside a show'),
         problem ? notice(problem.message, 'danger')
-          : overlays.length ? h('div.grid.wide', overlays.map((o) => h('div', overlayControls(o, manifests.get(o.template?.id), canControl))))
+          : overlays.length ? h('div.grid.wide', overlays.map((o) => overlayControls(o, manifestOf(o), canControl)))
             : h('p.muted', 'No overlays yet. Make one from a template in Templates.'))));
   return undefined;
 }

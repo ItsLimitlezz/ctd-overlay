@@ -1,5 +1,5 @@
 // Uploaded media (03 §3.4, 07 §7.11, H12): clips, images, sounds and fonts that settings,
-// lineups and media.play point to, served at /media/<fileId>/<name>.
+// lineups and media.play point to (mediaUsers), served at /media/<fileId>/<name>.
 //
 //   <dataDir>/media/<fileId>/<name>   the file, never changed again (its URL is immutable, H14)
 //   store collection "media"          one record per file (id med_…)
@@ -36,6 +36,12 @@ export class MediaError extends Error {
   }
 }
 
+// A size in plain words: "600 MiB", "64 KiB", "1000 bytes".
+const inWords = (bytes) => (bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MiB` : bytes >= 1024 ? `${+(bytes / 1024).toFixed(1)} KiB` : `${bytes} bytes`);
+
+// The refusal of an upload over the cap (fileBytes), whether it says its size or only shows it.
+export const tooLarge = (fileBytes) => new MediaError(`The file is larger than ${inWords(fileBytes)}, the most an upload can be.`, 'too-large');
+
 // A file name that is safe in a URL path segment and on every OS: letters, digits, ".", "_" and
 // "-", not starting with a dot; its extension is the one its content has.
 export function mediaName(original, ext) {
@@ -47,6 +53,44 @@ export function mediaName(original, ext) {
 }
 
 export const mediaUrl = (doc) => `/media/${doc.data.fileId}/${doc.data.name}`;
+
+// What points to media, for remove()'s usedBy and the API's (03 §3.4): the overlays whose
+// settings use a file (by slug; the version kept for revert too), show lineups (an act's logo),
+// cues that will still play it, and plans still to come (the lineup and the overlay settings they
+// will apply). Removing a file any of them use would put a broken logo or a failing clip on air.
+// shows and timeline are optional: without them, only overlays are asked. Everything is read once
+// here, so a whole list is matched in one pass: mediaUsers(data)(doc) → names, in plain words.
+// now: the timeline's clock.
+export function mediaUsers({ overlays, shows, timeline, now = Date.now }) {
+  const others = []; // { name, text } (the URLs it holds) or { name, plays } (the media ids it plays)
+  const at = now();
+  for (const show of shows?.list() || []) {
+    others.push({ name: `lineup of show ${show.name}`, text: JSON.stringify(show.lineup) });
+    if (!timeline) continue;
+    for (const cue of timeline.list(show.id)) {
+      // A cue at a time of the show is armed again on another night, whatever it did on this one.
+      // A sequence that has fired still plays the steps it hasn't done (skipping it marks them all
+      // done): up to an hour on, and after a restart up to the timeline's grace late; a step later
+      // than that is marked missed, not played.
+      const plays = cue.status === 'armed' || cue.time ? played(cue.action)
+        : cue.status === 'fired' && cue.action.type === 'sequence'
+          ? cue.action.steps.slice(cue.stepsDone ?? 0).filter((s) => Date.parse(cue.firedAt) + s.offsetMs + (timeline.graceMs ?? 0) > at).flatMap((s) => played(s.action))
+          : [];
+      if (plays.length) others.push({ name: `cue at ${cue.time || cue.at} in show ${show.name}`, plays });
+    }
+    for (const plan of timeline.plans.list(show.id)) {
+      if (!plan.activatedAt) others.push({ name: `plan for ${plan.date} of show ${show.name}`, text: JSON.stringify([plan.lineup, plan.overlaySettings]) });
+    }
+  }
+  return (doc) => {
+    const needle = `/media/${doc.data.fileId}/`;
+    const named = others.filter((o) => (o.plays ? o.plays.includes(doc.id) : o.text.includes(needle))).map((o) => o.name);
+    return [...overlays.mediaUsers(doc.data.fileId), ...new Set(named)]; // two cues at one time: named once
+  };
+}
+
+// The media ids a cue's action plays: its own, or its sequence's steps'.
+const played = (action) => (action.type === 'media.play' ? [action.mediaId] : action.type === 'sequence' ? action.steps.flatMap((s) => played(s.action)) : []);
 
 // fsync, so a record never says ready for bytes still in the OS's cache (10 §10.6).
 function syncFile(file) {
@@ -70,7 +114,7 @@ function syncDir(dir) {
 
 // lowerPriority: false runs ffmpeg at normal priority (tests only).
 export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', limits = {}, readOnly = false, lowerPriority = true }) {
-  const max = { ...MEDIA_LIMITS, ...limits };
+  const max = Object.freeze({ ...MEDIA_LIMITS, ...limits });
   const root = path.join(dataDir, 'media');
   const command = ffmpegCommand(ffmpeg);
   const byFileId = new Map(); // fileId → record
@@ -151,14 +195,16 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
   }
 
   // Copies the upload to a staging file, refusing more than the cap: a path, a Buffer or a
-  // readable stream (an HTTP request body, later). Returns its path and size.
+  // readable stream. A stream is destroyed when anything fails, so an HTTP request is handed in
+  // through a stream of the caller's own (api.js): destroyed, the request would take its
+  // connection with it, before the answer. Returns its path and size.
   async function stage(input) {
     const staging = path.join(root, `.incoming-${randomBytes(8).toString('hex')}`);
     let size = 0;
     const cap = new Transform({
       transform(chunk, _enc, done) {
         size += chunk.length;
-        if (size > max.fileBytes) done(new MediaError(`The file is larger than ${Math.round(max.fileBytes / 1024 / 1024)} MiB.`, 'too-large'));
+        if (size > max.fileBytes) done(tooLarge(max.fileBytes));
         else done(null, chunk);
       },
     });
@@ -239,7 +285,7 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
     const size = existsSync(output) ? statSync(output).size : 0;
     if (size === 0) throw new FfmpegError('ffmpeg finished without writing a file.', 'failed');
     // ffmpeg stops at the cap (-fs) and calls that success: a cut-off file is no conversion.
-    if (size > max.fileBytes) throw new FfmpegError(`the converted file would be larger than ${Math.round(max.fileBytes / 1024 / 1024)} MiB`, 'too-large');
+    if (size > max.fileBytes) throw new FfmpegError(`the converted file would be larger than ${inWords(max.fileBytes)}`, 'too-large');
     syncFile(output);
     return { output };
   }
@@ -384,6 +430,8 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
 
   return {
     add,
+    // The limits in force (MEDIA_LIMITS, with the ones given): fileBytes is the upload cap.
+    limits: max,
     get: (id) => store.get('media', id),
     // Newest first.
     list: () => [...all()].sort((a, b) => (a.data.createdAt < b.data.createdAt ? 1 : a.data.createdAt > b.data.createdAt ? -1 : 0)),

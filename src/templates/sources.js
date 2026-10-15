@@ -89,8 +89,10 @@ export function describeSource(source) {
 export { isPrivateAddress };
 
 // A host a download may go to: its addresses, looked up, are all public, unless the owner allowed
-// private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). The lookup and the request resolve separately, so a
-// DNS-rebinding host could still slip between them; the check stops everything else.
+// private ones (SKP_ALLOW_PRIVATE_DOWNLOADS). This refuses early, with a clear message. The default
+// fetch (net.js pinnedFetch) checks again in the lookup it connects with, so a DNS-rebinding host
+// can't answer this check with a public address and the connection with a private one; a fetch
+// passed in (a test hook) has only this check.
 async function checkHost(hostname, net) {
   if (!net || net.allowPrivate) return;
   const host = hostname.replace(/^\[|\]$/g, '');

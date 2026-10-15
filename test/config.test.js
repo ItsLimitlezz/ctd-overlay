@@ -106,6 +106,17 @@ test('bad values stop startup with a message that names the setting', (t) => {
   for (const [env, re] of cases) assert.throws(() => load({ env: { ...base, ...env } }), re, JSON.stringify(env));
 });
 
+test('Windows: a config directory outside the user\'s profile is warned about (file modes don\'t protect the master key there)', () => {
+  const win = (env) => loadConfig({ argv: [], env, platform: 'win32', home: 'C:\\Users\\j' });
+  const outside = win({ SKP_CONFIG_DIR: 'C:\\SKP\\config', SKP_DATA_DIR: 'C:\\SKP\\data' });
+  assert.equal(outside.warnings.length, 1);
+  assert.match(outside.warnings[0], /C:\\SKP\\config is outside your user profile.*master key.*icacls/);
+  assert.deepEqual(win({ LOCALAPPDATA: 'C:\\Users\\j\\AppData\\Local' }).warnings, [], 'the default, in %LOCALAPPDATA%');
+  assert.deepEqual(win({ SKP_CONFIG_DIR: 'c:\\users\\J\\skp\\config', SKP_DATA_DIR: 'D:\\skp\\data' }).warnings, [], 'anywhere in the profile');
+  assert.deepEqual(win({ LOCALAPPDATA: 'E:\\Local', SKP_CONFIG_DIR: 'E:\\Local\\SKP\\config', SKP_DATA_DIR: 'E:\\Local\\SKP\\data' }).warnings, [], 'a %LOCALAPPDATA% moved elsewhere');
+  assert.deepEqual(loadConfig({ argv: [], env: { SKP_CONFIG_DIR: '/etc/skp', SKP_DATA_DIR: '/var/lib/skp' }, platform: 'linux', home: '/home/j' }).warnings, [], 'POSIX: the 0600 mode applies');
+});
+
 test('the master key is accepted from the environment only, and never printed', (t) => {
   const { configDir, dataDir } = dirs(t);
   const key = Buffer.alloc(32, 7).toString('base64');
@@ -135,7 +146,8 @@ test('time zone: IANA names are accepted; a POSIX TZ from the OS only warns', (t
   const base = { SKP_CONFIG_DIR: configDir, SKP_DATA_DIR: dataDir };
   assert.equal(load({ env: { ...base, TZ: 'America/Toronto' } }).timezone, 'America/Toronto');
   const posix = load({ env: { ...base, TZ: ':/etc/localtime' } });
-  assert.equal(posix.warnings.length, 1);
-  assert.match(posix.warnings[0], /isn't an IANA time zone name/);
+  const tz = posix.warnings.filter((w) => /TZ=/.test(w));
+  assert.equal(tz.length, 1);
+  assert.match(tz[0], /isn't an IANA time zone name/);
   assert.throws(() => load({ env: base, argv: ['--timezone', 'Mars/Olympus'] }), /--timezone must be an IANA time zone name/);
 });

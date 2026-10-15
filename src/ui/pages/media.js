@@ -161,17 +161,13 @@ function droppedFiles(dt) {
 }
 
 // ---- pieces of a card ----------------------------------------------------------------------
-function placeholder(text, kind = 'accent') {
-  const box = h('div.thumb', badge(text, kind));
-  // Centred badge in the thumbnail's 16:9 box (CSSOM: no style attributes under the CSP).
-  Object.assign(box.style, { display: 'flex', alignItems: 'center', justifyContent: 'center' });
-  return box;
-}
+// A badge centred in the thumbnail's 16:9 box.
+const placeholder = (text, kind = 'accent') => h('div.thumb.icon', badge(text, kind));
 
 function thumbOf(item, ready) {
   if (item.kind === 'image' && ready && item.url) {
-    const img = h('img.thumb', { src: item.url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
-    img.style.objectFit = 'contain'; // a logo whole, not cropped
+    // A logo whole, not cropped.
+    const img = h('img.thumb.contain', { src: item.url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
     img.addEventListener('error', () => img.replaceWith(placeholder('No preview')), { once: true });
     return img;
   }
@@ -306,11 +302,10 @@ export async function list(view, ctx) {
       ready && item.url ? { label: 'Open in a new tab', onSelect: () => window.open(item.url, '_blank', 'noopener') } : null,
       canWrite ? { label: 'Delete…', danger: true, onSelect: () => remove(item, more) } : null,
     ].filter(Boolean);
-    const more = actions.length ? menu('⋯', actions, { buttonClass: 'btn ghost' }) : null;
-    more?.querySelector('summary')?.setAttribute('aria-label', `More for ${name}`);
+    const more = actions.length ? menu('⋯', actions, { buttonClass: 'btn ghost', ariaLabel: `More for ${name}` }) : null;
     const original = item.converted && item.original?.name && item.original.name !== name ? item.original.name : undefined;
     const when = Number.isFinite(Date.parse(item.createdAt)) ? item.createdAt : undefined;
-    const el = h('article.card.stack',
+    return h('article.card.stack',
       thumbOf(item, ready),
       h('div.card-head', h('h3.truncate', { title: name }, name), more ? h('div.actions', more) : null),
       h('div',
@@ -324,9 +319,6 @@ export async function list(view, ctx) {
       item.status === 'failed' ? h('div.notice.danger', item.error || 'This upload didn\'t finish. Delete it and upload the file again.') : null,
       item.note ? h('div.notice.warn', plainNote(item.note)) : null,
       ready && item.url ? h('div.row', h('button.btn', { type: 'button', 'aria-label': `Copy URL of ${name}`, onclick: () => copyUrl(item.url, name) }, 'Copy URL')) : null);
-    // .card + .card adds a top margin, which in a grid pushes every card but the first down.
-    el.style.marginTop = '0';
-    return el;
   };
 
   function renderList() {
@@ -397,10 +389,7 @@ export async function list(view, ctx) {
   // link) is not an upload.
   let dragTimer;
   let fromPage = false;
-  const setDropping = (on) => {
-    view.style.outline = on ? '3px dashed var(--accent)' : '';
-    view.style.outlineOffset = on ? '-3px' : '';
-  };
+  const setDropping = (on) => view.classList.toggle('dropping', on); // .main.dropping
   const hasFiles = (e) => !fromPage && Array.from(e.dataTransfer?.types || []).includes('Files');
   const onDragOver = (e) => {
     if (!hasFiles(e)) return;
@@ -427,10 +416,8 @@ export async function list(view, ctx) {
   ] : [];
   for (const [type, fn] of drag) document.addEventListener(type, fn);
 
-  const root = h('div.stack', uploadPart, filesPart);
-  // A long file name breaks rather than pushing the page sideways on a phone.
-  root.style.overflowWrap = 'break-word';
-  mount(view, pageHead('Media'), root);
+  // A long file name breaks rather than pushing the page sideways on a phone (.main wraps words).
+  mount(view, pageHead('Media'), h('div.stack', uploadPart, filesPart));
   renderList();
   showUploads(); // an upload started before leaving Media and coming back
 
