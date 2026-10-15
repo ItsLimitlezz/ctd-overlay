@@ -223,6 +223,35 @@ option that keeps a live show running with nobody touching it.
 ### Milestone 4: connectors
 16. **Connector host.** Contract, backoff, health and `system.connection`, encrypted token
     storage, device-code and PKCE flows, setup guides in the UI (06 §6.1–6.4, 08 §8.7).
+    Done in `src/connectors/`: one runner per connection catches whatever its connector does (a
+    throw, a rejection, a 30 s hang, a timer that throws), holds its values and starts it again
+    with backoff; a callback from a stopped instance changes nothing; a missing or refused sign-in
+    is needs-reauth, never a loop. The bus keeps state per connection and shows each overlay one
+    value per key (the core's, fresh over held, direct over relay, the older connection), works
+    out `viewers.total` and `viewers.stale` per overlay and marks held values `<key>.stale`; the
+    host holds them 120 s on an error and removes them at once on a deliberate stop (H6). Overlays
+    are bound to `"all"` connections by default (migration 2 gives every existing overlay that) or
+    to a list, through `POST/PATCH /overlays`. The HTTP client retries only what is safe, cools a
+    service down on 429, renews a token once on a 401, caps and times out answers, and reaches
+    operator-typed addresses only on the local network (never link-local), pinning a self-signed
+    certificate by its fingerprint before sending anything. OAuth: PKCE S256, a state single use,
+    10 minutes, bound to whoever started it; the callback finishes it only in their browser, and
+    elsewhere asks to paste the address landed on; the device flow; tokens encrypted, renewed at
+    80 % (single flight, the new refresh token saved first). Secrets (AAD `connection:<id>`) and
+    tokens (`tokens:<id>`) are re-encrypted by `skp key rotate`; none reaches an answer, a health
+    detail, a log line or the audit log. The routes of 03 §3.4 (the callback and `/hooks` outside
+    `/api/v1`); `connector.action` cues run through the host, their failure the cue's error;
+    `/system/health` lists connections for operators. The Connections page: the setup guide
+    (warnings, steps, the redirect URI to copy, scopes and why), a form from the connector's
+    fields, the device code with its countdown, Finish sign-in, Test, on/off, delete behind a
+    confirmation, live from `system.connection`. Credentials the v0 importer kept become turned-off
+    connections once a connector for their platform exists (step 17's Twitch and Kick). The
+    OAuth callback and `/hooks` are not in the OpenAPI document (it describes `/api/v1` exactly);
+    an OAuth `state` in a log line isn't redacted (it is single use and bound to its starter; the
+    code is). Carried forward: the overlay page's bindings section, the Templates page's choice at
+    Use template, and the Live console's connection strip (step 17, with the first counts);
+    cross-connection chat dedupe (a relay and a direct connector both sending one platform's chat,
+    step 19); outbound webhooks' own delivery schedule (step 21).
 16b. **CTD Multi-Stream** (added 2026-10-13 at the operator's request). The operator's
     multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream))
     merges chat from every destination it relays to (Twitch, YouTube, Kick, Facebook, X,
@@ -233,6 +262,17 @@ option that keeps a live show running with nobody touching it.
     resume with a backfill when the cursor is too old. It is the only chat source for the browser-read platforms; direct
     connectors stay for Twitch, Kick and YouTube (alerts, and chat when Multi-Stream isn't
     relaying).
+    Done in `src/connectors/defs/ctd-multistream.js`, the first built-in connector: an API token
+    (a secret setting) and the LAN address; `/status`, then the event stream from its cursor
+    (`Last-Event-ID`, kept between starts); a reset, or no cursor yet, reads `/status` and `/chat`
+    again, the chat into the buffer without playing it live. Chat, deletions, bans, alerts
+    (Twitch tiers as 1/2/3/prime, money as a decimal string) in this standard's shapes with the
+    relayed platform as `src.platform`; a platform's clear removes that platform's lines only; an
+    alert's chat line hidden while alerts are on. `viewers.<platform>` and `stream.<platform>.*`
+    from its status, unknown counts absent. Degraded with the reason while a destination is down;
+    its notices are the connection's warnings; a revoked token is needs-reauth saying where to make
+    a new one; quiet for 45 s, it reconnects. Tested against a pretend Multi-Stream. Its chat
+    reaches only templates that consume chat (no bundled one does yet: step 19).
 17. **Twitch and Kick viewers and live status**, ported from v0. **This reaches v0 parity:** run
     a Saturday next to v0, then cut over.
 18. **OBS.** obs-websocket v5 handshake, state, actions, OBS→overlay scene mapping, Add to OBS

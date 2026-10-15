@@ -29,7 +29,8 @@
         "name": { "type": "string" },
         "args": { "type": "object" },
         "slot": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string", "minLength": 1, "maxLength": 80 }], "description": "A lineup position, or an act's name (which follows the act through lineup edits)." },
-        "connector": { "type": "string" },
+        "connection": { "type": "string", "pattern": "^con_", "description": "connector.action: the connection whose action runs." },
+        "connector": { "type": "string", "description": "connector.action: the connector, when one connection of it is on (else name the connection)." },
         "mediaId": { "type": "string" },
         "webhookId": { "type": "string" },
         "steps": {

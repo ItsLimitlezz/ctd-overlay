@@ -6,6 +6,7 @@ import path from 'node:path';
 import { startPlatform, StartupError } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { readBody, sendJson, sendProblem } from '../src/http/server.js';
+import { migrations } from '../src/store/migrations.js';
 import { defer, memoryLogger, tempDir } from './helpers.js';
 
 async function start(t, { routes = [], store = 'sqlite' } = {}) {
@@ -206,7 +207,7 @@ test('route parameters are decoded path segments', async (t) => {
 test('startup migrates the store and logs where it is listening', async (t) => {
   for (const store of ['sqlite', 'json']) {
     const { platform, entries } = await start(t, { store });
-    assert.equal(platform.store.schemaVersion, 1);
+    assert.equal(platform.store.schemaVersion, migrations.length);
     const listening = entries.find((e) => e.msg === 'listening');
     assert.equal(listening.context.url, `${platform.url}/`);
     assert.equal(listening.context.store, store);

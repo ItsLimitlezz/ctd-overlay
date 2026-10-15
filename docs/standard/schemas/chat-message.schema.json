@@ -11,7 +11,7 @@
     "user": {
       "type": "object", "required": ["id", "name", "roles"],
       "properties": {
-        "id": { "type": "string", "pattern": "^(twitch|kick|youtube|custom):.+$" },
+        "id": { "type": "string", "pattern": "^(twitch|kick|youtube|facebook|x|instagram|tiktok|custom):.+$" },
         "login": { "type": "string" },
         "name": { "type": "string" },
         "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
@@ -50,6 +50,9 @@
       ]
     },
     "highlighted": { "type": "boolean" },
-    "action": { "type": "boolean", "description": "/me message" }
+    "action": { "type": "boolean", "description": "/me message" },
+    "platform": { "type": "string", "description": "The platform it was written on, when a relay merged several (06 §6.11)." },
+    "destinationId": { "type": "string", "description": "The relay's destination it came from (06 §6.11)." },
+    "kind": { "enum": ["message", "event"], "description": "\"event\": a platform notice shown in chat (a sub, a raid), relayed as a line." }
   }
 }

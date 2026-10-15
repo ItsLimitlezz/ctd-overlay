@@ -63,6 +63,18 @@ test('migration lists must be numbered 1, 2, 3 with no gaps', (t) => {
   assert.throws(() => migrate(store, [steps[1]], { log }), /no gaps/);
 });
 
+test('migration 2: overlays made before connections existed take every connection; a list of them stays', (t) => {
+  const { store, log } = open(t, tempDir(t));
+  migrate(store, migrations.slice(0, 1), { log });
+  store.put('overlays', 'ovl_A', { slug: 'a', connections: [] });
+  store.put('overlays', 'ovl_B', { slug: 'b' });
+  store.put('overlays', 'ovl_C', { slug: 'c', connections: ['con_x'] });
+  const out = migrate(store, migrations, { log });
+  assert.deepEqual([out.from, out.to], [1, 2]);
+  assert.deepEqual(['ovl_A', 'ovl_B', 'ovl_C'].map((id) => store.get('overlays', id).data.connections), ['all', 'all', ['con_x']]);
+  assert.equal(store.get('overlays', 'ovl_A').data.slug, 'a');
+});
+
 test('the shipped migrations apply cleanly and create the installation record', (t) => {
   const { store, log } = open(t, tempDir(t));
   migrate(store, migrations, { log });

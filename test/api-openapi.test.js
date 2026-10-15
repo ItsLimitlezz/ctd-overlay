@@ -10,6 +10,7 @@ import { startPlatform } from '../src/app.js';
 import { authRoutes } from '../src/auth/routes.js';
 import { hotp, stepAt } from '../src/auth/totp.js';
 import { loadConfig } from '../src/config.js';
+import { connectorRoutes } from '../src/connectors/routes.js';
 import { createApi } from '../src/http/api.js';
 import { createRouter } from '../src/http/server.js';
 import { systemRoutes } from '../src/http/system.js';
@@ -18,6 +19,7 @@ import { overlayApiRoutes } from '../src/overlays/api.js';
 import { simulateRoutes } from '../src/overlays/simulate.js';
 import { showRoutes } from '../src/shows/routes.js';
 import { templateRoutes } from '../src/templates/api.js';
+import { fakeConnector } from './fixtures/connectors/fake.js';
 import { defer, DIAG_DIR, FIXTURE_TEMPLATES, memoryLogger, packTemplate, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -33,9 +35,19 @@ async function start(t) {
     ? new Response(FETCHED, { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(FETCHED.length) } })
     : new Response(JSON.stringify({ message: 'Not Found' }), { status: 404, headers: { 'content-type': 'application/json' } }));
   const lookup = async () => [{ address: '140.82.112.6', family: 4 }];
+  // A connector signing in by redirect, and its service: a token for any code, an account.
+  const service = async (url, init = {}) => {
+    const u = new URL(url);
+    const form = Object.fromEntries(new URLSearchParams(typeof init.body === 'string' ? init.body : ''));
+    const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    if (u.pathname === '/token' && form.grant_type === 'authorization_code') return json(200, { access_token: 'at-tour-0123456789', refresh_token: 'rt-tour-0123456789', expires_in: 3600, token_type: 'bearer' });
+    if (u.pathname === '/api/me') return json(200, { id: '1', login: 'dprtmnt' });
+    if (u.pathname === '/revoke') return json(200, {});
+    return json(404, {});
+  };
   const root = tempDir(t);
   const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
-  const platform = await startPlatform(config, { log: memoryLogger().log, templateDirs: [FIXTURE_TEMPLATES], scrypt: { N: 1024 }, clock: { now: clock.now }, fetch: download, lookup });
+  const platform = await startPlatform(config, { log: memoryLogger().log, templateDirs: [FIXTURE_TEMPLATES], scrypt: { N: 1024 }, clock: { now: clock.now }, fetch: download, lookup, connectors: { defs: [fakeConnector({ auth: 'oauth-pkce' }).def], fetch: service } });
   defer(t, () => platform.stop());
   const doc = await (await fetch(`${platform.url}/api/v1/openapi.json`)).json();
   return { platform, clock, doc };
@@ -60,6 +72,7 @@ function declarations() {
   overlayApiRoutes({ api, overlays: {}, templates: {}, shows: {}, audit: {}, base: () => '' });
   templateRoutes({ api, templates: {}, overlays: {}, sources: {}, audit: {}, config: {} });
   mediaApiRoutes({ api, media: {}, overlays: {}, audit: {} });
+  connectorRoutes({ api, host: {}, auth: {}, hosts: () => [], log: {} });
   systemRoutes({ api, bus: {}, store: {}, media: {}, templates: {}, overlays: {}, shows: {}, config: {}, version: '0' });
   return api.routes;
 }
@@ -253,6 +266,22 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('GET', '/shows/Night/plans');
   await call('DELETE', `/shows/Night/plans/${plan.id}`);
   await call('DELETE', '/shows/Night');
+
+  // Connections: what can be connected; one, signed in by redirect and the address pasted back,
+  // tested, an action run, signed out, deleted.
+  await call('GET', '/connectors');
+  await call('GET', '/connectors/fake');
+  const con = (await call('POST', '/connections', { body: { connector: 'fake', name: 'Fake', config: { behaviour: 'push', clientId: 'client-1' }, secrets: { clientSecret: 'a-secret-of-some-length' } } })).body;
+  await call('GET', '/connections');
+  await call('PATCH', `/connections/${con.id}`, { body: { name: 'Fake TV' } });
+  const signing = (await call('POST', `/connections/${con.id}/authorize`, { body: {} })).body;
+  const state = Object.fromEntries(new URL(signing.url).searchParams).state;
+  await call('POST', `/connections/${con.id}/authorize/complete`, { body: { url: `${signing.redirectUri}?code=a-code&state=${state}` } });
+  for (let i = 0; i < 100 && (await call('GET', `/connections/${con.id}`)).body.health.status !== 'connected'; i++) await new Promise((r) => setTimeout(r, 20));
+  await call('POST', `/connections/${con.id}/test`, { body: {} });
+  await call('POST', `/connections/${con.id}/actions/echo`, { body: { args: { text: 'hi' } } });
+  await call('DELETE', `/connections/${con.id}/authorize`);
+  await call('DELETE', `/connections/${con.id}`);
 
   // Media: a file in its own type.
   const file = (await call('POST', '/media?name=Logo.png', { body: PNG, type: 'image/png' })).body;

@@ -267,6 +267,28 @@ a show's lineup, a cue or a plan), saying what.
 These commands change the data folder, so stop the platform first; until the admin UI (step 14)
 they are the way to manage media.
 
+## Connections
+
+The **Connections** page of the admin UI connects the services that feed overlays: chat, alerts,
+viewer counts and live status. Each connector's setup screen says what to do on the service's
+side (the redirect URI to register, with a Copy button, the permissions asked for and why), its
+settings form keeps secrets encrypted and never shows them again, and signing in is a code to
+type on any device or a redirect (when the browser that comes back isn't the one that started,
+paste the address it landed on under **Finish sign-in**). Each connection shows its status,
+what it feeds and the values it sets now; a count that can't be read is held for two minutes,
+marked stale, then hidden: never shown as 0.
+
+**CTD Multi-Stream** is built in. In Multi-Stream, open Settings → API, make a token with
+`chat:read` and `status:read`, and copy the LAN URL (`http://<NAS-IP>:30080/api/v1`); add a
+CTD Multi-Stream connection with both. Its merged chat and alerts reach overlays whose template
+shows them, and the TAKEOVER viewer count becomes the total across every platform it streams to.
+Twitch and Kick (step 17), OBS, YouTube and Spotify follow.
+
+Overlays take every connection by default ("all", new ones too); an overlay can be bound to some
+only (`PATCH /api/v1/overlays/<slug>` with `{ "connections": ["con_…"] }`). Owners and admins
+manage connections; operators see each one's status on the Connections page (from
+`GET /api/v1/system/health`).
+
 ## Moving from v0
 
 The D/PRTMNT Stream Kit's data folder (its `/data` volume, or `data/` beside its `server.js`)
@@ -284,7 +306,8 @@ ticker and event options, and The Line's clip from `uploads/` in the media libra
 is built the way v0 built its rundown (a title card at each set's start, the Event Intro and now
 playing at v0's minutes), and the cues v0's operator added by hand for that night come along.
 Planned Saturdays in `shows.json` become planned dates. The Twitch and Kick credentials in
-`viewers.json` are kept, encrypted, for the connections still to come; they are never printed.
+`viewers.json` are kept, encrypted, and become connections (turned off until you check them)
+once this platform has Twitch and Kick connectors (step 17); they are never printed.
 
 The summary ends with the overlay's two URLs (horizontal and vertical): they replace v0's
 `feed=h` and `feed=v` links in OBS. `--name` and `--slug` name the show and the overlay

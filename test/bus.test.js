@@ -393,7 +393,9 @@ describe('coalescing: at most 10 state.changed per key per second per overlay (0
     assert.equal(b.bufferSize, 0);
   });
 
-  test('a value still waiting from a connection the overlay no longer binds is never sent', () => {
+  // Since step 16 a rebinding tells the overlay what left with the connection (the count goes),
+  // and viewers.total is worked out from the platform counts the overlay sees.
+  test('a value still waiting from a connection the overlay no longer binds is never sent; its count goes', () => {
     const { bus, clock } = fixture();
     const ch = bus.channel('ovl_a', { consumes: { state: ['viewers.*'] }, connections: ['con_tw'] });
     const got = watch(ch);
@@ -401,8 +403,12 @@ describe('coalescing: at most 10 state.changed per key per second per overlay (0
     bus.setState('viewers.twitch', 2, { src: twitch });
     bus.channel('ovl_a', { consumes: { state: ['viewers.*'] }, connections: ['con_kk'] });
     clock.advance(200);
-    assert.deepEqual(got.map((e) => e.data.value), [1]);
-    assert.equal(ch.bufferSize, 1);
+    assert.ok(!got.some((e) => e.data.value === 2), 'the waiting 2 is never sent');
+    assert.deepEqual(got.map((e) => e.data), [
+      { key: 'viewers.twitch', value: 1 }, { key: 'viewers.total', value: 1 },
+      { key: 'viewers.twitch', prev: 1 }, { key: 'viewers.total', prev: 1 },
+    ]);
+    assert.deepEqual(ch.snapshot().state, {});
   });
 
   test('channel-only state waiting out the window is still sent, whatever the channel consumes', () => {

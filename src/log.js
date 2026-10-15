@@ -9,7 +9,10 @@ const SECRET_KEY = /pass(word|phrase)?|secret|token|authorization|cookie|credent
 
 const SECRET_STRINGS = [
   [/\b(skp_(?:pat|ovl)_)[A-Za-z0-9]+/g, '$1[redacted]'],
-  [/([?&](?:key|token|access_token|refresh_token|code|client_secret)=)[^&#\s"']+/gi, '$1[redacted]'],
+  // An OAuth callback's code (06 §6.4), a device code, a PKCE verifier, besides keys. Its state is
+  // no secret on its own: single use, and only whoever started the sign-in can finish it.
+  [/([?&](?:key|token|access_token|refresh_token|code|client_secret|code_verifier|device_code)=)[^&#\s"']+/gi, '$1[redacted]'],
+  [/\b(ctd_pat_)[A-Za-z0-9_-]+/g, '$1[redacted]'], // CTD Multi-Stream API tokens (step 16b)
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]'],
   [/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/g, '$1[redacted]'], // GitHub tokens (template sources)
 ];

@@ -1,7 +1,8 @@
 // The platform itself, and live data, over HTTP (03 §3.4), on the API's conventions (http/api.js):
 //
 //   GET  /api/v1/openapi.json     this API, described (OpenAPI 3.1); no sign-in needed
-//   GET  /api/v1/system/health    status, with what is degraded
+//   GET  /api/v1/system/health    status, with what is degraded, and every connection's status and
+//                                 viewer count (the Live strip: operators don't hold connections:read)
 //   GET  /api/v1/system/info      version, exposure, store, capabilities (ffmpeg …)
 //   GET  /api/v1/events           Server-Sent Events of what the platform publishes (?types=alert.*,custom.*)
 //   POST /api/v1/events           { type, data }: publish a custom.* or x-<vendor>.* event (02 §2.7),
@@ -15,7 +16,7 @@ import { createSseWriter } from '../overlays/sse.js';
 
 export const PUBLISH_PER_SECOND = 60; // 03 §3.5
 
-export function systemRoutes({ api, bus, store, media, templates, overlays, shows, config, version, heartbeatMs = 15000, now = Date.now }) {
+export function systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version, heartbeatMs = 15000, now = Date.now }) {
   const started = now();
   const streams = new Set();
   const r = (def) => api.route({ tag: 'System', ...def });
@@ -36,9 +37,17 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
 
   return [
     api.route({ method: 'GET', path: '/api/v1/openapi.json', open: true, tag: 'System', summary: 'This API, described (OpenAPI 3.1)', run: () => api.openapi({ version, base: '/' }) }),
-    r({ method: 'GET', path: '/api/v1/system/health', summary: 'Status, and what is degraded', run: () => {
+    r({ method: 'GET', path: '/api/v1/system/health', summary: 'Status, what is degraded, and each connection\'s status and viewer count', run: () => {
       const unusable = overlays.list().filter((d) => !overlays.resolve(d.data.slug)?.template).map((d) => d.data.slug);
-      return { status: unusable.length ? 'degraded' : 'ok', ...(unusable.length ? { overlaysOffAir: unusable } : {}), uptimeS: Math.round((now() - started) / 1000) };
+      // A connection turned on but not connected (an error, a sign-in needed) degrades the whole.
+      const connections = connectors?.summary() || [];
+      const down = connections.filter((c) => !['connected', 'disabled'].includes(c.status));
+      return {
+        status: unusable.length || down.length ? 'degraded' : 'ok',
+        ...(unusable.length ? { overlaysOffAir: unusable } : {}),
+        connections,
+        uptimeS: Math.round((now() - started) / 1000),
+      };
     } }),
     r({ method: 'GET', path: '/api/v1/system/info', summary: 'Version, exposure, store and capabilities', run: info }),
     // The installation's own name and logo, shown in the admin UI (08 §8.6).
@@ -110,7 +119,9 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
         throw err;
       }
     } }),
-    r({ method: 'GET', path: '/api/v1/state', scope: 'events:read', tag: 'Live', summary: 'Current state', run: () => Object.fromEntries([...bus.stateEntries()].map(([k, v]) => [k, v.value])) }),
+    // Installation-wide: each key's value from every connection by the bus's one rule, viewers.total
+    // the sum over platforms (02 §2.5).
+    r({ method: 'GET', path: '/api/v1/state', scope: 'events:read', tag: 'Live', summary: 'Current state, installation-wide', run: () => bus.stateView() }),
     r({ method: 'GET', path: '/api/v1/state/:key', scope: 'events:read', tag: 'Live', summary: 'One state key', run: ({ params }) => {
       const value = bus.getState(params.key);
       if (value === undefined) throw new ApiError(404, 'not-found', `"${params.key}" has no value.`);

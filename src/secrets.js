@@ -97,10 +97,18 @@ export function loadMasterKey(config, { log, create = true } = {}) {
 
 export const isEncrypted = (value) => typeof value === 'string' && value.startsWith(PREFIX);
 
-// Every encrypted value in the store, with its associated data: overlay keys, TOTP secrets, and
-// the Twitch and Kick credentials the v0 importer keeps for connections (import/v0.js).
+// Every encrypted value in the store, with its associated data: overlay keys, TOTP secrets, the
+// Twitch and Kick credentials the v0 importer keeps for connections (import/v0.js), and each
+// connection's secrets and account tokens (connectors/records.js).
+export const ENCRYPTED = Object.freeze([
+  ['overlays', [['key', (id) => id]]],
+  ['users', [['totp.secret', (id) => `totp:${id}`], ['totpPending.secret', (id) => `totp:${id}`]]],
+  ['pending_connections', [['clientSecret', (id) => id]]],
+  ['connections', [['secrets', (id) => `connection:${id}`]]],
+  ['connection_tokens', [['user', (id) => `tokens:${id}`]]],
+]);
 function* encryptedFields(store) {
-  for (const [collection, fields] of [['overlays', [['key', (id) => id]]], ['users', [['totp.secret', (id) => `totp:${id}`], ['totpPending.secret', (id) => `totp:${id}`]]], ['pending_connections', [['clientSecret', (id) => id]]]]) {
+  for (const [collection, fields] of ENCRYPTED) {
     for (let after = ''; ;) {
       const page = store.list(collection, { after, limit: 1000 });
       for (const doc of page) for (const [field, aad] of fields) yield { collection, doc, field, aad: aad(doc.id) };

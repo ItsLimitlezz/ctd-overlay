@@ -10,7 +10,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { BUILTIN } from '../src/connectors/registry.js';
 import { browserSkip, launchBrowser } from './cdp.js';
+import { fakeConnector } from './fixtures/connectors/fake.js';
 import { DIAG, DIAG_DIR, defer, memoryLogger, packTemplate, signedIn, tempDir } from './helpers.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -21,7 +23,8 @@ async function start(t) {
   const root = tempDir(t);
   const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
   const { log } = memoryLogger();
-  const platform = await startPlatform(config, { log, scrypt: { N: 1024 } });
+  // The built-in connectors, and a test one that signs in with a device code (nothing behind it).
+  const platform = await startPlatform(config, { log, scrypt: { N: 1024 }, connectors: { defs: [...BUILTIN, fakeConnector({ name: 'Test service', auth: 'device-code' }).def] } });
   defer(t, () => platform.stop());
   return platform;
 }
@@ -194,7 +197,10 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
   await page.waitFor('location.hash === "#/live" && !document.querySelector("[data-view] > .loading")', 15000);
   assert.equal(await page.eval('document.querySelector("[data-shell]").hidden'), false, 'the shell shows once signed in');
 
-  const sections = ['/live', '/overlays', '/overlays/diag', '/templates', `/templates/${DIAG.id}`, '/shows', '/shows/Night', '/connections', '/media', '/settings', '/settings/account', '/settings/tokens', '/settings/about'];
+  // A connection (its sign-in still to do) and one turned off, for the Connections pages.
+  const fake = platform.connectors.create({ connector: 'fake', name: 'Test service', config: { behaviour: 'push', clientId: 'cid' }, secrets: { clientSecret: 'a-secret-never-shown' } });
+  platform.connectors.create({ connector: 'ctd-multistream', name: 'Multi-Stream', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: `ctd_pat_${'x'.repeat(43)}` } });
+  const sections = ['/live', '/overlays', '/overlays/diag', '/templates', `/templates/${DIAG.id}`, '/shows', '/shows/Night', '/connections', '/connections/new/ctd-multistream', `/connections/${fake.id}`, '/media', '/settings', '/settings/account', '/settings/tokens', '/settings/about'];
   for (const [width, height] of [[1280, 900], [390, 844]]) {
     await page.resize(width, height);
     for (const route of sections) {
@@ -209,6 +215,8 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
       assert.equal(state.h1, 1, `${route} at ${width}px has one h1`);
       assert.equal(state.sideways, false, `${route} at ${width}px scrolls sideways`);
       assert.deepEqual(page.problems.slice(before), [], `${route} at ${width}px`);
+      // A secret never reaches a page (the API doesn't send it; its field is never filled in).
+      if (route.startsWith('/connections')) assert.equal(await page.eval('document.documentElement.outerHTML.includes("a-secret-never-shown") || [...document.querySelectorAll("input")].some((i) => i.value.includes("a-secret"))'), false, route);
     }
   }
   // On a phone the navigation is a menu.

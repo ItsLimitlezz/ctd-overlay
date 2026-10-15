@@ -42,6 +42,20 @@ function base62(bytes, length) {
 }
 export const newOverlayKey = () => `skp_ovl_${base62(randomBytes(24), 33)}`;
 
+// Bindings (01 §1.3): which connections feed an overlay. 'all' (every connection, including ones
+// made later: the default, so an overlay shows the Twitch count as soon as Twitch is connected), or
+// a list of connection ids. A stored overlay without one (made before migration 2) is 'all'.
+export const MAX_BINDINGS = 50;
+export const bindingOf = (doc) => (Array.isArray(doc.data.connections) ? doc.data.connections : 'all');
+export function checkBinding(value) {
+  if (value === 'all') return 'all';
+  if (!Array.isArray(value) || value.length > MAX_BINDINGS || value.some((c) => typeof c !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(c))) {
+    throw new OverlayError(`"connections" is "all" (every connection, including ones made later), or a list of up to ${MAX_BINDINGS} connection ids.`, 'bad-connections');
+  }
+  return [...new Set(value)];
+}
+const feeds = (doc, connId) => { const b = bindingOf(doc); return b === 'all' || b.includes(connId); };
+
 // secrets: encrypts overlay keys at rest (secrets.js); without it (some tests), overlays have no
 // key and need none. exposure: in public mode every overlay needs its key. readOnly: a look that
 // changes nothing (a dry run): an overlay without a key isn't given one at startup.
@@ -64,7 +78,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     if (!template) log.error('an overlay\'s template is not installed; it will not render', { overlay: doc.id, template: doc.data.template });
     let ch;
     try {
-      ch = bus.channel(doc.id, { consumes: template?.manifest.consumes || {}, connections: doc.data.connections || [] });
+      ch = bus.channel(doc.id, { consumes: template?.manifest.consumes || {}, connections: bindingOf(doc) });
       const settings = template ? settingsFor(template, doc, ch) : {};
       ch.setLocalState('overlay.settings', settings);
       resolved.set(doc.id, settings);
@@ -94,11 +108,12 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     return plain;
   }
 
-  // A setting bound to a state key (x-skp-bind) follows the key: when it changes, the overlays
-  // bound to it get their settings resolved again.
-  bus.subscribeAll((env) => {
-    if (env.type !== 'state.changed' || !bindings.has(env.data.key)) return;
-    for (const id of [...bindings.get(env.data.key)]) {
+  // A setting bound to a state key (x-skp-bind) follows the key as the overlay sees it: when any
+  // connection's value for it changes, the overlays bound to it get their settings resolved again
+  // (setLocalState sends only what moved).
+  bus.onState((keys) => {
+    const ids = new Set(keys.flatMap((key) => [...(bindings.get(key) || [])]));
+    for (const id of ids) {
       const doc = store.get('overlays', id);
       if (doc) open(doc);
     }
@@ -176,11 +191,13 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     return doc;
   }
 
-  // Changes an overlay's settings, slug and whether its URL needs its key, any of them (those
-  // `changes` has). Every one is checked before anything is saved, then all are saved at once, so a
-  // refused one leaves the overlay as it was (a PATCH, 03 §3.1). ifRev: the revision the caller
-  // last saw; a newer one is a ConflictError (03 §3.1, H16). A new slug changes the overlay's URL
-  // (01 §1.4), so OBS sources must be updated; its key, settings and channel stay.
+  // Changes an overlay's settings, slug, bindings and whether its URL needs its key, any of them
+  // (those `changes` has). Every one is checked before anything is saved, then all are saved at
+  // once, so a refused one leaves the overlay as it was (a PATCH, 03 §3.1). ifRev: the revision the
+  // caller last saw; a newer one is a ConflictError (03 §3.1, H16). A new slug changes the
+  // overlay's URL (01 §1.4), so OBS sources must be updated; its key, settings and channel stay.
+  // New bindings reach the overlay at once: what a connection no longer bound showed goes, what a
+  // newly bound one shows arrives (the URL stays, 01 §1.4).
   function update(ref, changes, { ifRev } = {}) {
     const doc = byIdOrSlug(ref);
     const has = (k) => Object.prototype.hasOwnProperty.call(changes, k);
@@ -205,13 +222,15 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       if (changes.keyRequired === false) next.keyRequired = false;
       else delete next.keyRequired;
     }
-    if (!has('settings') && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired) return doc;
+    if (has('connections')) next.connections = checkBinding(changes.connections);
+    const rebound = JSON.stringify(bindingOf({ data: next })) !== JSON.stringify(bindingOf(doc));
+    if (!has('settings') && !rebound && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired) return doc;
     const saved = store.put('overlays', doc.id, next, { ifRev: ifRev ?? doc.rev });
     if (saved.data.slug !== doc.data.slug) {
       bySlug.delete(doc.data.slug);
       bySlug.set(saved.data.slug, doc.id);
     }
-    if (has('settings')) open(saved);
+    if (has('settings') || rebound) open(saved);
     // Streams opened without the key end once it is needed: they come back with it, or not at all.
     if (secrets && !keyRequired(doc) && keyRequired(saved)) bus.channel(doc.id).reset();
     return saved;
@@ -228,7 +247,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
   }
 
   return {
-    create({ slug, template, settings = {}, connections = [] }) {
+    create({ slug, template, settings = {}, connections = 'all' }) {
       if (typeof slug !== 'string' || !SLUG.test(slug)) {
         throw new OverlayError(`"${slug}" isn't a valid slug: use lowercase letters, digits and dashes, starting with a letter or digit`, 'bad-slug');
       }
@@ -236,6 +255,7 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       const t = templates.get(template?.id, template?.version);
       if (!t) throw new OverlayError(`template ${template?.id}@${template?.version} isn't installed`, 'no-template');
       checkSettings(t, settings);
+      connections = checkBinding(connections);
       templates.retain(t.id, t.version); // a bundled version stays even if a platform update drops it
       const id = newId('ovl');
       const key = secrets ? newOverlayKey() : undefined;
@@ -302,6 +322,32 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     // A new slug: the overlay's URL changes (01 §1.4).
     rename(ref, slug, { ifRev } = {}) {
       return update(ref, { slug }, { ifRev });
+    },
+
+    // Which connections feed it: 'all', or a list of connection ids (01 §1.3).
+    updateConnections(ref, connections, { ifRev } = {}) {
+      return update(ref, { connections }, { ifRev });
+    },
+
+    bindingOf,
+
+    // Slugs of the overlays a connection feeds (bound to it, or to every connection).
+    fedBy(connId) {
+      return [...all()].filter((doc) => feeds(doc, connId)).map((doc) => doc.data.slug).sort();
+    },
+
+    // A deleted connection leaves every list it was named in, so an overlay's bindings, read and
+    // sent back, name only connections that exist. Returns the slugs whose list changed.
+    unbind(connId) {
+      const changed = [];
+      for (const doc of all()) {
+        const b = bindingOf(doc);
+        if (b === 'all' || !b.includes(connId)) continue;
+        const saved = store.put('overlays', doc.id, { ...doc.data, connections: b.filter((c) => c !== connId) });
+        open(saved);
+        changed.push(saved.data.slug);
+      }
+      return changed;
     },
 
     remove(id) {

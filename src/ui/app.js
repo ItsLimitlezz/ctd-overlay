@@ -15,6 +15,8 @@ const ROUTES = [
   { path: '/shows', page: 'shows', fn: 'list', title: 'Shows' },
   { path: '/shows/:id', page: 'shows', fn: 'detail', title: 'Show' },
   { path: '/connections', page: 'connections', fn: 'list', title: 'Connections' },
+  { path: '/connections/new/:connector', page: 'connections', fn: 'create', title: 'New connection' },
+  { path: '/connections/:id', page: 'connections', fn: 'detail', title: 'Connection' },
   { path: '/media', page: 'media', fn: 'list', title: 'Media' },
   { path: '/settings', page: 'settings', fn: 'settings', title: 'Settings' },
   { path: '/settings/:tab', page: 'settings', fn: 'settings', title: 'Settings' },

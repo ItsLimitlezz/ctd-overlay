@@ -166,6 +166,7 @@ test('a bound setting follows its state key live, as the overlay sees it, and a 
   const template = { id: ID, version: '1.0.0' };
   platform.overlays.create({ slug: 'live', template, settings: {}, connections: ['conn_a'] });
   platform.overlays.create({ slug: 'saved', template, settings: { headliner: 'Saved' }, connections: ['conn_a'] });
+  platform.overlays.updateConnections('main', []); // bound to no connection (new overlays take every one)
   const settingsOf = async (slug) => (await snapshot(`${platform.url}/o/${slug}`, platform.overlays.key(slug))).state['overlay.settings'];
   assert.deepEqual(await settingsOf('live'), { headliner: 'TBA' });
 
@@ -175,9 +176,16 @@ test('a bound setting follows its state key live, as the overlay sees it, and a 
   assert.deepEqual(await settingsOf('saved'), { headliner: 'Saved' });
   assert.deepEqual(await settingsOf('main'), { headliner: 'TBA' }, 'conn_a is not bound to main');
 
-  // From a connection not bound to the overlay, the value doesn't count.
+  // From a connection not bound to the overlay, the value doesn't count: each connection keeps its
+  // own value (step 16), so live still shows conn_a's, and nothing once conn_a's goes.
   platform.bus.setState('custom.headliner', 'B', { src: { connector: 'x', connection: 'conn_b' } });
+  assert.deepEqual(await settingsOf('live'), { headliner: 'A' });
+  platform.bus.setState('custom.headliner', undefined, { src: { connector: 'x', connection: 'conn_a' } });
   assert.deepEqual(await settingsOf('live'), { headliner: 'TBA' });
+  // Bound to conn_b now: its value arrives without anything else changing.
+  platform.overlays.updateConnections('live', ['conn_b']);
+  assert.deepEqual(await settingsOf('live'), { headliner: 'B' });
+  platform.overlays.updateConnections('live', ['conn_a']);
 
   // Only keys the template consumes are readable (install refuses binding any other), except
   // show.scene, which every overlay sees, declared or not (04 §4.3, x-skp-bind).
@@ -247,7 +255,7 @@ test('upgrade: settings carried over (removed dropped, invalid back to default),
   assert.deepEqual(plan.changes.map((c) => `${c.change} ${c.path}`), ['invalid /size', 'removed /old', 'default /accent', 'added /fresh']);
   const { previous, ...data } = platform.store.get('overlays', overlay.id).data;
   const { key, keyRequired, ...stored } = data;
-  assert.deepEqual(stored, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: [] });
+  assert.deepEqual(stored, { slug: 'main', template: { id: ID, version: '1.1.0' }, settings: {}, connections: 'all' });
   assert.match(key, /^enc:v1:/, 'the key, encrypted');
   assert.equal(key, storedKey, 'and unchanged by the upgrade');
   assert.deepEqual({ ...previous, at: undefined }, { template: { id: ID, version: '1.0.0' }, settings: { size: 7, old: 'x' }, at: undefined });

@@ -4,7 +4,8 @@
 // ranges, patterns, the colour / date / time / https formats, media values, list sizes, and the
 // 24 KiB limit on what is saved.
 //
-//   const form = schemaForm({ schema, definitions, values, resolved, onChange, mediaList });
+//   const form = schemaForm({ schema, definitions, values, resolved, onChange, mediaList, saved });
+//   saved: names of writeOnly (secret) fields that hold a value already ("saved" as placeholder)
 //   form.el          the fields, in a <div> (no buttons: the page adds Save and Reset)
 //   form.values()    only what the operator set: an emptied field is left out, so its default, or
 //                    the live value it follows (x-skp-bind), applies again
@@ -20,11 +21,13 @@
 import { dialog, field, h, mount, notice } from './dom.js';
 
 // What a settings schema may use (04 §4.3; settings.js KEYWORDS); x-skp-* extensions besides.
+// writeOnly marks a secret (a connection's password or token, 06 §6.1): a password field that
+// never shows a value, saved or typed before.
 const KEYWORDS = new Set([
   '$ref', 'type', 'title', 'description', 'default', 'enum', 'examples',
   'minimum', 'maximum', 'minLength', 'maxLength', 'pattern', 'format',
   'items', 'minItems', 'maxItems', 'uniqueItems',
-  'properties', 'additionalProperties',
+  'properties', 'additionalProperties', 'writeOnly',
 ]);
 const QUIET = new Set(['$comment', '$schema', '$id']); // annotations that change nothing on a form
 const PRIMITIVES = new Set(['string', 'number', 'integer', 'boolean']);
@@ -256,8 +259,9 @@ export function schemaForm(options) {
   }
 }
 
-function create({ schema, definitions, values, resolved, onChange, mediaList }) {
+function create({ schema, definitions, values, resolved, onChange, mediaList, saved }) {
   const deref = dereferencer(definitions);
+  const savedSecrets = new Set(Array.isArray(saved) ? saved : []);
   const root = deref(schema);
   if (!isObj(root) || !Object.keys(root).length || (root.type === 'object' && isObj(root.properties) && !Object.keys(root.properties).length)) {
     return stillForm(values, h('p.muted', 'This template has no settings to change.'));
@@ -452,7 +456,7 @@ function create({ schema, definitions, values, resolved, onChange, mediaList }) 
     // A $ref that points at nothing still has the title beside it.
     const label = labelOf(isObj(s) ? sch : isObj(raw) ? raw : {}, key);
     if (!why && sch.type === 'array') return listNode(sch, path, key, label);
-    const ctl = why ? plainCtl(sch) : control(sch, label, false);
+    const ctl = why ? plainCtl(sch) : sch.writeOnly === true && sch.type === 'string' ? secretCtl(path.length === 1 && savedSecrets.has(key)) : control(sch, label, false);
     const bind = !why && typeof sch['x-skp-bind'] === 'string' ? sch['x-skp-bind'] : undefined;
     const liveField = !why && sch['x-skp-preview'] === 'live';
     const here = pointer(path);
@@ -1073,6 +1077,20 @@ function create({ schema, definitions, values, resolved, onChange, mediaList }) 
       fallback(f) {
         text.placeholder = typeof f === 'string' && f ? f : choose ? 'Choose a file, or paste an https:// address' : 'Paste an https:// address';
       },
+    };
+  }
+
+  // A secret (writeOnly): a password field, never filled in, so a saved value never reaches the
+  // page (the API doesn't send it) and one typed isn't shown on a screen being streamed. Empty
+  // keeps what is saved.
+  function secretCtl(isSaved) {
+    const input = h('input', { type: 'password', autocomplete: 'new-password', spellcheck: 'false', autocapitalize: 'off' });
+    return {
+      input,
+      marks: [input],
+      read: () => (input.value === '' ? { empty: true } : { value: input.value }),
+      write() { input.value = ''; },
+      fallback() { input.placeholder = isSaved ? 'Saved. Type a new one to replace it' : 'Not set'; },
     };
   }
 

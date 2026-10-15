@@ -9,6 +9,7 @@ import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { newId } from '../src/ids.js';
 import { GRACE_MS, RECONNECT_MS } from '../src/shows/timeline.js';
+import { fakeConnector } from './fixtures/connectors/fake.js';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const SEC = 1000;
@@ -59,10 +60,10 @@ function fakeClock(start) {
 
 // A platform on a clock (fake or offset), with the TAKEOVER and testbed overlays, every envelope
 // each one's channel sends, and its local API.
-async function setup(t, { dataRoot = tempDir(t), clock, overlays = true } = {}) {
+async function setup(t, { dataRoot = tempDir(t), clock, overlays = true, connectors } = {}) {
   const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(dataRoot, 'data'), SKP_CONFIG_DIR: path.join(dataRoot, 'config') } });
   const { log, entries } = memoryLogger();
-  const platform = await startPlatform(config, { log, templateDirs: [FIXTURE_TEMPLATES], clock: clock && { now: clock.now, timers: clock.timers } });
+  const platform = await startPlatform(config, { log, templateDirs: [FIXTURE_TEMPLATES], clock: clock && { now: clock.now, timers: clock.timers }, connectors });
   defer(t, () => platform.stop());
   if (overlays) {
     platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
@@ -200,7 +201,11 @@ test('what a cue must be: refusals say what to fix', async (t) => {
   bad({ at: 'tomorrow', action: ok }, 'invalid');
   bad({ at: '22:00' }, 'invalid', /action/);
   bad({ at: '22:00', action: { type: 'explode' } }, 'invalid', /show\.scene/);
-  bad({ at: '22:00', action: { type: 'connector.action', connector: 'obs', name: 'setScene' } }, 'not-yet', /step 16/);
+  // connector.action (since step 16): a connection, or a connector with one connection on, and an
+  // action its definition has.
+  bad({ at: '22:00', action: { type: 'connector.action', connector: 'obs', name: 'setScene' } }, 'invalid', /no connection or connector "obs"/);
+  bad({ at: '22:00', action: { type: 'connector.action', name: 'setScene' } }, 'invalid', /"connection".*"connector"/);
+  bad({ at: '22:00', action: { type: 'connector.action', connector: 'obs', connection: 'con_x', name: 'setScene' } }, 'invalid', /not both/);
   bad({ at: '22:00', action: { type: 'webhook', url: 'https://example.com' } }, 'not-yet', /step 20/);
   bad({ at: '22:00', action: { type: 'show.scene', scene: 'Big Scene' } }, 'invalid');
   bad({ at: '22:00', action: { type: 'overlay.action', name: 'titleCard', args: { big: 'x'.repeat(5000) } } }, 'invalid', /4096/);
@@ -220,6 +225,33 @@ test('what a cue must be: refusals say what to fix', async (t) => {
   // Deleting a show deletes its cues.
   platform.shows.remove(other.id);
   assert.equal(platform.store.get('cues', theirs.id), undefined);
+});
+
+test('a connector.action cue runs the connection\'s action through the connector host; a failure is the cue\'s error', async (t) => {
+  const clock = fakeClock(T0);
+  const fake = fakeConnector();
+  const { platform, timeline, cue } = await setup(t, { clock, connectors: { defs: [fake.def] } });
+  const show = platform.shows.create(SHOW);
+  const conn = platform.connectors.create({ connector: 'fake', name: 'Fake', config: { behaviour: 'push' } });
+  // What a connection does settles on promises, not on the hand-cranked clock: wait in real time.
+  assert.ok(await until(() => platform.connectors.get(conn.id).health.status === 'connected'));
+  const echo = timeline.add(show.id, { at: '22:05', action: { type: 'connector.action', connection: conn.id, name: 'echo', args: { text: 'hi' } } });
+  assert.deepEqual(echo.action, { type: 'connector.action', connection: conn.id, name: 'echo', args: { text: 'hi' } });
+  const failing = timeline.add(show.id, { at: '22:06', action: { type: 'connector.action', connector: 'fake', name: 'fail' } });
+  assert.throws(() => timeline.add(show.id, { at: '22:07', action: { type: 'connector.action', connection: conn.id, name: 'explode' } }), (err) => err.code === 'invalid' && /no action "explode"/.test(err.message));
+  clock.advance(5 * MIN);
+  assert.equal(cue(echo.id).status, 'fired');
+  assert.ok(await until(() => platform.audit.list({ action: 'connection.action' }).items.length === 1));
+  assert.equal(cue(echo.id).error, undefined);
+  clock.advance(MIN);
+  assert.ok(await until(() => cue(failing.id).error));
+  assert.match(cue(failing.id).error, /failed: "fail" failed: the fake service said no/);
+  // Turned off by the time its cue comes: it fires, and says why nothing happened.
+  await platform.connectors.update(conn.id, { enabled: false });
+  const late = timeline.add(show.id, { at: '22:08', action: { type: 'connector.action', connection: conn.id, name: 'echo' } });
+  clock.advance(2 * MIN);
+  assert.ok(await until(() => cue(late.id).error));
+  assert.match(cue(late.id).error, /isn't connected/);
 });
 
 test('a recipe generates the night from the lineup, and a mid-show lineup edit fires nothing again', async (t) => {
