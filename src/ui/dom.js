@@ -59,18 +59,66 @@ export function toast(message, { kind, ms } = {}) {
 }
 
 // ---- dialogs -------------------------------------------------------------------------------
-// dialog({ title, body, actions: [{ label, value, kind }] }) → the chosen value, or undefined.
-export function dialog({ title, body, actions = [{ label: 'OK', value: true, kind: 'primary' }], dismissable = true }) {
+// The control the user last focused or pressed: the one that opened a dialog, even when run() has
+// disabled it meanwhile (a disabled button loses the focus) or the browser doesn't focus a button
+// on a click (Safari).
+let lastControl;
+if (typeof document !== 'undefined') {
+  document.addEventListener('focusin', (e) => { lastControl = e.target; });
+  document.addEventListener('pointerdown', (e) => {
+    const c = e.target?.closest?.('button, summary, a[href], input, select, textarea');
+    if (c) lastControl = c;
+  }, true);
+}
+const invokerNow = () => (document.activeElement && document.activeElement !== document.body ? document.activeElement : lastControl);
+
+// Where the focus goes back to when a dialog closes (WCAG 2.4.3): the control that opened it. A
+// button still busy with what the dialog started (run() disables it) gets it once it is enabled
+// again; an item of a closed menu, the menu's button; one that is gone (the page redrew), the
+// page. Not if the focus has moved on meanwhile (the page focused a field of its own).
+function returnFocus(invoker) {
+  const lost = () => !document.activeElement || document.activeElement === document.body;
+  const page = () => q('[data-view]')?.focus({ preventScroll: true });
+  let tries = 0;
+  const attempt = () => {
+    if (!lost()) return;
+    if (!invoker || invoker === document.body || !invoker.isConnected) { page(); return; }
+    if (!invoker.disabled) {
+      invoker.focus({ preventScroll: true });
+      if (document.activeElement !== invoker) {
+        const summary = invoker.closest?.('details.menu')?.querySelector('summary');
+        if (summary) summary.focus({ preventScroll: true });
+        else page();
+      }
+      return;
+    }
+    if (++tries < 100) setTimeout(attempt, 100); // up to 10 s for the request it started
+    else page();
+  };
+  attempt();
+}
+
+// For a page's own <dialog>: call when it opens; the function it returns, when it closes.
+export function focusBack() {
+  const invoker = invokerNow();
+  return () => returnFocus(invoker);
+}
+
+// dialog({ title, body, actions: [{ label, value, kind }], describe }) → the chosen value, or
+// undefined. describe: the body is what the dialog is about, read with its title (a confirmation's
+// consequence); leave it off for a long body, a form or a plan.
+export function dialog({ title, body, actions = [{ label: 'OK', value: true, kind: 'primary' }], dismissable = true, describe = false }) {
+  const invoker = invokerNow();
   return new Promise((resolve) => {
     const id = `dlg-${Math.random().toString(36).slice(2)}`;
     let result;
-    const d = h('dialog', { 'aria-labelledby': id },
-      h('div.dialog-body', h('h2', { id }, title), body),
+    const d = h('dialog', { 'aria-labelledby': id, 'aria-describedby': describe ? `${id}-desc` : undefined },
+      h('div.dialog-body', h('h2', { id }, title), describe ? h('div', { id: `${id}-desc` }, body) : body),
       h('div.form-actions', actions.map((a) => h('button.btn', {
         type: 'button', class: a.kind, onclick: () => { result = a.value; d.close(); },
       }, a.label))));
     d.addEventListener('cancel', (e) => { if (!dismissable) e.preventDefault(); });
-    d.addEventListener('close', () => { d.remove(); resolve(result); });
+    d.addEventListener('close', () => { d.remove(); returnFocus(invoker); resolve(result); });
     document.body.append(d);
     d.showModal();
     // Focus the safe choice first, so Enter doesn't destroy anything.
@@ -79,16 +127,17 @@ export function dialog({ title, body, actions = [{ label: 'OK', value: true, kin
 }
 
 // confirm({ title, consequence, confirmLabel, danger }) → true when confirmed. Every destructive
-// confirmation names its consequence (08 §8.8, H20).
+// confirmation names its consequence (08 §8.8, H20), and a screen reader reads it with the title.
 export async function confirm({ title, consequence, confirmLabel = 'Confirm', danger = true }) {
   const body = typeof consequence === 'string' ? h('p', consequence) : consequence;
-  const value = await dialog({ title, body, actions: [{ label: 'Cancel', value: false }, { label: confirmLabel, value: true, kind: danger ? 'danger' : 'primary' }] });
+  const value = await dialog({ title, body, describe: true, actions: [{ label: 'Cancel', value: false }, { label: confirmLabel, value: true, kind: danger ? 'danger' : 'primary' }] });
   return value === true;
 }
 
 // form dialog: prompt({ title, fields: [{ name, label, type, value, hint, required }], submitLabel })
 // → { name: value } or undefined.
 export function prompt({ title, intro, fields, submitLabel = 'Save' }) {
+  const invoker = invokerNow();
   return new Promise((resolve) => {
     const id = `dlg-${Math.random().toString(36).slice(2)}`;
     let result;
@@ -114,7 +163,7 @@ export function prompt({ title, intro, fields, submitLabel = 'Save' }) {
       d.close();
     });
     const d = h('dialog', { 'aria-labelledby': id }, form);
-    d.addEventListener('close', () => { d.remove(); resolve(result); });
+    d.addEventListener('close', () => { d.remove(); returnFocus(invoker); resolve(result); });
     document.body.append(d);
     d.showModal();
     Object.values(inputs)[0]?.focus();
@@ -122,27 +171,80 @@ export function prompt({ title, intro, fields, submitLabel = 'Save' }) {
 }
 
 // ---- menus ---------------------------------------------------------------------------------
-// menu('More', [{ label, onSelect, danger }], { ariaLabel }) — a disclosure menu. Destructive
+// menu('More', [{ label, onSelect, danger, disabled }], { ariaLabel }) — a menu button: opening it
+// focuses its first item, the arrow keys, Home and End move among them, Escape closes. Destructive
 // actions live in one, never as a top-level button a thumb can hit mid-show (08 §8.1, H20).
 // ariaLabel tells a list of "More" buttons apart ("More for clip.mp4").
 export function menu(label, items, { buttonClass = 'btn', ariaLabel } = {}) {
   const det = h('details.menu');
   const list = h('div.menu-list', { role: 'menu' });
+  const summary = h('summary', { class: buttonClass, 'aria-haspopup': 'menu', 'aria-label': ariaLabel }, label);
   for (const item of items.filter(Boolean)) {
     list.append(h('button', {
       type: 'button', role: 'menuitem', class: item.danger ? 'danger' : undefined, disabled: item.disabled,
-      onclick: () => { det.open = false; item.onSelect(); },
+      // The focus goes to the menu's button before the menu closes (a closed menu's item can't
+      // hold it), so a confirmation it opens hands the focus back there.
+      onclick: () => { summary.focus(); det.open = false; item.onSelect(); },
     }, item.label));
   }
-  det.append(h('summary', { class: buttonClass, 'aria-haspopup': 'menu', 'aria-label': ariaLabel }, label), list);
-  det.addEventListener('keydown', (e) => { if (e.key === 'Escape') { det.open = false; det.querySelector('summary').focus(); } });
-  // Close on a click elsewhere, listening only while open (no listener left behind per menu).
-  const outside = (e) => { if (!det.contains(e.target)) det.open = false; };
+  det.append(summary, list);
+  // The items that can be chosen now (a menu may hide or disable some).
+  const choices = () => [...list.querySelectorAll('[role="menuitem"]')].filter((b) => !b.hidden && !b.disabled);
+  det.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && det.open) {
+      det.open = false;
+      summary.focus();
+      return;
+    }
+    // Arrow keys move among the items (the menu pattern); on the closed menu's button, open it.
+    if (!det.open) {
+      if (e.target === summary && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        det.open = true; // its toggle focuses the first item
+      }
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const all = choices();
+    if (!all.length) return;
+    const at = all.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1
+      : e.key === 'ArrowDown' ? (at + 1) % all.length : (at <= 0 ? all.length - 1 : at - 1);
+    all[next].focus();
+  });
   det.addEventListener('toggle', () => {
-    if (det.open) document.addEventListener('click', outside);
-    else document.removeEventListener('click', outside);
+    if (!det.open) return;
+    place(det, list);
+    choices()[0]?.focus();
   });
   return det;
+}
+
+// A menu's list opens under its button, on the side with room, and stays on the screen (a "More"
+// at the left edge of a phone would otherwise open off it). Measured when it opens (CSSOM).
+function place(det, list) {
+  const gap = 8;
+  list.style.left = '';
+  list.style.right = '';
+  list.style.maxWidth = `${Math.max(0, innerWidth - gap * 2)}px`;
+  const button = det.getBoundingClientRect();
+  const width = list.getBoundingClientRect().width;
+  // Its right edge under the button's (styles.css), unless that runs off the left: then its left
+  // edge under the button's; and never past either side.
+  let left = button.right - width < gap ? button.left : button.right - width;
+  left = Math.min(left, innerWidth - gap - width);
+  left = Math.max(left, gap);
+  list.style.right = 'auto';
+  list.style.left = `${Math.round(left - button.left)}px`;
+}
+
+// A click outside an open menu closes it. One listener for every menu, so a page left with a
+// menu open leaves nothing behind.
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (e) => {
+    for (const det of document.querySelectorAll('details.menu[open]')) if (!det.contains(e.target)) det.open = false;
+  });
 }
 
 // ---- busy buttons --------------------------------------------------------------------------
@@ -238,7 +340,9 @@ export function preview(url, { width = 1920, height = 1080, label, eager, title 
     fit();
   };
   if (eager === false || (phone && eager !== true)) {
-    box.append(h('button.tap', { type: 'button', onclick: load }, h('span', phone ? 'Tap to preview' : 'Show preview')));
+    // Named with the preview's title, so several "Show preview" buttons on a page are told apart.
+    const text = phone ? 'Tap to preview' : 'Show preview';
+    box.append(h('button.tap', { type: 'button', onclick: load, 'aria-label': `${text}: ${title}` }, h('span', text)));
   } else {
     load();
   }
@@ -311,10 +415,16 @@ export function bytes(n) {
 export function every(ms, fn) {
   let timer;
   let stopped = false;
+  let running = false; // a tick in flight: the tab shown again meanwhile must not start a second loop
   const tick = async () => {
-    if (stopped) return;
-    if (document.visibilityState !== 'hidden') {
-      try { await fn(); } catch (err) { console.warn(err); }
+    if (stopped || running) return;
+    running = true;
+    try {
+      if (document.visibilityState !== 'hidden') await fn();
+    } catch (err) {
+      console.warn(err);
+    } finally {
+      running = false;
     }
     if (!stopped) timer = setTimeout(tick, ms);
   };

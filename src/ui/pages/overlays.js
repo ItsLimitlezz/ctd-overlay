@@ -347,6 +347,18 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     toast('It changed since you opened it: here it is as it is now. Make your change again.', { kind: 'error' });
     return reload('It changed since you opened it (someone else, or another tab, saved it). This is it as it is now: make your change again.');
   };
+  // A change that finds the overlay changed (412) or deleted meanwhile (404, its id in the
+  // server's words) shows it as it is now: the page reads it again, or says it is gone.
+  const outdated = async (err) => {
+    if (err?.status === 412) { await stale(); return true; }
+    if (err?.status === 404) {
+      toast(`"${overlay.slug}" was deleted meanwhile (someone else, or another tab): nothing was changed.`, { kind: 'error' });
+      await reload();
+      return true;
+    }
+    return false;
+  };
+  const failed = async (err) => { if (!(await outdated(err))) toast(err); };
   const cleanups = [];
 
   // Canvases, as the overlay's URLs give them (its pinned version); else the manifest's.
@@ -374,7 +386,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     try {
       overlay = await api.patch(ref(), { slug: next }, { ifMatch: overlay });
     } catch (err) {
-      if (err.status === 412) { await stale(); return; }
+      if (await outdated(err)) return;
       toast(err);
       await rename(next);
       return;
@@ -392,8 +404,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     try {
       overlay = await api.patch(ref(), { keyRequired: on }, { ifMatch: overlay });
     } catch (err) {
-      if (err.status === 412) { await stale(); return; }
-      toast(err);
+      await failed(err);
       return;
     }
     toast(on ? 'The URL now needs its key: copy it into OBS again.' : 'The URL now works without its key.');
@@ -409,7 +420,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       confirmLabel: 'Make a new key',
     });
     if (!yes) return;
-    const out = await run(null, () => api.post(`${ref()}/key/rotate`, {}));
+    const out = await run(null, () => api.post(`${ref()}/key/rotate`, {}), { onError: failed });
     if (!out) return;
     toast(overlay.keyRequired ? 'New key made: paste the new URL into OBS.' : 'New key made.');
     await reload();
@@ -425,17 +436,20 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     try {
       await api.del(ref(), { ifMatch: overlay });
     } catch (err) {
-      if (err.status === 412) { await stale(); return; }
-      toast(err);
+      if (err?.status === 404) { toast(`"${overlay.slug}" was already deleted.`); ctx.navigate('/overlays', { replace: true }); return; }
+      await failed(err);
       return;
     }
     toast(`Overlay "${overlay.slug}" deleted.`);
     ctx.navigate('/overlays', { replace: true });
   }
 
+  // Letting a URL work without its key is the owner's call (system:admin): the server refuses
+  // anyone else, so they see why instead of a choice that fails.
+  const keyLocked = overlay.keyRequired && !ctx.can('system:admin');
   const more = canWrite ? menu('More', [
     { label: 'Rename…', onSelect: () => rename() },
-    { label: `Require the key in the URL: ${overlay.keyRequired ? 'On' : 'Off'}`, onSelect: toggleKey },
+    { label: `Require the key in the URL: ${overlay.keyRequired ? 'On' : 'Off'}${keyLocked ? ' (only the owner can turn it off)' : ''}`, disabled: keyLocked, onSelect: toggleKey },
     { label: 'Make a new key…', danger: true, onSelect: rotateKey },
     { label: 'Delete overlay…', danger: true, onSelect: remove },
   ]) : null;
@@ -558,7 +572,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       try {
         overlay = await api.patch(ref(), { settings: values }, { ifMatch: overlay });
       } catch (err) {
-        if (err.status === 412) { await stale(); return; }
+        if (await outdated(err)) return;
         throw err;
       }
       saved = isObj(overlay.settings) ? overlay.settings : values;
@@ -584,8 +598,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     try {
       overlay = await api.patch(ref(), { settings: {} }, { ifMatch: overlay });
     } catch (err) {
-      if (err.status === 412) { await stale(); return; }
-      toast(err);
+      await failed(err);
       return;
     }
     toast('Settings reset to the template\'s defaults.');
@@ -730,7 +743,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
           manifestOf(version),
         ]);
         return out;
-      });
+      }, { onError: failed });
       if (!plan) return;
       const target = await manifestOf(plan.to || version);
       // Ticked, the dialog's button says it shows the plan again rather than upgrading.
@@ -741,14 +754,32 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       const go = await dialog({ title: `Upgrade to version ${version}?`, body: planBody(plan, box, target), actions: [{ label: 'Cancel', value: false }, { label: 'Upgrade', value: true, kind: 'primary' }] });
       if (!go) return;
       if (box?.checked) { runMigrate = true; continue; } // show what the script does first
-      const out = await run(button, () => api.post(`${ref()}/upgrade`, { version, confirm: true, ...(runMigrate ? { runMigrate: true } : {}) }));
+      const out = await run(button, () => api.post(`${ref()}/upgrade`, { version, confirm: true, ...(runMigrate ? { runMigrate: true } : {}) }), { onError: failed });
       if (!out) return;
       toast(`Upgraded to version ${out.to || version}: OBS sources reload with it by themselves.`);
       await reload();
       return;
     }
   }
-  const versionPanel = h('div.card.stack', h('h2', 'Version'));
+  // Going back discards the settings changed since (H20): in the panel's More menu, behind a
+  // confirmation that says so.
+  async function revert(back) {
+    const yes = await confirm({
+      title: `Go back to version ${back}?`,
+      consequence: `The overlay returns to version ${back} with the settings it had then, on air at once: every setting changed since is lost. The URL stays the same.`,
+      confirmLabel: `Go back to ${back}`,
+    });
+    if (!yes) return;
+    const out = await run(null, () => api.post(`${ref()}/revert`, {}), { onError: failed });
+    if (!out) return;
+    toast(`Back on version ${out.to || back}, with the settings it had then.`);
+    await reload();
+  }
+  const previousVersion = overlay.previous?.template?.version;
+  const versionMenu = canWrite && previousVersion
+    ? menu('More', [{ label: `Go back to version ${previousVersion}…`, danger: true, onSelect: () => revert(previousVersion) }], { buttonClass: 'btn ghost', ariaLabel: 'More for the version' })
+    : null;
+  const versionPanel = h('div.card.stack', h('div.card-head', h('h2', 'Version'), versionMenu ? h('div.actions', versionMenu) : null));
   {
     const rows = [
       h('dt', 'Template'), h('dd', versions.length ? h('a', { href: `#/templates/${encodeURIComponent(pinned.id)}` }, tplName) : tplName),
@@ -762,18 +793,6 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       versionPanel.append(newer.length > 1
         ? h('div.inline-form', field('Upgrade to', pick), up)
         : h('div.row', h('span', `Version ${newer[0].version} is installed.`), up));
-    }
-    if (canWrite && overlay.previous?.template?.version) {
-      const back = overlay.previous.template.version;
-      const revert = h('button.btn', { type: 'button', onclick: async () => {
-        const yes = await confirm({ title: `Go back to version ${back}?`, consequence: `The overlay returns to version ${back} with the settings it had then. Settings changed since are lost. The URL stays the same.`, confirmLabel: 'Go back', danger: false });
-        if (!yes) return;
-        const out = await run(revert, () => api.post(`${ref()}/revert`, {}));
-        if (!out) return;
-        toast(`Back on version ${out.to || back}, with the settings it had then.`);
-        await reload();
-      } }, `Go back to version ${back}…`);
-      versionPanel.append(h('div.row', revert));
     }
     if (!versionsKnown) versionPanel.append(h('p.muted', 'The installed versions could not be read. Reload the page to try again.'));
     else if (!versions.length) versionPanel.append(h('p.muted', 'No version of this template is installed.'));

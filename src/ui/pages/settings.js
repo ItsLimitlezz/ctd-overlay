@@ -77,8 +77,20 @@ const ACTIONS = {
   'media.add': 'Uploaded media', 'media.remove': 'Deleted media',
   'overlay.create': 'Created an overlay', 'overlay.rename': 'Renamed an overlay', 'overlay.delete': 'Deleted an overlay',
   'overlay.upgrade': 'Upgraded an overlay', 'overlay.revert': 'Reverted an overlay',
+  'overlay.key-required': 'Changed whether an overlay\'s URL needs its key', 'overlay.key-rotate': 'Made a new key for an overlay',
+  'template.install': 'Installed a template', 'template.uninstall': 'Uninstalled a template', 'template.update': 'Updated a template by itself',
+  'template.follow': 'Followed a template\'s repository', 'template.unfollow': 'Stopped following a template\'s repository',
 };
 const REASONS = { password: 'wrong password', code: 'wrong code' };
+// What the audit log can be narrowed to: the server matches a whole action or its first part
+// ("login" is sign-ins and failed ones), so these are words, not action names to type.
+const AUDIT_FILTERS = [
+  ['', 'Everything'], ['login', 'Sign-ins, and failed ones'], ['session', 'Sign-outs and ended sessions'],
+  ['password', 'Password changes'], ['totp', 'Two-factor'], ['user', 'Users added, changed or removed'],
+  ['token', 'API tokens'], ['overlay', 'Overlays'], ['template', 'Templates'], ['media', 'Media'], ['setup', 'Setup'],
+];
+// A target is shown by name; an internal id ("ses_01J…") says nothing to a person, so it is left out.
+const INTERNAL_ID = /^[a-z]{3}_[0-9A-Z]{26}$/;
 
 // ---- small helpers ---------------------------------------------------------------------------
 let seq = 0;
@@ -274,9 +286,14 @@ async function appearanceTab(panel, ctx, life) {
     resetAccent.disabled = !prefs.accent;
   };
 
-  // Each choice is saved at once, and applied at once.
+  // Each choice is saved at once, and applied at once; the message says which.
+  const saidAs = (patch) => {
+    if ('theme' in patch) return `Theme: ${{ system: 'as this device is set', light: 'light', dark: 'dark' }[patch.theme] || patch.theme}`;
+    if ('density' in patch) return `Density: ${patch.density}`;
+    return patch.accent ? `Accent colour changed to ${patch.accent}` : 'Accent colour back to the theme\'s own';
+  };
   async function save(patch, control) {
-    const out = await run(control, () => api.put('/api/v1/auth/preferences', patch), { done: 'Appearance saved' });
+    const out = await run(control, () => api.put('/api/v1/auth/preferences', patch), { done: saidAs(patch) });
     if (out && typeof out === 'object') prefs = out;
     ctx.applyPreferences(prefs); // on a failure, this undoes the colour being tried
     if (life.alive) sync();
@@ -314,7 +331,7 @@ function installationCard(ctx, life) {
         h('button.btn', { type: 'button', onclick: attempt }, 'Try again'));
       return;
     }
-    const current = settingsR.value || {};
+    let current = settingsR.value || {};
     const images = mediaR.status === 'fulfilled'
       ? (mediaR.value || []).filter((m) => m?.url && (m.kind === 'image' || String(m.type || '').startsWith('image/')))
       : [];
@@ -346,9 +363,16 @@ function installationCard(ctx, life) {
       h('div.form-actions', submit));
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const out = await run(submit, () => api.put('/api/v1/system/settings', { name: name.value.trim() || null, logo: logo.value || null }),
-        { done: 'Installation name and logo saved' });
+      // Only what was changed here is sent (the server keeps the rest): a page open since before
+      // someone else set the logo doesn't put back the old one when its name is saved.
+      const patch = {};
+      if (name.value.trim() !== (current.name || '')) patch.name = name.value.trim() || null;
+      if (logo.value !== (current.logo || '')) patch.logo = logo.value || null;
+      if (!Object.keys(patch).length) { toast('Nothing to save: the name and logo are as they were.'); return; }
+      const what = Object.keys(patch).length === 2 ? 'name and logo' : 'name' in patch ? 'name' : 'logo';
+      const out = await run(submit, () => api.put('/api/v1/system/settings', patch), { done: `Installation ${what} saved` });
       if (!out) return;
+      current = out;
       ctx.applySystem(out);
       ctx.setTitle('Settings · Appearance');
     });
@@ -585,6 +609,13 @@ async function usersTab(panel, ctx, life) {
       if (life.alive) toast(err);
     }
   }
+  // A change to an account sends it as listed (H16), and an account changes whenever its person
+  // signs in: a 412 reads the list again, so the next try is made on the account as it is now.
+  const onError = (u) => (err) => {
+    if (err?.status !== 412) { toast(err); return; }
+    toast(`${u.username}'s account changed since you opened this list (signing in changes it too). The list is up to date now: try again.`, { kind: 'error', ms: 10000 });
+    refresh();
+  };
 
   async function changeRole(u) {
     const answer = await prompt({
@@ -599,7 +630,7 @@ async function usersTab(panel, ctx, life) {
     });
     if (!answer || answer.role === u.role) return;
     const out = await run(null, () => api.patch(path(u), { role: answer.role }, { ifMatch: u }),
-      { done: (x) => `${x?.username || u.username} is now ${roleLabel(x?.role || answer.role).toLowerCase()}, and was signed out everywhere.` });
+      { done: (x) => `${x?.username || u.username} is now ${roleLabel(x?.role || answer.role).toLowerCase()}, and was signed out everywhere.`, onError: onError(u) });
     if (out) refresh();
   }
 
@@ -617,7 +648,7 @@ async function usersTab(panel, ctx, life) {
     if (answer.password.length < 12) { toast('The password needs at least 12 characters. Nothing was changed.', { kind: 'error' }); return; }
     if (answer.password !== answer.again) { toast('The two passwords are different. Nothing was changed.', { kind: 'error' }); return; }
     const out = await run(null, () => api.patch(path(u), { password: answer.password }, { ifMatch: u }),
-      { done: `New password set for ${u.username}. They were signed out everywhere.` });
+      { done: `New password set for ${u.username}. They were signed out everywhere.`, onError: onError(u) });
     if (out) refresh();
   }
 
@@ -629,7 +660,7 @@ async function usersTab(panel, ctx, life) {
     });
     if (!ok) return;
     const out = await run(null, () => api.patch(path(u), { totp: false }, { ifMatch: u }),
-      { done: `Two-factor is off for ${u.username}. They were signed out everywhere.` });
+      { done: `Two-factor is off for ${u.username}. They were signed out everywhere.`, onError: onError(u) });
     if (out) refresh();
   }
 
@@ -640,7 +671,7 @@ async function usersTab(panel, ctx, life) {
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    const out = await run(null, () => api.del(path(u)), { done: `Removed ${u.username}` });
+    const out = await run(null, () => api.del(path(u)), { done: `Removed ${u.username}`, onError: (err) => { toast(err); refresh(); } });
     if (out) refresh();
   }
 
@@ -713,38 +744,57 @@ function addUserCard(onAdded) {
 
 // ---- API tokens (07 §7.5) ----------------------------------------------------------------------
 async function tokensTab(panel, ctx, life) {
-  let tokens = await api.all('/api/v1/tokens');
+  // Whoever manages users (the owner) also sees everyone else's tokens, to revoke one that leaked
+  // or belongs to someone who left: GET /api/v1/tokens?all=true.
+  const admin = ctx.can('users:admin');
+  const read = async () => {
+    const [own, all] = await Promise.all([api.all('/api/v1/tokens'), admin ? api.all('/api/v1/tokens', { query: { all: 'true' } }) : []]);
+    const ownIds = new Set(own.map((t) => t.id));
+    return { own, others: all.filter((t) => !ownIds.has(t.id)) };
+  };
+  let { own: tokens, others } = await read();
   if (!life.alive) return;
   const mine = ctx.session?.scopes || [];
   const box = h('div');
+  const othersBox = h('div');
   const formCard = h('section.card', { hidden: true });
 
-  const show = () => mount(box, tokens.length
-    ? h('ul.list', tokens.map(row))
-    : empty('No API tokens', 'A token lets an app, like a Stream Deck or a chat bot, use this platform without your password.'));
+  const show = () => {
+    mount(box, tokens.length
+      ? h('ul.list', tokens.map((t) => row(t)))
+      : empty('No API tokens', 'A token lets an app, like a Stream Deck or a chat bot, use this platform without your password.'));
+    mount(othersBox, others.length
+      ? h('ul.list', others.map((t) => row(t, { whose: true })))
+      : h('p.muted', 'Nobody else has an API token.'));
+  };
   async function refresh() {
     try {
-      tokens = await api.all('/api/v1/tokens');
+      ({ own: tokens, others } = await read());
       if (life.alive) show();
     } catch (err) {
       if (life.alive) toast(err);
     }
   }
 
-  async function revoke(t) {
-    const ok = await confirm({ title: `Revoke "${t.name}"?`, consequence: 'Apps using this token will stop working.', confirmLabel: 'Revoke' });
+  async function revoke(t, whose) {
+    const ok = await confirm({
+      title: `Revoke "${t.name}"${whose && t.user ? ` of ${t.user}` : ''}?`,
+      consequence: whose ? `Apps ${t.user || 'its owner'} uses with this token will stop working.` : 'Apps using this token will stop working.',
+      confirmLabel: 'Revoke',
+    });
     if (!ok) return;
     const out = await run(null, () => api.del(`/api/v1/tokens/${api.seg(t.id)}`), { done: `Token "${t.name}" revoked` });
     if (out) refresh();
   }
 
-  function row(t) {
+  function row(t, { whose } = {}) {
     const scopes = Array.isArray(t.scopes) ? t.scopes : [];
     const expired = t.expiresAt && Date.parse(t.expiresAt) <= Date.now();
-    const everything = scopes.length && mine.length && mine.every((s) => scopes.includes(s));
+    const everything = !whose && scopes.length && mine.length && mine.every((s) => scopes.includes(s));
+    const name = t.name || 'Unnamed token';
     return h('li',
       lines(
-        h('div.row', h('strong', t.name || 'Unnamed token'), expired ? badge('Expired', 'danger') : null),
+        h('div.row', h('strong', name), whose ? badge(t.user ? `Belongs to ${t.user}` : 'Belongs to no account') : null, expired ? badge('Expired', 'danger') : null),
         h('div.row', everything ? badge('Everything you can do') : scopes.map((s) => h('span.badge', { title: s }, SCOPE_SHORT[s] || s))),
         h('span.small.muted', [
           t.createdAt ? `Created ${day(t.createdAt)}` : null,
@@ -752,7 +802,7 @@ async function tokensTab(panel, ctx, life) {
           t.lastUsedAt ? `last used ${ago(t.lastUsedAt)}` : 'never used',
           Array.isArray(t.ips) && t.ips.length ? `only from ${t.ips.join(', ')}` : null,
         ].filter(Boolean).join(' · '))),
-      menu('More', [{ label: 'Revoke…', danger: true, onSelect: () => revoke(t) }], { ariaLabel: `More for token ${t.name || 'Unnamed token'}` }));
+      menu('More', [{ label: 'Revoke…', danger: true, onSelect: () => revoke(t, whose) }], { ariaLabel: `More for token ${name}${whose && t.user ? ` of ${t.user}` : ''}` }));
   }
 
   const newButton = h('button.btn.primary', { type: 'button' }, 'New token');
@@ -772,7 +822,8 @@ async function tokensTab(panel, ctx, life) {
   });
   mount(formCard, h('h2', 'New API token'), form);
   show();
-  mount(panel, h('div.stack', headed('Your API tokens', newButton, box), formCard));
+  mount(panel, h('div.stack', headed('Your API tokens', newButton, box), formCard,
+    admin ? card('Everyone else\'s tokens', h('p.muted', 'The tokens of the other people who sign in here. Revoke one that leaked, or that belongs to someone who no longer helps run the show.'), othersBox) : null));
 }
 
 function tokenForm(mine, { onCreated, onCancel }) {
@@ -901,14 +952,15 @@ async function auditTab(panel, ctx, life) {
 
   const row = (e) => {
     const plain = ACTIONS[e.action];
-    const what = e.details?.username || e.details?.name || e.target;
+    const target = typeof e.target === 'string' && !INTERNAL_ID.test(e.target) ? e.target : undefined;
+    const what = e.details?.username || e.details?.name || target;
     const reason = e.details?.reason ? REASONS[e.details.reason] || e.details.reason : null;
     return h('li', lines(
-      h('div.spread', h('span', h('strong', plain || e.action), plain ? [' ', h('code.small.muted', e.action)] : null),
+      h('div.spread', h('strong', plain || e.action),
         h('time.small.muted', { datetime: e.at }, dateTime(e.at))),
       h('span.small.muted', [
         `by ${e.actor || 'unknown'}`,
-        what ? `target ${what}` : null,
+        what ? `on ${what}` : null,
         reason,
         e.ip ? `IP ${e.ip}` : null,
       ].filter(Boolean).join(' · '))));
@@ -922,7 +974,8 @@ async function auditTab(panel, ctx, life) {
     next = page?.next;
     more.hidden = !next;
     if (!list.children.length) {
-      mount(box, empty('Nothing recorded', filter ? `Nothing for "${filter}". Try a shorter word, like login or token.` : 'Sign-ins and changes show up here.'));
+      const label = AUDIT_FILTERS.find(([v]) => v === filter)?.[1];
+      mount(box, empty('Nothing recorded', filter ? `Nothing of "${label || filter}" in the log. Choose Everything to see what is.` : 'Sign-ins and changes show up here.'));
     } else {
       mount(box, list);
     }
@@ -934,12 +987,12 @@ async function auditTab(panel, ctx, life) {
     if (page && life.alive) showPage(page, true);
   });
 
-  const input = h('input', { type: 'search', name: 'action', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'login' });
-  const apply = h('button.btn', { type: 'submit' }, 'Filter');
-  const form = h('form.inline-form', { role: 'search' }, field('Action', input), apply);
+  const input = h('select', { name: 'action' }, AUDIT_FILTERS.map(([value, label]) => h('option', { value }, label)));
+  const apply = h('button.btn', { type: 'submit' }, 'Show');
+  const form = h('form.inline-form', { role: 'search' }, field('What', input), apply);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    filter = input.value.trim().toLowerCase();
+    filter = input.value;
     const page = await run(apply, () => fetchPage(undefined));
     if (page && life.alive) showPage(page, false);
   });
@@ -949,7 +1002,6 @@ async function auditTab(panel, ctx, life) {
   mount(panel, card('Audit log',
     h('p.muted', 'Who did what, and when: sign-ins, users, tokens, overlays and media. Kept 90 days unless set otherwise.'),
     form,
-    h('p.muted.small', 'An action like login, token or overlay.create; empty for everything.'),
     box,
     status,
     h('div.row', more)));

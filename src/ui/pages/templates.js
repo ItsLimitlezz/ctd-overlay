@@ -13,7 +13,7 @@
 //   POST   /api/v1/overlays { slug, template: { id, version } }   "Use template"
 //   /o/~p.<id>@<version>?mock=1&canvas=&scene=               the live preview with sample data
 import * as api from '../api.js';
-import { ago, badge, bytes, confirm, dialog, empty, field, h, menu, mount, notice, pageHead, preview, run, tabs, toast } from '../dom.js';
+import { ago, badge, bytes, confirm, dialog, empty, field, focusBack, h, menu, mount, notice, pageHead, preview, run, tabs, toast } from '../dom.js';
 
 // ---- words -----------------------------------------------------------------------------------
 const CATEGORIES = {
@@ -108,6 +108,7 @@ function suggestSlug(id, taken) {
 // askForm({ title, intro, note, fields: [{ name, label, type, value, hint, options, … }],
 // submitLabel, onSubmit(values) }) → what onSubmit resolved with, or undefined when cancelled.
 function askForm({ title, intro, note, fields, submitLabel = 'Save', onSubmit }) {
+  const back = focusBack();
   return new Promise((resolve) => {
     const id = `dlg-${Math.random().toString(36).slice(2)}`;
     const inputs = {};
@@ -144,7 +145,7 @@ function askForm({ title, intro, note, fields, submitLabel = 'Save', onSubmit })
       if (done) d.close();
     });
     d.addEventListener('cancel', (e) => { if (submit.disabled) e.preventDefault(); });
-    d.addEventListener('close', () => { d.remove(); resolve(result); });
+    d.addEventListener('close', () => { d.remove(); back(); resolve(result); });
     document.body.append(d);
     d.showModal();
     Object.values(inputs)[0]?.focus();
@@ -235,7 +236,7 @@ export async function list(view, ctx) {
   }
 
   function syncUrl() {
-    if (!alive) return;
+    if (!alive || !ctx.alive()) return; // left while loading: the address is another page's now
     const qs = new URLSearchParams();
     if (state.category) qs.set('category', state.category);
     if (state.q.trim()) qs.set('q', state.q.trim());
@@ -346,7 +347,9 @@ export async function list(view, ctx) {
       let out;
       try {
         out = await run(install, () => (usedMode === 'file'
-          ? api.post('/api/v1/templates', undefined, { raw: file, contentType: 'application/octet-stream' })
+          // Its file name, for where it came from. A header can't carry every letter (fetch refuses
+          // most beyond ASCII), so those go as _.
+          ? api.post('/api/v1/templates', undefined, { raw: file, contentType: 'application/octet-stream', headers: { 'x-skp-filename': file.name.replace(/[^\x20-\x7e]/g, '_') } })
           : api.post('/api/v1/templates', { url: link.value.trim() })), {
           onError: (err) => mount(status, notice(err.message, 'danger'), findingsList(err.body?.findings)),
         });
@@ -374,7 +377,8 @@ export async function list(view, ctx) {
         panes),
       h('div.form-actions', cancel, install));
     d.addEventListener('cancel', (e) => { if (busy) e.preventDefault(); });
-    d.addEventListener('close', () => { token += 1; d.remove(); });
+    const back = focusBack();
+    d.addEventListener('close', () => { token += 1; d.remove(); back(); });
     document.body.append(d);
     d.showModal();
     d.querySelector('[role="tab"]')?.focus();
