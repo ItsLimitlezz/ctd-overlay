@@ -119,7 +119,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
-| `GET /shows/{id}/alerts` · `POST /shows/{id}/alerts/pause` · `/resume` · `/skip` · `/replay` | The show's alert queue (05 §5.5) |
+| `GET /alerts` · `POST /alerts/pause` · `/resume` · `/skip` · `/replay` | The alert queues (05 §5.5): one per show, or per overlay outside a show, each named by `queue` (the show's or the overlay's id). `GET` lists what is on screen and what waits; pause and resume apply to every queue; skip and replay take `{ queue }` (skip without it: every queue) |
 | `GET/POST /shows/{id}/cues` · `PATCH/DELETE /shows/{id}/cues/{cueId}` | Timeline |
 | `POST /shows/{id}/cues/{cueId}/fire` · `/skip` · `/rearm` | Operator overrides |
 | `POST /shows/{id}/cues/build` | Regenerate cues from the lineup (09 §9.5) |

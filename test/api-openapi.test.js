@@ -17,6 +17,7 @@ import { systemRoutes } from '../src/http/system.js';
 import { mediaApiRoutes } from '../src/media/api.js';
 import { overlayApiRoutes } from '../src/overlays/api.js';
 import { simulateRoutes } from '../src/overlays/simulate.js';
+import { alertRoutes } from '../src/alerts/routes.js';
 import { showRoutes } from '../src/shows/routes.js';
 import { templateRoutes } from '../src/templates/api.js';
 import { fakeConnector } from './fixtures/connectors/fake.js';
@@ -69,6 +70,7 @@ function declarations() {
   authRoutes({ api, auth: {}, audit: {} });
   showRoutes({ api, shows: {}, timeline: {} });
   simulateRoutes({ api, overlays: {}, bus: {}, log: {} });
+  alertRoutes({ api, alerts: {}, overlays: {}, shows: {} });
   overlayApiRoutes({ api, overlays: {}, templates: {}, shows: {}, audit: {}, base: () => '' });
   templateRoutes({ api, templates: {}, overlays: {}, sources: {}, audit: {}, config: {} });
   mediaApiRoutes({ api, media: {}, overlays: {}, audit: {} });
@@ -237,6 +239,12 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('GET', '/overlays/main/url');
   await call('POST', '/overlays/solo/key/rotate', { body: {} });
   await call('POST', '/overlays/solo/simulate', { body: { kind: 'follow' } });
+  // The alert queue the simulated follow went through.
+  await call('GET', '/alerts');
+  await call('POST', '/alerts/pause', { body: {} });
+  await call('POST', '/alerts/resume', { body: {} });
+  await call('POST', '/alerts/skip', { body: {} });
+  await call('POST', '/alerts/replay', { body: {} });
   await call('PUT', '/overlays/solo/scene', { body: { scene: 'brb' } });
   await call('POST', '/overlays/solo/actions/titleCard', { body: {} });
   await call('POST', '/overlays', { body: { slug: 'up', template: { id: 'dev.skp.sample', version: '1.0.0' } } });

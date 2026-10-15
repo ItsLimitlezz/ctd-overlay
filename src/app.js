@@ -4,6 +4,8 @@
 // instances.
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { alertSpec, createAlertQueue } from './alerts/queue.js';
+import { alertRoutes } from './alerts/routes.js';
 import { createAudit } from './auth/audit.js';
 import { createAuth } from './auth/index.js';
 import { createHasher } from './auth/passwords.js';
@@ -103,6 +105,20 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure, readOnly });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg, readOnly });
     const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly });
+    // Alerts reach overlays through the queue (05 §5.5): one per show, or per overlay outside one.
+    const alerts = createAlertQueue({
+      groupOf: (id) => shows.list().find((s) => s.overlays.includes(id))?.id,
+      specOf: (id) => {
+        const doc = store.get('overlays', id);
+        const r = doc && overlays.resolve(doc.data.slug);
+        return r?.template ? alertSpec(r.template.manifest, r.settings) : undefined;
+      },
+      deliver: (id, env) => bus.deliver(id, env),
+      cut: (ids, alertId) => { for (const id of ids) bus.publish('alerts.cut', { alertId }, { target: id }); },
+      stamp: (env, data) => bus.envelope(env.type, data, env.src),
+      now: clock.now, timers: clock.timers, log: log.child('alerts'),
+    });
+    bus.useAlertQueue(alerts);
     let registry;
     try {
       registry = createConnectorRegistry(connectorOptions.defs ?? BUILTIN);
@@ -125,9 +141,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
     return {
-      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors,
+      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts,
       close() {
         clearInterval(freshen);
+        alerts.close();
         sources.stop();
         timeline.stop();
         shows.stop();
@@ -196,6 +213,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...authRoutes({ api, auth, audit }),
       ...showRoutes({ api, shows, timeline }),
       ...simulateRoutes({ api, overlays, bus, log: log.child('simulate'), holdMs: simulateHoldMs }),
+      ...alertRoutes({ api, alerts: data.alerts, overlays, shows }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
       ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
@@ -257,6 +275,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     timeline,
     sources,
     connectors,
+    alerts: data.alerts,
     crash,
     server,
     port: address.port,
