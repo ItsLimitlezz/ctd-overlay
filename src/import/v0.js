@@ -18,7 +18,7 @@
 // creates or changes. Nothing in v0's files is trusted as a path: the clip is looked up by its base
 // name in <dir>/uploads, and nowhere else. Secrets go only into the store, encrypted: never into
 // the summary, the audit log or the logs.
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { MediaError, mediaUrl } from '../media/library.js';
 import { resolveScene, ShowError } from '../shows/registry.js';
@@ -32,6 +32,7 @@ const DAY_BOUNDARY = '12:00';
 const FILE_BYTES = 16 * 1024 * 1024;
 const NAME_CHARS = 80;
 const SLOTS = 100;
+const MANUAL_CUES = 500; // v0's hand-made cues a show takes (with the recipe's, under its cue limit)
 const LABEL_CHARS = 120;
 const CREDENTIAL_CHARS = 200; // what v0 kept (server.js /api/viewers)
 const HOUR = 60 * 60 * 1000;
@@ -59,12 +60,26 @@ export class ImportError extends Error {
 }
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-// A value from a v0 file, for a message: short, on one line.
+// A value from a v0 file, for a message: short, on one line. A value too deep to write out (a list
+// nested thousands of times overflows the stack) is named by its kind.
 const quote = (v) => {
-  const s = typeof v === 'string' ? `"${v}"` : JSON.stringify(v) ?? String(v);
+  let s;
+  try { s = typeof v === 'string' ? `"${v}"` : JSON.stringify(v) ?? String(v); } catch { s = kind(v); }
   return (s.length > 60 ? `${s.slice(0, 57)}…` : s).replace(/[\x00-\x1f\x7f]/g, ' ');
 };
 const kind = (v) => (Array.isArray(v) ? 'a list' : v === null ? 'null' : typeof v === 'object' ? 'an object' : typeof v);
+// A v0 value as text when it is text, a number or true/false; anything else is '' (String() of a
+// deeply nested list overflows the stack too).
+const textOf = (v) => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '');
+// An instant JavaScript can hold (a Date beyond ±8.64e15 ms is invalid).
+const isInstant = (v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 8.64e15;
+// A long list's messages: the first `max`, then only counted (a huge file can't flood the summary).
+function bounded(push, max) {
+  let n = 0;
+  const say = (m) => (n++ < max ? push(m) : undefined);
+  say.rest = () => Math.max(0, n - max);
+  return say;
+}
 // JSON equality that ignores key order.
 const sorted = (v) => (Array.isArray(v) ? v.map(sorted) : isObject(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v);
 const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
@@ -124,10 +139,10 @@ export function upgradeSetup(input) {
     const ev = { ...s.evOpts };
     const legacy = ev.viewers;
     if (legacy && !s.viewersMode) {
-      if (/^(live|auto|1)$/i.test(String(legacy))) s.viewersMode = 'live';
+      if (/^(live|auto|1)$/i.test(textOf(legacy))) s.viewersMode = 'live';
       else {
         s.viewersMode = 'manual';
-        s.viewersText = String(legacy);
+        s.viewersText = textOf(legacy);
       }
     }
     delete ev.viewers;
@@ -168,9 +183,16 @@ export function readV0(dir) {
   };
   const read = { dir: root, kit: json('kit.json'), live: json('live.json'), rundown: json('rundown.json'), shows: json('shows.json'), viewers: json('viewers.json'), found, warnings };
   const uploads = path.join(root, 'uploads');
+  // uploads/ itself must be a directory in v0's: a link (or a Windows junction) could make "a
+  // file in uploads/" any file the importer can read.
+  let inside = false;
+  try {
+    inside = lstatSync(uploads).isDirectory() && realpathSync(uploads) === path.join(realpathSync(root), 'uploads');
+  } catch { /* none */ }
+  if (!inside && existsSync(uploads)) warnings.push(`uploads/ in ${root} isn't a directory of its own (a link?); nothing in it is imported.`);
   try {
     // What v0 kept there; .in-* are uploads it never finished.
-    read.uploads = readdirSync(uploads, { withFileTypes: true }).filter((e) => e.isFile() && !e.name.startsWith('.')).map((e) => e.name);
+    read.uploads = inside ? readdirSync(uploads, { withFileTypes: true }).filter((e) => e.isFile() && !e.name.startsWith('.')).map((e) => e.name) : [];
   } catch {
     read.uploads = [];
   }
@@ -183,6 +205,7 @@ export function readV0(dir) {
     const url = isObject(video) && typeof video.url === 'string' ? video.url : '';
     const base = url.split(/[?#]/)[0].split(/[\\/]/).pop();
     if (!base || base.startsWith('.')) warnings.push(`live.json's clip ${url ? quote(url) : '(it has no URL)'} doesn't name a file in uploads/; The Line's clip isn't imported.`);
+    else if (!inside && existsSync(uploads)) warnings.push(`The Line's clip ${quote(base)} would be in uploads/, which isn't a directory of its own; it isn't imported.`);
     else {
       let s;
       try { s = lstatSync(path.join(uploads, base)); } catch { /* not there */ }
@@ -250,24 +273,35 @@ function lineupOf(lineup, where, skip, warn) {
     warn(`${where}: the lineup is ${kind(lineup)}, not a list; no acts imported.`);
     return { slots, byRaw };
   }
+  // Past the act limit, entries are only counted, and past 20 messages so are the problems: a huge
+  // file can't flood the summary or take minutes.
+  const say = bounded(warn, 20);
+  const pass = bounded(skip, 20);
+  let over = 0;
   lineup.forEach((s, i) => {
-    if (!isObject(s)) return warn(`${where}: entry ${i + 1} is ${kind(s)}, not an act; skipped.`);
-    if (s.name !== undefined && s.name !== null && typeof s.name !== 'string') return warn(`${where}: act ${i + 1}'s name is ${kind(s.name)} (${quote(s.name)}); skipped.`);
+    if (slots.length >= SLOTS) {
+      over++;
+      return undefined;
+    }
+    if (!isObject(s)) return say(`${where}: entry ${i + 1} is ${kind(s)}, not an act; skipped.`);
+    if (s.name !== undefined && s.name !== null && typeof s.name !== 'string') return say(`${where}: act ${i + 1}'s name is ${kind(s.name)} (${quote(s.name)}); skipped.`);
     const name = typeof s.name === 'string' ? s.name.trim() : '';
     const time = hhmm(s.time);
-    if (!name) return skip(`${where}: act ${i + 1}${time ? ` at ${time}` : ''} has no name.`);
-    if (!time) return skip(`${where}: "${name}" has ${typeof s.time === 'string' && s.time.trim() ? `the time ${quote(s.time)}, which isn't HH:MM` : 'no time'}.`);
-    if (slots.length >= SLOTS) return warn(`${where}: "${name}" is past the ${SLOTS}-act limit; skipped.`);
+    if (!name) return pass(`${where}: act ${i + 1}${time ? ` at ${time}` : ''} has no name.`);
+    if (!time) return pass(`${where}: "${name}" has ${typeof s.time === 'string' && s.time.trim() ? `the time ${quote(s.time)}, which isn't HH:MM` : 'no time'}.`);
     const slot = { time, name: name.slice(0, NAME_CHARS).trim() };
-    if (name.length > NAME_CHARS) warn(`${where}: "${slot.name}…" is cut to ${NAME_CHARS} characters.`);
+    if (name.length > NAME_CHARS) say(`${where}: "${slot.name}…" is cut to ${NAME_CHARS} characters.`);
     if (typeof s.b2b === 'string' && s.b2b.trim()) slot.b2b = s.b2b.trim().slice(0, NAME_CHARS).trim();
-    else if (s.b2b !== undefined && s.b2b !== null && typeof s.b2b !== 'string') warn(`${where}: "${name}"'s b2b is ${kind(s.b2b)}; left out.`);
+    else if (s.b2b !== undefined && s.b2b !== null && typeof s.b2b !== 'string') say(`${where}: "${name}"'s b2b is ${kind(s.b2b)}; left out.`);
     if (s.closer === true || s.closer === 1) slot.closer = true;
-    else if (s.closer !== undefined && s.closer !== null && s.closer !== false && s.closer !== 0) warn(`${where}: "${name}"'s closer is ${kind(s.closer)} (${quote(s.closer)}), not true or false; not the closer.`);
+    else if (s.closer !== undefined && s.closer !== null && s.closer !== false && s.closer !== 0) say(`${where}: "${name}"'s closer is ${kind(s.closer)} (${quote(s.closer)}), not true or false; not the closer.`);
     byRaw.set(i, slots.length);
     slots.push(slot);
     return undefined;
   });
+  if (over) warn(`${where}: ${plural(over, 'more entry', 'more entries')} past the ${SLOTS}-act limit; left out.`);
+  const more = say.rest() + pass.rest();
+  if (more) warn(`${where}: ${plural(more, 'more problem')} like those above; those entries are left out or cut.`);
   return { slots, byRaw };
 }
 
@@ -287,7 +321,7 @@ export function matchHeadliner(slots, name) {
 // The name the event options give, else the event's billed artist.
 function headlinerOf(f, slots) {
   const own = typeof f.evOpts.headliner === 'string' ? f.evOpts.headliner.trim() : '';
-  const name = own || PACKS[f.event]?.artist;
+  const name = own || (Object.hasOwn(PACKS, f.event) ? PACKS[f.event].artist : undefined);
   if (!name) return undefined;
   const slot = matchHeadliner(slots, name);
   return { name, source: own ? 'the event options' : 'the event\'s billed artist', slot, matched: slot >= 0 };
@@ -308,8 +342,8 @@ function settingsOf(f, look, headliner, where, warn) {
     const o = f.evOpts;
     // The event look had its own scanline switch (evOpts.scan); the setup's was hidden there.
     s.scanlines = flag(o.scan, true);
-    const star = String(o.star ?? 'a').toLowerCase();
-    if (STARS[star]) s.starStyle = STARS[star];
+    const star = (o.star === undefined || o.star === null ? 'a' : textOf(o.star)).toLowerCase();
+    if (Object.hasOwn(STARS, star)) s.starStyle = STARS[star];
     else warn(`${where}: the star treatment ${quote(o.star)} isn't one of v0's (a to d); the template's is used.`);
     s.showPoster = flag(o.poster, true);
     s.chip = flag(o.chip, true);
@@ -469,9 +503,14 @@ export function mapV0(read, { name, slug = 'takeover', timezone, timezoneSource 
   const list = isObject(rd) ? rd.cues : undefined;
   if (rd !== undefined && !Array.isArray(list)) warn(`rundown.json has no list of cues (${isObject(rd) ? `its cues are ${kind(list)}` : `it is ${kind(rd)}`}); no cues imported from it.`);
   const ctx = { slots, byRaw, clip: Boolean(read.clip), np: recipe.nowPlayingEveryMin !== null, sched, manifest };
+  // An operator set a handful a night: past MANUAL_CUES they are only counted, and past 20 messages
+  // so are the skipped ones, so a huge rundown can't take minutes or flood the summary.
+  const cueSay = bounded(warn, 20);
+  const cuePass = bounded(skip, 20);
+  let extraCues = 0;
   for (const c of Array.isArray(list) ? list : []) {
     if (!isObject(c)) {
-      warn(`rundown.json: a cue is ${kind(c)}; skipped.`);
+      cueSay(`rundown.json: a cue is ${kind(c)}; skipped.`);
       continue;
     }
     if (c.auto === true) {
@@ -482,27 +521,34 @@ export function mapV0(read, { name, slug = 'takeover', timezone, timezoneSource 
     const label = typeof c.label === 'string' && c.label.trim() ? c.label.trim().slice(0, LABEL_CHARS) : undefined;
     const what = `v0's cue ${label ? quote(label) : quote(c.action)}${at ? ` at ${at}` : ''}`;
     if (!at) {
-      warn(`${what}: its time ${quote(c.at)} isn't HH:MM; skipped.`);
+      cueSay(`${what}: its time ${quote(c.at)} isn't HH:MM; skipped.`);
       continue;
     }
     if (c.done === true) {
-      skip(`${what}: it already happened.`);
+      cuePass(`${what}: it already happened.`);
       continue;
     }
-    if (typeof c.epoch === 'number' && Number.isFinite(c.epoch)) {
+    if (isInstant(c.epoch)) {
       const tonight = resolveTime(date, at, { timezone, dayBoundary: DAY_BOUNDARY }).at;
       if (Math.abs(c.epoch - tonight) > 12 * HOUR) {
-        skip(`${what}: it was for another night (${dateIn(timezone, c.epoch - 12 * HOUR)}).`);
+        cuePass(`${what}: it was for another night (${dateIn(timezone, c.epoch - 12 * HOUR)}).`);
         continue;
       }
     }
     const r = cueAction(c, ctx);
     if (!r.action) {
-      skip(`${what}: ${r.why}.`);
+      cuePass(`${what}: ${r.why}.`);
       continue;
     }
-    cues.push({ at, ...(label ? { label } : {}), action: r.action, v0: String(c.action) });
+    if (cues.length >= MANUAL_CUES) {
+      extraCues++;
+      continue;
+    }
+    cues.push({ at, ...(label ? { label } : {}), action: r.action, v0: textOf(c.action) || kind(c.action) });
   }
+  if (extraCues) warn(`rundown.json: ${plural(extraCues, 'more hand-made cue')} past the ${MANUAL_CUES} imported; left out.`);
+  const moreCues = cueSay.rest() + cuePass.rest();
+  if (moreCues) skip(`rundown.json: ${plural(moreCues, 'more cue')} skipped for the same kinds of reasons as those above.`);
 
   // ---- planned dates, from today on in the show's zone
   const plans = [];
@@ -650,6 +696,18 @@ export function checkV0(map, { templates, overlays, shows, media }, { replace = 
     const holder = list.find((s) => s.overlays.includes(existing.doc.id));
     if (holder && holder.id !== out.show?.id) {
       out.refusal = { code: 'in-other-show', message: `The overlay "${slug}" is in the show "${holder.name}", and an overlay belongs to one show; give the import another --slug, or take it out of that show first.` };
+      return out;
+    }
+  }
+  // The new show as the show registry would refuse it (a lineup too large for its overlays, say),
+  // before anything is written: --replace removes the old show only once the new one can be made.
+  if (shows?.check) {
+    const s = map.show;
+    try {
+      shows.check({ name: s.name, date: s.date, timezone: s.timezone, dayBoundary: s.dayBoundary, ...(s.goLive ? { goLive: s.goLive } : {}), lineup: s.lineup }, { replacing: out.show?.id });
+    } catch (err) {
+      if (!(err instanceof ShowError)) throw err;
+      out.refusal = { code: err.code || 'invalid', message: `The show can't be made from v0's setup: ${err.message}${out.show ? ` The show "${out.show.name}" stays as it is.` : ''}` };
     }
   }
   return out;
@@ -735,7 +793,7 @@ export async function applyV0(map, data, { replace = false, actor = 'cli', now =
   const built = timeline.build(created.id, map.recipe);
   record('cues.build', created.id, { recipe: map.recipe, generated: built.filter((c) => c.generated).length });
   let manual = 0;
-  for (const c of map.cues) {
+  for (const [i, c] of map.cues.entries()) {
     const name = c.label ? `"${c.label}"` : c.v0;
     if (c.action.mediaId === CLIP && !clip) {
       skipped.push(`v0's cue ${name} at ${c.at}: it plays The Line's clip, which wasn't imported.`);
@@ -748,20 +806,29 @@ export async function applyV0(map, data, { replace = false, actor = 'cli', now =
       manual++;
     } catch (err) {
       if (!(err instanceof ShowError)) throw err;
+      // The show is full: the rest would fail the same way, one by one.
+      if (err.code === 'too-many') {
+        const left = map.cues.length - i;
+        warn(`${left === 1 ? 'v0\'s last cue wasn\'t' : `v0's last ${left} cues weren't`} added: ${err.message}`);
+        break;
+      }
       warn(`v0's cue ${name} at ${c.at} wasn't added: ${err.message}`);
     }
   }
 
-  // 5. Planned dates. A plan's settings replace the overlay's when its day comes, so a plan whose
-  // setup looked different carries the overlay's whole settings.
+  // 5. Planned dates. A plan's settings replace the overlay's when its day comes, and a plan without
+  // any leaves the last plan's on air: so every plan carries the overlay's whole settings for its
+  // night, the ones the show starts with included (the 24th's event look must not stay for the 31st).
   const plans = [];
   for (const p of map.plans) {
     const ps = merged(base0, withClip(p));
-    const input = { date: p.date, goLive: p.goLive, dayBoundary: p.dayBoundary, lineup: p.lineup, ...(same(ps, settings) ? {} : { overlaySettings: { [slug]: ps } }) };
+    const input = { date: p.date, goLive: p.goLive, dayBoundary: p.dayBoundary, lineup: p.lineup, overlaySettings: { [slug]: ps } };
     try {
       const plan = timeline.plans.add(created.id, input);
-      record('plan.add', plan.id, { show: created.id, date: p.date, acts: p.lineup.length, settings: Boolean(input.overlaySettings) });
-      plans.push({ id: plan.id, date: p.date, acts: p.lineup.length, settings: Boolean(input.overlaySettings), activateAt: plan.activateAt, ...(plan.activatedAt ? { activatedAt: plan.activatedAt } : {}) });
+      // ownLook: its settings differ from the show's (the summary says so).
+      const ownLook = !same(ps, settings);
+      record('plan.add', plan.id, { show: created.id, date: p.date, acts: p.lineup.length, ownLook });
+      plans.push({ id: plan.id, date: p.date, acts: p.lineup.length, ownLook, activateAt: plan.activateAt, ...(plan.activatedAt ? { activatedAt: plan.activatedAt } : {}) });
     } catch (err) {
       if (!(err instanceof ShowError)) throw err;
       warn(`The plan for ${p.date} wasn't added: ${err.message}`);
@@ -869,7 +936,7 @@ export function importSummary(map, result, { dryRun = false, check, note } = {})
   out();
 
   const plans = result ? result.plans : map.plans;
-  out(`Planned dates: ${plans.length ? plans.map((p) => `${p.date}${(result ? p.settings : p.look !== map.overlay.look) ? ' (with its own look)' : ''}${p.activatedAt ? ' (the show already)' : ''}`).join(', ') : 'none to come'}.`);
+  out(`Planned dates: ${plans.length ? plans.map((p) => `${p.date}${(result ? p.ownLook : p.look !== map.overlay.look) ? ' (with its own look)' : ''}${p.activatedAt ? ' (the show already)' : ''}`).join(', ') : 'none to come'}.`);
   if (map.pastPlans) out(`  ${plural(map.pastPlans, 'date')} in shows.json ${map.pastPlans === 1 ? 'is' : 'are'} past, and left out.`);
   const conns = result ? result.connections : map.connections.map((c) => ({ platform: c.platform, channel: c.channel }));
   if (conns.length) {

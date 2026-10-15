@@ -153,10 +153,11 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const config = () => loadConfig({ argv: CONFIG_FLAGS.flatMap((f) => (opts[f] === undefined ? [] : [`--${f}`, opts[f]])), env });
   // Warnings and errors only, on stderr: stdout is the command's result.
   const logger = () => createLogger({ level: opts['log-level'] || 'warn', write: (line) => stderr.write(`${line}\n`) }).child('cli');
-  // The data directory, locked, for a command that may write to it.
-  const openFor = (purpose, cfg = config()) => {
+  // The data directory, locked, for a command that may write to it (readOnly: a dry run's look,
+  // which changes nothing).
+  const openFor = (purpose, cfg = config(), { readOnly = false } = {}) => {
     checkOwner(cfg.dataDir);
-    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook, ffmpeg: ffmpegHook, clock: clockHook ? { now: clockHook.now } : undefined });
+    const data = openData(cfg, { log: logger(), purpose, fetch: fetchHook, lookup: lookupHook, ffmpeg: ffmpegHook, clock: clockHook ? { now: clockHook.now } : undefined, readOnly });
     return Object.assign(data, { record: (details) => data.audit.record({ action: purpose.replace(/ /g, '.'), actor: cliActor(), ...details }) });
   };
   // The running platform's local API: the parsed answer, or a PlatformError.
@@ -517,7 +518,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
           let note;
           if (existsSync(path.join(cfg.dataDir, cfg.store === 'json' ? 'skp.json' : 'skp.db'))) {
             try {
-              data = openFor('import v0', cfg);
+              data = openFor('import v0', cfg, { readOnly: true });
             } catch (err) {
               if (!(err instanceof StartupError) || err.code !== 'locked') throw err;
               note = 'The platform is running, so what is already there (a show or an overlay of the same name) wasn\'t checked. Stop it to import.';

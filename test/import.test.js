@@ -5,7 +5,7 @@
 // evParams form) and messy (every field of the wrong type, broken files).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openData } from '../src/app.js';
@@ -297,7 +297,8 @@ test('skp import v0: the show, its overlay with the Line clip, the timeline, pla
     const plans = data.timeline.plans.list(show.id);
     assert.deepEqual(plans.map((p) => [p.date, p.goLive, p.dayBoundary, p.lineup.length]), [['2026-10-24', '22:30', '12:00', 2], ['2026-10-31', '22:00', '12:00', 2]]);
     assert.deepEqual(plans[0].overlaySettings, { takeover: { venue: SHOW, tickerItems: ['DPRTMNT TAKEOVER', 'DOORS 10:30PM'], lineClip: mediaUrl(clip) } });
-    assert.equal(plans[1].overlaySettings, undefined);
+    // A plan with the show's own look carries it too: a plan before it would otherwise leave its look on air.
+    assert.deepEqual(plans[1].overlaySettings, { takeover: data.overlays.resolve('takeover').doc.data.settings });
     assert.deepEqual(plans[1].lineup, [{ time: '23:00', name: 'Trapment' }, { time: '01:00', name: 'VIKKSTAR', headliner: true, closer: true }]);
 
     // Credentials kept for connections: the secret encrypted, bound to its record.
@@ -402,7 +403,7 @@ test('--json: what was made, the clip converted when ffmpeg is there, and never 
   assert.deepEqual(out.headliner, { name: 'VIKKSTAR', from: 'the event\'s billed artist', act: 'Vik Starr' });
   assert.equal(out.clip.converted, true);
   assert.deepEqual(out.cues, { generated: 30, manual: 9, total: 39 });
-  assert.deepEqual(out.plans.map((p) => [p.date, p.settings]), [['2026-10-24', true], ['2026-10-31', false]]);
+  assert.deepEqual(out.plans.map((p) => [p.date, p.ownLook]), [['2026-10-24', true], ['2026-10-31', false]]);
   assert.deepEqual(out.urls.map((u) => u.canvas), ['h', 'v']);
   assert.equal(out.pastPlans, 2);
   noSecrets(res.stdout, res.stderr);
@@ -462,4 +463,143 @@ test('key rotate re-encrypts the kept credentials; the platform\'s lock keeps th
     assert.equal(locked.code, 75);
     assert.match(locked.stderr, /already uses the data directory/);
   });
+});
+
+// ---- from the adversarial review --------------------------------------------------------------
+
+// A copy of a fixture to change, in the test's temporary directory.
+function copyOf(t, fixture) {
+  const dir = path.join(tempDir(t), 'v0data');
+  cpSync(fixture, dir, { recursive: true });
+  return dir;
+}
+const editJson = (file, fn) => writeFileSync(file, JSON.stringify(fn(JSON.parse(readFileSync(file, 'utf8')))));
+
+test('every plan carries its night\'s whole look: the 24th\'s TAKEOVER look doesn\'t stay on air for the 31st', async (t) => {
+  const { env, config } = dirs(t);
+  assert.equal((await cli(IMPORT, env)).code, 0);
+  const own = await inspect(config, (data) => data.overlays.resolve('takeover').doc.data.settings);
+  // Each night as the platform would start it: the plan whose day has begun becomes the show.
+  const night = (when) => inspect(config, (data) => {
+    data.timeline.start();
+    return { date: data.shows.get(SHOW).date, settings: data.overlays.resolve('takeover').doc.data.settings };
+  }, when);
+  const first = await night(Date.UTC(2026, 9, 24, 17, 0)); // Saturday the 24th, 13:00 in Toronto
+  assert.equal(first.date, '2026-10-24');
+  assert.equal(first.settings.look, undefined, 'the 24th: the TAKEOVER look');
+  const second = await night(Date.UTC(2026, 9, 31, 17, 0)); // and the 31st
+  assert.equal(second.date, '2026-10-31');
+  assert.deepEqual(second.settings, own, 'the 31st: v0\'s VIKKSTAR night again, not the 24th\'s look');
+});
+
+test('--replace refuses a new show the platform would refuse before removing the old one; so does the dry run', async (t) => {
+  const { env, config } = dirs(t);
+  const dir = copyOf(t, FULL);
+  assert.equal((await cli(['import', 'v0', dir, '--timezone', ZONE], env)).code, 0);
+  const count = () => inspect(config, (data) => ({ shows: data.shows.list().length, cues: data.timeline.list(SHOW).length, plans: data.timeline.plans.list(SHOW).length }));
+  const before = await count();
+  // A lineup too large to send to the overlays (24 KiB of show state at most).
+  const pad = (n) => String(n).padStart(2, '0');
+  editJson(path.join(dir, 'kit.json'), (kit) => ({ ...kit, lineup: Array.from({ length: 60 }, (_, i) => ({ name: `${'★'.repeat(70)} ${i}`, time: `${pad(18 + Math.floor(i / 12))}:${pad((i % 12) * 5)}`, b2b: '☆'.repeat(80), closer: false })) }));
+  const dry = await cli(['import', 'v0', dir, '--timezone', ZONE, '--replace', '--dry-run'], env);
+  assert.equal(dry.code, 1, dry.stdout);
+  assert.match(dry.stdout, /too large to send to its overlays/);
+  const real = await cli(['import', 'v0', dir, '--timezone', ZONE, '--replace'], env);
+  assert.notEqual(real.code, 0);
+  assert.match(real.stderr + real.stdout, /too large to send to its overlays.*stays as it is/s);
+  assert.deepEqual(await count(), before, 'the old show, its cues and plans are all still there');
+});
+
+test('a malformed v0 file is skipped with a warning, never a crash: an instant out of range, a value nested too deep', async (t) => {
+  const { env } = dirs(t);
+  const dir = copyOf(t, FULL);
+  editJson(path.join(dir, 'rundown.json'), (rd) => ({ ...rd, cues: [...rd.cues, { at: '23:30', epoch: 1e20, action: 'title', auto: false, done: false, label: 'Far away' }] }));
+  // 20000 lists deep: JSON.parse reads it; writing it back out (or String()) overflows the stack.
+  const deep = `${'['.repeat(20000)}${']'.repeat(20000)}`;
+  const kit = JSON.parse(readFileSync(path.join(dir, 'kit.json'), 'utf8'));
+  kit.venue = '@@DEEP@@';
+  writeFileSync(path.join(dir, 'kit.json'), JSON.stringify(kit).replace('"@@DEEP@@"', deep));
+  const map = mapV0(readV0(dir), { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.ok(map.warnings.some((w) => /venue is a list \(a list\), not text/.test(w)), map.warnings.join('\n'));
+  assert.ok(map.cues.some((c) => c.label === 'Far away'), 'an instant out of range counts as none: the cue stays tonight\'s');
+  const res = await cli(['import', 'v0', dir, '--timezone', ZONE], env);
+  assert.equal(res.code, 0, res.stderr);
+  assert.doesNotMatch(res.stderr, /unexpected error|RangeError/);
+});
+
+test('a huge rundown or lineup is capped and summarized: quick, and a short summary', async (t) => {
+  const dir = copyOf(t, FULL);
+  editJson(path.join(dir, 'rundown.json'), (rd) => ({ ...rd, cues: [
+    ...Array.from({ length: 3000 }, (_, i) => ({ at: '23:40', action: 'title', auto: false, done: false, label: `Card ${i}` })),
+    ...Array.from({ length: 3000 }, (_, i) => ({ at: '23:40', action: 'title', auto: false, done: true, label: `Done ${i}` })),
+  ] }));
+  editJson(path.join(dir, 'kit.json'), (kit) => ({ ...kit, lineup: [...kit.lineup, ...Array.from({ length: 2000 }, () => ({ name: '', time: '23:00' }))] }));
+  const t0 = performance.now();
+  const map = mapV0(readV0(dir), { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.ok(performance.now() - t0 < 5000, `took ${Math.round(performance.now() - t0)} ms`);
+  assert.equal(map.cues.length, 500, 'at most 500 of v0\'s hand-made cues');
+  assert.ok(map.warnings.some((w) => /more hand-made cues past the 500 imported; left out/.test(w)), map.warnings.join('\n'));
+  assert.ok(map.skipped.length < 50 && map.warnings.length < 50, `${map.skipped.length} skipped, ${map.warnings.length} warnings`);
+  assert.ok(map.skipped.some((s) => /more cues skipped for the same kinds of reasons/.test(s)), map.skipped.join('\n'));
+  assert.ok([...map.skipped, ...map.warnings].some((s) => /more problems like those above/.test(s)));
+});
+
+test('a dry run changes nothing in the data directory, not even what the platform catches up when it starts', async (t) => {
+  const { env, config } = dirs(t);
+  assert.equal((await cli(IMPORT, env)).code, 0);
+  // The show on "auto": a go-live that passed while nothing ran is caught up (REC) when it opens.
+  await inspect(config, (data) => { data.shows.take(SHOW, 'auto', { actor: 'test', transition: 'cut' }); });
+  const later = Date.UTC(2026, 9, 18, 3, 0); // 23:00 in Toronto on the 17th: an hour past go-live
+  const look = () => {
+    const data = openData(config, { log: memoryLogger().log, purpose: 'test', clock: { now: () => later }, readOnly: true });
+    try {
+      const s = data.shows.get(SHOW);
+      return { rev: s.rev, rec: s.recStartedAt ?? null, overlays: data.overlays.list().length, media: data.media.list().length };
+    } finally {
+      data.close();
+    }
+  };
+  const before = look();
+  assert.equal(before.rec, null);
+  const dry = await cli([...IMPORT, '--name', 'Other', '--slug', 'other', '--dry-run'], env, { now: later });
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.deepEqual(look(), before, 'the dry run wrote nothing');
+  // A real open catches it up, as the platform's start does.
+  assert.ok(await inspect(config, (data) => data.shows.get(SHOW).recStartedAt, later));
+});
+
+test('uploads/ that is a link (or a Windows junction) to somewhere else is never read from', async (t) => {
+  const root = tempDir(t);
+  const dir = path.join(root, 'v0data');
+  cpSync(FULL, dir, { recursive: true, filter: (src) => path.basename(src) !== 'uploads' });
+  const outside = path.join(root, 'outside');
+  mkdirSync(outside);
+  const clip = readdirSync(path.join(FULL, 'uploads')).find((n) => n.endsWith('.mp4'));
+  writeFileSync(path.join(outside, 'private-video.mp4'), readFileSync(path.join(FULL, 'uploads', clip)));
+  try {
+    symlinkSync(outside, path.join(dir, 'uploads'), process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    t.skip(`can't make a link here (${err.code})`);
+    return;
+  }
+  editJson(path.join(dir, 'live.json'), (live) => ({ ...live, video: { url: '/uploads/private-video.mp4', name: 'private-video.mp4', mp4: true } }));
+  const read = readV0(dir);
+  assert.equal(read.clip, undefined);
+  assert.deepEqual(read.uploads, []);
+  assert.ok(read.warnings.some((w) => /uploads\/ in .* isn't a directory of its own/.test(w)), read.warnings.join('\n'));
+});
+
+test('a star treatment named like an object\'s own property is simply not one of v0\'s', () => {
+  const kit = { date: '2026-10-17', golive: '22:00', event: 'vikstarr', lineup: [{ name: 'Vik Starr', time: '00:30' }] };
+  for (const star of ['constructor', '__proto__', 'toString']) {
+    const read = { dir: 'x', kit: { ...kit, evOpts: { star } }, found: ['kit.json'], uploads: [], crashLog: false, warnings: [] };
+    const map = mapV0(read, { timezone: ZONE, now: NOW, manifest: MANIFEST });
+    assert.ok(map.warnings.some((w) => w.includes(`the star treatment "${star}" isn't one of v0's (a to d)`)), map.warnings.join('\n'));
+    assert.equal(map.overlay.saved.starStyle, undefined, 'the template\'s own');
+  }
+  // An event named like one is no event of v0's either.
+  const read = { dir: 'x', kit: { ...kit, event: 'constructor' }, found: ['kit.json'], uploads: [], crashLog: false, warnings: [] };
+  const map = mapV0(read, { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.equal(map.headliner, undefined);
+  assert.ok(map.warnings.some((w) => /the event "constructor" isn't one v0 had/.test(w)));
 });
