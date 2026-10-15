@@ -476,6 +476,7 @@ describe('alerts (05 §5.5)', () => {
 
   test('alerts.durationSetting sets how long an alert without a window stays', opts, async (t) => {
     const { page, platform, overlay } = await open(t, { settings: { alertHold: 2000 } });
+    platform.bus.useAlertQueue(undefined); // the runtime on its own, as on a platform without the queue
     await page.eval(watchAlerts);
     const env = platform.bus.publish('alert.follow', follow('Held'), { target: overlay.id });
     const times = await page.waitFor('window.__alertTimes.removed && window.__alertTimes', 4000);
@@ -484,8 +485,9 @@ describe('alerts (05 §5.5)', () => {
     assert.ok(end >= 1950 && end < 2400, `removed ${end} ms after the envelope (2000 from settings, not 1500 from the manifest)`);
   });
 
-  test('without a display window (before the server queue, step 19) an alert shows at once; the browser never queues', opts, async (t) => {
+  test('without a display window (a platform without the alert queue) an alert shows at once; the browser never queues', opts, async (t) => {
     const { page, platform, overlay, logOf } = await open(t);
+    platform.bus.useAlertQueue(undefined);
     platform.bus.publish('alert.follow', follow('one'), { target: overlay.id });
     platform.bus.publish('alert.follow', follow('two'), { target: overlay.id });
     await page.waitFor('window.__log.filter((e) => e.what === "alert").length === 2', 2000);
