@@ -6,7 +6,7 @@ import path from 'node:path';
 import { alertSpec, createAlertQueue } from '../src/alerts/queue.js';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { defer, FIXTURE_TEMPLATES, memoryLogger, tempDir, TESTBED } from './helpers.js';
+import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 // A clock that only moves when told to, with timers that fire as it does.
 function fakeClock(start = 1_000_000) {
@@ -231,6 +231,33 @@ test('on the platform: a burst published on the bus reaches an alerts overlay on
   // Chat isn't queued.
   platform.bus.publish('custom.ping', { n: 1 }, { src });
   assert.equal(got.at(-1).type, 'custom.ping');
+});
+
+test('over the API: pause holds alerts, resume plays them, skip cuts the one on screen; an unknown queue is a 404', async (t) => {
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  const { log } = memoryLogger();
+  const platform = await startPlatform(config, { log, templateDirs: [FIXTURE_TEMPLATES] });
+  defer(t, () => platform.stop());
+  const doc = platform.overlays.create({ slug: 'alerts', template: TESTBED, settings: {} });
+  const got = [];
+  platform.overlays.resolve('alerts').channel.subscribe((e) => got.push(e));
+  const call = async (method, p, body) => {
+    const res = await fetch(`${platform.url}/api/v1${p}`, { method, headers: signedIn(platform, { 'content-type': 'application/json' }), body: body && JSON.stringify(body) });
+    assert.equal(res.status, 200, `${method} ${p}: ${await res.clone().text()}`);
+    return res.json();
+  };
+  assert.equal((await call('POST', '/alerts/pause', {})).paused, true);
+  platform.bus.publish('alert.raid', { kind: 'raid', user: { name: 'B' } }, { src: { connector: 'test' } });
+  const held = await call('GET', '/alerts');
+  assert.deepEqual([held.queues[0].queue, held.queues[0].name, held.queues[0].waiting.length, got.length], [doc.id, 'alerts', 1, 0]);
+  const resumed = await call('POST', '/alerts/resume', {});
+  assert.deepEqual([resumed.paused, resumed.queues[0].showing[0].kind], [false, 'raid']);
+  const alert = got.find((e) => e.type === 'alert.raid');
+  await call('POST', '/alerts/skip', { queue: doc.id });
+  assert.deepEqual(got.find((e) => e.type === 'alerts.cut')?.data, { alertId: alert.id });
+  const missing = await fetch(`${platform.url}/api/v1/alerts/skip`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ queue: 'nope' }) });
+  assert.equal(missing.status, 404);
 });
 
 test('a simulated alert waits its turn behind a real one', async (t) => {

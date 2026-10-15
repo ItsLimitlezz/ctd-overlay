@@ -724,12 +724,14 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
   }
 
   // ---- the page --------------------------------------------------------------------------------
+  const alerts = alertsCard(ctx);
   mount(view,
     head,
     h('div.stack',
       canControl ? null : notice(NO_CONTROL, 'warn'),
       problemBox,
       statusCard,
+      alerts.el,
       previewsCard,
       h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', timelineCard, lineupCard)),
       cuesCard));
@@ -749,6 +751,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
       return refreshShow();
     }),
     every(1000, tick),
+    alerts.stop,
   ];
   if (ctx.can('events:read')) stops.push(every(STATE_POLL_MS, refreshState));
   return () => {
@@ -772,10 +775,13 @@ async function standalone(view, ctx) {
     problem = err;
   }
   const manifestOf = await pinnedManifests(overlays, (p) => p.catch(() => undefined));
+  if (!ctx.alive()) return undefined;
+  const alerts = alertsCard(ctx);
   mount(view,
     pageHead('Live'),
     h('div.stack',
       canControl ? null : notice(NO_CONTROL, 'warn'),
+      alerts.el,
       h('div.card', empty('No show yet',
         'A show is the overlays that change together on the night, with the lineup and the timeline. Make one in Shows; until then, control each overlay on its own here.',
         h('a.btn.primary', { href: '#/shows' }, 'Go to Shows'), h('a.btn', { href: '#/overlays' }, 'Go to Overlays'))),
@@ -784,7 +790,63 @@ async function standalone(view, ctx) {
         problem ? notice(problem.message, 'danger')
           : overlays.length ? h('div.grid.wide', overlays.map((o) => overlayControls(o, manifestOf(o), canControl)))
             : h('p.muted', 'No overlays yet. Make one from a template in Templates.'))));
-  return undefined;
+  return () => alerts.stop();
+}
+
+// ---- the alert queue (05 §5.5) -------------------------------------------------------------------
+// What is on screen and what waits, in every queue, with Skip, Replay and Pause. Polled every 2 s
+// while the page is open. Returns { el, stop }.
+const ALERT_WORDS = { follow: 'Follow', subscription: 'Sub', gift: 'Gifted subs', cheer: 'Cheer', kicks: 'Kicks', raid: 'Raid', membership: 'Membership', superchat: 'Super Chat', tip: 'Tip' };
+const alertText = (a) => `${ALERT_WORDS[a.kind] || 'Alert'}${a.user ? ` from ${a.user}` : ''}`;
+
+function alertsCard(ctx) {
+  const canControl = ctx.can('overlays:control');
+  const pausedBadge = badge('Paused', 'warn');
+  pausedBadge.hidden = true;
+  const body = h('div.stack');
+  const pauseBtn = h('button.btn', { type: 'button', disabled: !canControl }, 'Pause alerts');
+  let state = { paused: false, queues: [] };
+  const el = h('div.card', h('div.card-head', h('h2', 'Alerts'), pausedBadge, h('div.actions', pauseBtn)), body);
+  pauseBtn.onclick = () => run(pauseBtn, async () => {
+    state = await api.post(`/api/v1/alerts/${state.paused ? 'resume' : 'pause'}`, {});
+    render();
+  }, { done: () => (state.paused ? 'Alerts paused: they wait until you resume' : 'Alerts resumed') });
+
+  function render() {
+    pausedBadge.hidden = !state.paused;
+    pauseBtn.textContent = state.paused ? 'Resume alerts' : 'Pause alerts';
+    const queues = list(state.queues);
+    if (!queues.length) {
+      mount(body, h('p.muted', 'No alerts yet tonight. Each one plays in turn here when it arrives (try Simulate on an overlay).'));
+      return;
+    }
+    mount(body, queues.map((q) => {
+      const showing = list(q.showing);
+      const waiting = list(q.waiting);
+      const skip = h('button.btn', { type: 'button', disabled: !canControl || !showing.length, 'aria-label': `Skip the alert on screen in ${q.name}` }, 'Skip');
+      skip.onclick = () => run(skip, async () => { state = await api.post('/api/v1/alerts/skip', { queue: q.queue }); render(); }, { done: 'Alert skipped' });
+      const replay = h('button.btn', { type: 'button', disabled: !canControl, 'aria-label': `Replay the last alert in ${q.name}` }, 'Replay last');
+      replay.onclick = () => run(replay, async () => { state = await api.post('/api/v1/alerts/replay', { queue: q.queue }); render(); }, { done: 'The last alert plays again' });
+      return h('div.stack',
+        queues.length > 1 ? h('h3', q.kind === 'show' ? `Show: ${q.name}` : q.name) : null,
+        h('p', showing.length ? `On screen: ${showing.map(alertText).join(', ')}` : 'Nothing on screen'),
+        h('p.small.muted', waiting.length ? `Waiting (${waiting.length}): ${waiting.slice(0, 5).map(alertText).join(', ')}${waiting.length > 5 ? ', …' : ''}` : 'Nothing waiting'),
+        h('div.row', skip, replay));
+    }));
+  }
+
+  async function refresh() {
+    try {
+      state = await api.get('/api/v1/alerts');
+      render();
+    } catch (err) {
+      if (err.status !== 401) mount(body, notice(err.message, 'danger'));
+    }
+  }
+  render();
+  refresh();
+  const stop = every(SHOW_POLL_MS, refresh);
+  return { el, stop };
 }
 
 function overlayControls(overlay, manifest, canControl) {
