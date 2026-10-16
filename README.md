@@ -176,7 +176,9 @@ to run. A breaking release is installed too, but its overlays stay where they ar
 the `overlay upgrade` the log names. If you `overlay revert` one, it stays reverted until the
 source brings a newer version. `template sources` shows what each source last installed,
 `template update` checks now, and `template unfollow` stops (installed versions stay). For a
-private repository, set `SKP_GITHUB_TOKEN` to a token that can read it.
+private repository, connect GitHub in the admin pages (**Settings → Integrations → GitHub**: paste
+a token that can read it, or sign in with GitHub; see docs/RUNNING.md), or set
+`SKP_GITHUB_TOKEN` on the server.
 
 A source can't take over a template you installed some other way (from a file, or another
 repository): following it says so. To hand such a template over to the repository on purpose,

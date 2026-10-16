@@ -367,8 +367,9 @@ test('what goes wrong is said, recorded on the source, and leaves nothing behind
   const d = data(t, config, gh.fetch);
   d.sources.add('a/missing');
   let [r] = await d.sources.check();
-  assert.equal(r.error.code, 'no-release');
-  assert.match(r.error.message, /a\/missing has no published release, or it is private \(set SKP_GITHUB_TOKEN/);
+  assert.deepEqual([r.error.code, r.error.fix], ['no-access', 'connect-github']);
+  assert.match(r.error.message, /^This repository is private or the GitHub token can't read it\. .*a\/missing isn't one .*Connect GitHub \(Settings → Integrations → GitHub\)/);
+  assert.doesNotMatch(r.error.message, /SKP_GITHUB_TOKEN/);
   d.sources.remove('a/missing');
   gh.publish('a/broken', 'v1.0.0', { assets: [{ name: 'b.skp', data: Buffer.from('not a zip at all') }] });
   d.sources.add('a/broken');
@@ -380,7 +381,8 @@ test('what goes wrong is said, recorded on the source, and leaves nothing behind
   gh.limit();
   [r] = await d.sources.check();
   assert.equal(r.error.code, 'rate-limited');
-  assert.match(r.error.message, /until 2030-03-17T17:46:40\.000Z; SKP_GITHUB_TOKEN raises it/);
+  assert.match(r.error.message, /until 2030-03-17T17:46:40\.000Z\. Connecting GitHub \(Settings → Integrations → GitHub\) raises it/);
+  assert.equal(r.error.fix, 'connect-github');
   const stored = d.sources.get('a/broken').data;
   assert.deepEqual([stored.error.code, typeof stored.checkedAt], ['rate-limited', 'string']);
   assert.deepEqual(downloadsLeft(config), []);
@@ -445,7 +447,7 @@ test('skp template follow, sources, update and unfollow', async (t) => {
   assert.match((await cli(['template', 'update', 'a/sample'], env, gh.fetch)).stdout, /no new release \(still v1\.1\.0\)/);
   const failing = await cli(['template', 'follow', 'a/nothing-here'], env, gh.fetch);
   assert.equal(failing.code, 0, 'followed; the first check failing is reported, not fatal');
-  assert.match(failing.stdout, /the check failed: a\/nothing-here has no published release/);
+  assert.match(failing.stdout, /the check failed: This repository is private or the GitHub token can't read it\. .*a\/nothing-here isn't one/);
   assert.equal((await cli(['template', 'update'], env, gh.fetch)).code, 1, 'a failing source makes update exit 1');
   assert.equal((await cli(['template', 'follow', 'a/sample', '--auto-upgrade', 'sometimes'], env, gh.fetch)).code, 1);
   const unfollowed = await cli(['template', 'unfollow', 'a/sample'], env, gh.fetch);

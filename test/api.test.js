@@ -345,10 +345,11 @@ test('templates: list, read with previews, install a package or a URL, validate,
   assert.equal((await api('DELETE', `/templates/${DIAG.id}`)).status, 422, 'it ships with the platform');
   // A URL to install from, and a source to follow: here GitHub answers 404.
   const fromUrl = await api('POST', '/templates', Buffer.from(JSON.stringify({ url: 'a/missing' })), { 'content-type': 'application/json' });
-  assert.deepEqual([fromUrl.status, fromUrl.body.type], [422, 'https://skp.dev/errors/no-release']);
+  assert.deepEqual([fromUrl.status, fromUrl.body.type, fromUrl.body.fix], [422, 'https://skp.dev/errors/no-access', 'connect-github']);
+  assert.match(fromUrl.body.detail, /^This repository is private or the GitHub token can't read it\./);
   const followed = await api('POST', '/templates/sources', { source: 'a/missing' });
   assert.equal(followed.status, 201);
-  assert.equal(followed.body.check.error.code, 'no-release');
+  assert.deepEqual([followed.body.check.error.code, followed.body.check.error.fix], ['no-access', 'connect-github']);
   assert.equal((await api('GET', '/templates/sources')).body.items.length, 1);
   assert.equal((await api('DELETE', '/templates/sources/a%2Fmissing')).status, 200);
 });

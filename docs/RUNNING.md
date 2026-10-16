@@ -152,6 +152,36 @@ In the browser source's options:
 Each overlay's page has its settings: accent colour, font size, how long lines stay, which
 platform tags to show, the alert sound and its volume.
 
+## Templates from a private GitHub repository
+
+A template shipped as a release of a private repository (say `ItsLimitlezz/miamiorbust-live`,
+release `overlay-v1.0.0` with `miami-or-bust-1.0.0.zip` attached) installs and updates from the
+admin pages, with nothing to set on the server:
+
+1. **Make a token** on GitHub: **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token** (github.com/settings/personal-access-tokens/new).
+   Resource owner: the account or organisation that owns the repository; **Repository access:
+   Only select repositories** → the repository; **Repository permissions → Contents:
+   Read-only** (Metadata: Read-only comes with it). Generate it and copy it.
+2. In CTD Overlay, as the owner: **Settings → Integrations → GitHub**, paste it in **GitHub
+   token**, **Save**. The card then says **Connected as @you**; the token is never shown again.
+   **Replace token** and **More → Disconnect** are there too.
+3. **Templates → Install template → From GitHub or a link**: type `ItsLimitlezz/miamiorbust-live`,
+   press **Test**. It says **Can read ItsLimitlezz/miamiorbust-live (private) as @you** and lists
+   the releases; pick `overlay-v1.0.0` (its `.zip` is chosen when it is the only one), tick
+   **Install its new releases by themselves** to keep it updated, and **Install**.
+4. Following it, a new release (`overlay-v1.1.0` with `miami-or-bust-1.1.0.zip`) installs by itself
+   within the hour (or **Automatic updates → Check now**). Only releases whose tag starts like the
+   installed one (`overlay-v`) are taken, and the file named like the installed one.
+
+If a repository can't be read, the message says why (not connected, or the token can't read that
+repository) with a link to **Settings → Integrations**. **Sign in with GitHub** (no token to
+copy) is there too once an OAuth app's client ID is saved under **Set up Sign in with GitHub**:
+on GitHub, **Settings → Developer settings → OAuth Apps → New OAuth App**, any name and URLs,
+tick **Enable Device Flow**, register, copy the **Client ID**. It asks for the `repo` scope, so it
+can read every repository the account can; a fine-grained token is narrower. On the server,
+`SKP_GITHUB_TOKEN` (and `SKP_GITHUB_CLIENT_ID`) still work, used when nothing is saved here.
+
 ## Test before going live
 
 - **Without a stream:** on an overlay's page, **Simulate** sends a sample chat message, sub, gift,

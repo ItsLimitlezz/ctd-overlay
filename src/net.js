@@ -86,9 +86,9 @@ export function clientOf(req, trustProxy = []) {
 // to [{ address, family }]; allowPrivate is the owner's SKP_ALLOW_PRIVATE_DOWNLOADS; tls: more TLS
 // options (tests: a self-signed certificate).
 // The answer is a WHATWG Response, like fetch's; redirects are not followed (the caller checks
-// each hop).
+// each hop). method and body (a string): a POST, like GitHub's device sign-in.
 export function pinnedFetch({ lookup, allowPrivate = false, tls = {} } = {}) {
-  return (url, { headers = {}, signal } = {}) => new Promise((resolve, reject) => {
+  return (url, { headers = {}, signal, method = 'GET', body } = {}) => new Promise((resolve, reject) => {
     const target = new URL(url);
     if (target.protocol !== 'https:') return reject(new TypeError(`only https downloads (${target.protocol})`));
     // An address in the URL is connected to as it is, with no lookup: check it here.
@@ -110,7 +110,7 @@ export function pinnedFetch({ lookup, allowPrivate = false, tls = {} } = {}) {
         return callback(null, list[0].address, list[0].family);
       }, callback);
     };
-    const req = httpsRequest(target, { ...tls, method: 'GET', headers, signal, lookup: connectLookup }, (res) => {
+    const req = httpsRequest(target, { ...tls, method, headers, signal, lookup: connectLookup }, (res) => {
       const headerList = [];
       for (const [k, v] of Object.entries(res.headers)) headerList.push([k, Array.isArray(v) ? v.join(', ') : String(v)]);
       const empty = [101, 204, 205, 304].includes(res.statusCode);
@@ -118,7 +118,7 @@ export function pinnedFetch({ lookup, allowPrivate = false, tls = {} } = {}) {
       resolve(new Response(empty ? null : Readable.toWeb(res), { status: res.statusCode, headers: headerList }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 

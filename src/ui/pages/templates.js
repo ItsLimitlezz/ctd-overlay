@@ -10,10 +10,12 @@
 //   POST   /api/v1/templates (the raw package, or { url })  install
 //   DELETE /api/v1/templates/:id[?version=]                 uninstall a version, or every one
 //   GET/POST /api/v1/templates/sources · DELETE …/:ref · POST …/sources/check[?source=]
+//   GET    /api/v1/integrations/github/repos/:owner/:name/releases   Test: a repository's releases
 //   POST   /api/v1/overlays { slug, template: { id, version } }   "Use template"
 //   /o/~p.<id>@<version>?mock=1&canvas=&scene=               the live preview with sample data
 import * as api from '../api.js';
 import { ago, badge, bytes, confirm, dialog, empty, field, focusBack, h, menu, mount, notice, pageHead, preview, run, tabs, toast } from '../dom.js';
+import { CONNECT_ROUTE, problemNotice, repoOf, repoTest } from '../github.js';
 
 // ---- words -----------------------------------------------------------------------------------
 const CATEGORIES = {
@@ -287,12 +289,23 @@ export async function list(view, ctx) {
     const fileName = h('span.muted.small', 'No file chosen');
     const choose = h('button.btn', { type: 'button', 'aria-describedby': `${id}-file-hint`, onclick: () => fileInput.click() }, 'Choose a .skp or .zip file');
     const fileStatus = h('div', { 'aria-live': 'polite' });
-    const link = h('input', { type: 'text', name: 'url', inputmode: 'url', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'owner/name' });
+    const link = h('input', { type: 'text', name: 'url', inputmode: 'url', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'owner/name', 'aria-describedby': `${id}-link-hint` });
     const linkStatus = h('div', { 'aria-live': 'polite' });
     const cancel = h('button.btn', { type: 'button', onclick: () => d.close() }, 'Cancel');
     const install = h('button.btn.primary', { type: 'button', disabled: true, onclick: () => go() }, 'Install');
-    const update = () => { install.disabled = busy || (mode === 'file' ? !(file && passed) : !link.value.trim()); };
-    link.addEventListener('input', () => { mount(linkStatus); update(); });
+    // A GitHub repository: Test reads it (with the GitHub token, for a private one) and lists its
+    // releases to pick one and its file from, instead of typing the tag.
+    let choice;
+    const tester = repoTest({ input: link, pick: true, onChange: (c) => { choice = c; update(); }, onLink: () => d.close() });
+    const followBox = h('input', { type: 'checkbox', name: 'follow' });
+    // The whole row a 44 px target, the box keeping its size when the words wrap.
+    const followRow = h('label.field.check', followBox, h('span', 'Install its new releases by themselves', h('br'),
+      h('span.hint', 'Follows the repository (Automatic updates, below the gallery), checked every hour.')));
+    const update = () => {
+      install.disabled = busy || (mode === 'file' ? !(file && passed) : !(choice || link.value.trim()));
+      followRow.hidden = !repoOf(link.value);
+    };
+    link.addEventListener('input', () => { mount(linkStatus); tester.reset(); update(); });
     link.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!install.disabled) go(); } });
 
     fileInput.addEventListener('change', async () => {
@@ -335,12 +348,29 @@ export async function list(view, ctx) {
           update();
         },
       },
-      { id: 'install-link', label: 'From GitHub or a link', render: (panel) => { mode = 'link'; mount(panel, field('GitHub repository or link', link, { hint: 'owner/name from github.com/owner/name (its newest release), owner/name@v1.2.0 for one release, or an https link to a .skp or .zip.' }), linkStatus); update(); } },
+      {
+        id: 'install-link',
+        label: 'From GitHub or a link',
+        render: (panel) => {
+          mode = 'link';
+          mount(panel,
+            h('div.inline-form', field('GitHub repository or link', link), tester.button),
+            h('p.small.muted', { id: `${id}-link-hint` }, 'owner/name from github.com/owner/name, then Test to pick a release. Or owner/name@v1.2.0 for one release, or an https link to a .skp or .zip.'),
+            tester.results,
+            followRow,
+            linkStatus);
+          update();
+        },
+      },
     ]);
 
     async function go() {
       const status = mode === 'file' ? fileStatus : linkStatus;
       const usedMode = mode;
+      // The release and file picked after Test, else what was typed.
+      const url = usedMode === 'link' ? choice?.url || link.value.trim() : undefined;
+      const repo = usedMode === 'link' ? choice?.repo || repoOf(link.value) : undefined;
+      const follow = usedMode === 'link' && repo && followBox.checked;
       busy = true;
       cancel.disabled = true;
       if (usedMode === 'link') mount(status, h('p.muted', 'Downloading and checking… this can take a minute.'));
@@ -350,8 +380,8 @@ export async function list(view, ctx) {
           // Its file name, for where it came from. A header can't carry every letter (fetch refuses
           // most beyond ASCII), so those go as _.
           ? api.post('/api/v1/templates', undefined, { raw: file, contentType: 'application/octet-stream', headers: { 'x-skp-filename': file.name.replace(/[^\x20-\x7e]/g, '_') } })
-          : api.post('/api/v1/templates', { url: link.value.trim() })), {
-          onError: (err) => mount(status, notice(err.message, 'danger'), findingsList(err.body?.findings)),
+          : api.post('/api/v1/templates', { url })), {
+          onError: (err) => mount(status, problemNotice(err, { onLink: () => d.close() }), findingsList(err.body?.findings)),
         });
       } finally {
         busy = false;
@@ -363,6 +393,17 @@ export async function list(view, ctx) {
       let name = out.id;
       try { name = (await api.get(apiOf(out.id)))?.name || out.id; } catch { /* the id will do */ }
       toast(out.installed ? `Installed "${name}" version ${out.version}` : `"${name}" version ${out.version} was already installed`);
+      // Followed after installing: its tag prefix and file name come from what was installed.
+      if (follow) {
+        try {
+          await api.post('/api/v1/templates/sources', { source: repo });
+          toast(`Following ${repo}: its new releases install by themselves`);
+        } catch (err) {
+          if (err.status === 409) toast(`${repo} was already followed`);
+          else toast(err);
+        }
+        refreshSources().catch(() => {});
+      }
       // Warnings from a link weren't shown before installing (a file's were).
       if (usedMode === 'link' && arr(out.warnings).length) {
         await dialog({ title: 'Installed, with warnings', body: h('div', h('p', `"${name}" is installed. Its maker may want to know:`), findingsList(out.warnings)), actions: [{ label: 'Open the template', value: true, kind: 'primary' }] });
@@ -410,7 +451,8 @@ export async function list(view, ctx) {
         h('div.small',
           s.templateId ? ['Updates ', h('a', { href: pageOf(s.templateId) }, nameOf(s.templateId)), s.version ? `, newest ${s.version}` : ''] : 'Nothing installed from it yet'),
         h('div.small.muted', facts),
-        s.error?.message ? h('div.notice.danger.small', `The last check failed: ${s.error.message}`) : null),
+        s.error?.message ? h('div.notice.danger.small', `The last check failed: ${s.error.message}`,
+          s.error.fix === 'connect-github' && canWrite ? [' ', h('a', { href: CONNECT_ROUTE }, 'Connect GitHub in Settings')] : null) : null),
       canWrite ? menu('Options', [
         { label: 'Check now', onSelect: () => check(null, s) },
         { label: 'Stop following', danger: true, onSelect: () => unfollow(s) },

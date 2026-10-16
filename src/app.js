@@ -38,6 +38,7 @@ import { migrations } from './store/migrations.js';
 import { openStore } from './store/index.js';
 import { BUILTIN_DIR, createTemplateRegistry } from './templates/registry.js';
 import { templateRoutes } from './templates/api.js';
+import { createGithub, githubRoutes } from './templates/github.js';
 import { createTemplateSources } from './templates/sources.js';
 import { VERSION } from './version.js';
 
@@ -62,7 +63,9 @@ export class StartupError extends Error {
 // here (the timeline runs connector.action cues through it) but only the platform starts it.
 // readOnly: a look that changes nothing (a dry run): templates and media aren't touched, and shows
 // don't catch up what fell due while the platform was down (the platform does that when it starts).
-export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {}, readOnly = false, connectors: connectorOptions = {} }) {
+// github: test hooks for GitHub's device sign-in ({ secondMs }: how long a second of its polling
+// interval is).
+export function openData(config, { log, templateDirs = [], purpose = 'platform', ffmpeg, media: mediaOptions = {}, fetch, sourceLimits, lookup, clock = {}, readOnly = false, connectors: connectorOptions = {}, github: githubOptions = {} }) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   ensureDir(config.configDir, 'config directory', 'SKP_CONFIG_DIR', 0o700);
   let lock;
@@ -136,16 +139,20 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       store, shows, overlays, media, connectors, log: log.child('timeline'), ...clock,
       record: (action, details) => audit.record({ action, ...details }),
     });
+    // The GitHub token template sources read private repositories with: the one saved in Settings
+    // → Integrations, else SKP_GITHUB_TOKEN (04 §4.13).
+    const github = createGithub({ store, secrets, config, audit, log: log.child('github'), fetch, lookup, limits: sourceLimits, ...githubOptions });
     const sources = createTemplateSources({
-      store, templates, overlays, log: log.child('sources'), token: config.githubToken, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
+      store, templates, overlays, log: log.child('sources'), github: github.auth, fetch, limits: sourceLimits, lookup, allowPrivate: config.allowPrivateDownloads,
       onAir: (overlayId) => shows.onAir(overlayId),
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
     return {
-      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts,
+      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts, github,
       close() {
         clearInterval(freshen);
         alerts.close();
+        github.stop();
         sources.stop();
         timeline.stop();
         shows.stop();
@@ -173,8 +180,8 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
 // kept), options.scrypt lowers the password hash's cost for tests ({ N }), options.rateLimit
 // replaces the API's requests a minute, options.interfaces is what os.networkInterfaces() would
 // answer, and options.connectors goes to the connector host ({ defs, fetch, lookup, endpoints,
-// random }, openData).
-export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit, interfaces, connectors: connectorOptions } = {}) {
+// random }, openData), options.github to GitHub's device sign-in ({ secondMs }, openData).
+export async function startPlatform(config, { log, routes = [], heartbeatMs, templateDirs = [], ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, simulateHoldMs, clock = {}, scrypt, rateLimit, interfaces, connectors: connectorOptions, github: githubOptions } = {}) {
   ensureDir(config.dataDir, 'data directory', 'SKP_DATA_DIR');
   const crash = createCrashLog(path.join(config.dataDir, 'crash.log'));
   const pruned = crash.prune(30);
@@ -190,8 +197,8 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     }
   }
 
-  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock, connectors: connectorOptions });
-  const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors } = data;
+  const data = openData(config, { log, templateDirs, ffmpeg, media: mediaOptions, fetch, sourceLimits, lookup, clock, connectors: connectorOptions, github: githubOptions });
+  const { store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, github } = data;
   // In lan and public modes the machine's own names too, read again as its addresses change; a
   // container's are its own, not the host's: SKP_HOSTS names those. hosts(req): with the request,
   // a Host that isn't among them has them read again (http/local.js).
@@ -220,7 +227,9 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
       ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, streams, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
-      ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }),
+      ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup, github: github.auth }),
+      // The GitHub token template installs use (Settings → Integrations → GitHub).
+      ...githubRoutes({ api, github }),
       // A file is in use while an overlay, a lineup, a cue or a plan points to it (03 §3.4).
       ...mediaApiRoutes({ api, media, overlays, shows, timeline, audit, now: clock.now }),
       // Connections (06): their setup, sign-in, the OAuth callback and inbound webhooks.
@@ -282,6 +291,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
     timeline,
     sources,
     connectors,
+    github,
     alerts: data.alerts,
     crash,
     server,

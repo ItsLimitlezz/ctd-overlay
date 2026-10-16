@@ -1,12 +1,14 @@
 // Settings (08 §8.1, §8.6; 07): how the admin looks, your account and two-factor, users, API
-// tokens, who can reach the platform, the audit log, and what is running. Routes #/settings and
+// tokens, integrations (the GitHub token templates from private repositories are installed with),
+// who can reach the platform, the audit log, and what is running. Routes #/settings and
 // #/settings/:tab. Each tab loads on its own: one whose request fails shows its error in the tab,
 // and the others still work (H17).
 import * as api from '../api.js';
 import {
-  ago, badge, confirm, copy, copyField, dialog, empty, field, h, menu, mount, notice, pageHead,
+  ago, badge, confirm, copy, copyField, dialog, empty, every, field, h, menu, mount, notice, pageHead,
   prompt, q, run, statusDot, tabs, toast,
 } from '../dom.js';
+import { repoTest, usingText } from '../github.js';
 
 // ---- words -----------------------------------------------------------------------------------
 const ROLES = {
@@ -80,6 +82,7 @@ const ACTIONS = {
   'overlay.key-required': 'Changed whether an overlay\'s URL needs its key', 'overlay.key-rotate': 'Made a new key for an overlay',
   'template.install': 'Installed a template', 'template.uninstall': 'Uninstalled a template', 'template.update': 'Updated a template by itself',
   'template.follow': 'Followed a template\'s repository', 'template.unfollow': 'Stopped following a template\'s repository',
+  'github.connect': 'Connected GitHub', 'github.disconnect': 'Disconnected GitHub', 'github.app': 'Set the GitHub app for signing in',
   'import.v0.show.create': 'Imported a show from v0', 'import.v0.show.delete': 'Replaced a show with one from v0',
   'import.v0.overlay.create': 'Imported an overlay from v0', 'import.v0.overlay.update': 'Updated an overlay from v0',
   'import.v0.media.add': 'Imported v0\'s Line clip', 'import.v0.cues.build': 'Built a v0 show\'s cues', 'import.v0.cue.add': 'Imported a v0 cue',
@@ -91,7 +94,7 @@ const REASONS = { password: 'wrong password', code: 'wrong code' };
 const AUDIT_FILTERS = [
   ['', 'Everything'], ['login', 'Sign-ins, and failed ones'], ['session', 'Sign-outs and ended sessions'],
   ['password', 'Password changes'], ['totp', 'Two-factor'], ['user', 'Users added, changed or removed'],
-  ['token', 'API tokens'], ['overlay', 'Overlays'], ['template', 'Templates'], ['media', 'Media'], ['import', 'Imports from v0'], ['setup', 'Setup'],
+  ['token', 'API tokens'], ['overlay', 'Overlays'], ['template', 'Templates'], ['github', 'GitHub'], ['media', 'Media'], ['import', 'Imports from v0'], ['setup', 'Setup'],
 ];
 // A target is shown by name; an internal id ("ses_01J…") says nothing to a person, so it is left out.
 const INTERNAL_ID = /^[a-z]{3}_[0-9A-Z]{26}$/;
@@ -237,6 +240,7 @@ export async function settings(view, ctx) {
     { id: 'account', label: 'Account', build: accountTab },
     ctx.can('users:admin') ? { id: 'users', label: 'Users', build: usersTab } : null,
     { id: 'tokens', label: 'API tokens', build: tokensTab },
+    ctx.can('templates:write') ? { id: 'integrations', label: 'Integrations', build: integrationsTab } : null,
     { id: 'security', label: 'Security', build: securityTab },
     ctx.can('audit:read') ? { id: 'audit', label: 'Audit log', build: auditTab } : null,
     { id: 'about', label: 'About', build: aboutTab },
@@ -910,6 +914,204 @@ async function secretDialog(created) {
     actions: [{ label: 'I copied it', value: true, kind: 'primary' }],
     dismissable: false,
   });
+}
+
+// ---- Integrations: GitHub (04 §4.13, 07 §7.7) --------------------------------------------------
+// The token templates from a private GitHub repository are installed and updated with. Whoever
+// installs templates (templates:write) sees whether one is used and tests a repository; only the
+// owner (system:admin) saves, replaces or removes it. A saved token is never shown again.
+const TOKEN_PAGE = 'https://github.com/settings/personal-access-tokens/new';
+const APPS_PAGE = 'https://github.com/settings/developers';
+
+async function integrationsTab(panel, ctx, life) {
+  let status = await api.get('/api/v1/integrations/github');
+  if (!life.alive) return;
+  const owner = ctx.can('system:admin');
+  const body = h('div.stack');
+  const deviceBox = h('div', { 'aria-live': 'polite' });
+  let stopPoll;
+  let stopCount;
+  const stopDevice = () => { stopPoll?.(); stopPoll = undefined; clearInterval(stopCount); stopCount = undefined; };
+  const reload = async () => {
+    status = await api.get('/api/v1/integrations/github');
+    if (life.alive) draw();
+  };
+
+  function state() {
+    const saved = status?.saved;
+    if (status?.using === 'saved' && saved) {
+      return [
+        statusLine('ok', 'Connected', h('strong', `Connected as @${saved.login || 'unknown'}`),
+          ` · saved ${day(saved.savedAt)}${saved.savedBy ? ` by ${saved.savedBy}` : ''}${saved.method === 'device' ? ' · signed in with GitHub' : ''}`),
+        h('p.small.muted', `${usingText(status)}, for installing templates and checking them for updates.${status.env ? ' The server\'s SKP_GITHUB_TOKEN is set too; the token saved here is used instead.' : ''}`),
+      ];
+    }
+    if (status?.using === 'env') {
+      return [
+        statusLine('ok', 'Connected', h('strong', usingText(status)), '.'),
+        h('p.small.muted', 'Save a token here to use another one: it is used instead.'),
+      ];
+    }
+    return [statusLine(undefined, 'Not connected', h('strong', `${usingText(status)}.`), ' Connect GitHub to install templates from a private repository and keep them updated.')];
+  }
+
+  function tokenForm({ replacing } = {}) {
+    const input = h('input', { type: 'password', name: 'github-token', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'github_pat_…' });
+    const message = h('div', { 'aria-live': 'polite' });
+    const save = h('button.btn.primary', { type: 'submit' }, replacing ? 'Save new token' : 'Save');
+    const form = h('form', { novalidate: true },
+      field('GitHub token', input, { hint: 'It is checked with GitHub, then kept encrypted on this server. It is never shown again, here or anywhere.' }),
+      message,
+      h('div.form-actions', replacing ? h('button.btn', { type: 'button', onclick: () => draw() }, 'Cancel') : null, save));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      mount(message);
+      const token = input.value.trim();
+      if (!token) { mount(message, notice('Paste the token GitHub showed you.', 'danger')); input.focus(); return; }
+      const out = await run(save, () => api.put('/api/v1/integrations/github/token', { token }), {
+        onError: (err) => mount(message, notice(err.message, 'danger')),
+      });
+      input.value = '';
+      if (!out || !life.alive) return;
+      status = out;
+      toast(`GitHub connected as @${out.saved?.login || 'unknown'}`);
+      draw();
+    });
+    return h('div',
+      form,
+      h('details.more',
+        h('summary', 'How to make a token'),
+        h('ol',
+          h('li', 'On GitHub, open ', h('a', { href: TOKEN_PAGE, target: '_blank', rel: 'noopener noreferrer' }, 'Fine-grained personal access tokens → Generate new token'), '.'),
+          h('li', 'Give it a name ("Stream Kit templates") and an expiry.'),
+          h('li', 'Repository access: Only select repositories, and choose the template\'s repository (for a repository of an organisation, choose the organisation as Resource owner first).'),
+          h('li', 'Repository permissions: Contents: Read-only. Metadata: Read-only is added by itself.'),
+          h('li', 'Generate it, copy it, and paste it above.')),
+        h('p.small.muted', 'A classic token with the repo scope works too, but can read every repository you can.')));
+  }
+
+  async function disconnect() {
+    const ok = await confirm({
+      title: 'Disconnect GitHub?',
+      consequence: `Templates from private repositories can't be installed or updated any more${status?.env ? ' with this token (the server\'s SKP_GITHUB_TOKEN is used instead)' : ''}. Installed templates and overlays keep working. The token still works on GitHub until you delete it there.`,
+      confirmLabel: 'Disconnect',
+    });
+    if (!ok) return;
+    const out = await run(null, () => api.del('/api/v1/integrations/github/token'), { done: 'GitHub disconnected' });
+    if (out && life.alive) { status = out; draw(); }
+  }
+
+  // Signing in with GitHub (the device flow): a code to enter at github.com/login/device.
+  function countdownTo(iso) {
+    const left = h('span.countdown');
+    const update = () => {
+      const ms = Date.parse(iso) - api.serverNow();
+      left.textContent = ms > 0 ? `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}` : 'no time';
+    };
+    update();
+    clearInterval(stopCount);
+    stopCount = setInterval(() => { if (life.alive) update(); else stopDevice(); }, 1000);
+    return left;
+  }
+
+  function showDevice(d) {
+    stopDevice();
+    const code = String(d.userCode || '');
+    const cancel = h('button.btn', { type: 'button' }, 'Cancel');
+    cancel.addEventListener('click', async () => {
+      stopDevice();
+      await run(cancel, () => api.del('/api/v1/integrations/github/device'));
+      if (life.alive) drawDevice();
+    });
+    mount(deviceBox,
+      h('p', 'On any device, open ', h('a', { href: d.verificationUri, target: '_blank', rel: 'noopener noreferrer' }, d.verificationUri), ', sign in to GitHub, and enter this code:'),
+      h('p.device-code', { 'aria-label': `Code ${code.split('').join(' ')}` }, code),
+      h('p.small.muted', 'Waiting for you to approve it on GitHub. The code works for ', countdownTo(d.expiresAt), '.'),
+      h('div.row', h('button.btn', { type: 'button', onclick: () => copy(code, 'Code copied') }, 'Copy code'), cancel));
+    stopPoll = every(2000, async () => {
+      if (!life.alive) { stopDevice(); return; }
+      const s = await api.get('/api/v1/integrations/github/device');
+      if (!life.alive || s.status === 'pending' || s.status === 'saving') return;
+      stopDevice();
+      if (s.status === 'connected') {
+        toast(`GitHub connected as @${s.login || 'unknown'}`);
+        await reload();
+        return;
+      }
+      drawDevice(s.message || 'Signing in didn\'t finish. Start again.');
+    });
+  }
+
+  function drawDevice(problem) {
+    if (!owner || !status?.clientId) { mount(deviceBox); return; }
+    const go = h('button.btn', { type: 'button' }, 'Sign in with GitHub');
+    go.addEventListener('click', async () => {
+      const out = await run(go, () => api.post('/api/v1/integrations/github/device', {}), { onError: (err) => drawDevice(err.message) });
+      if (out && life.alive) showDevice(out);
+    });
+    mount(deviceBox,
+      problem ? notice(problem, 'danger') : null,
+      h('p.muted', 'Or sign in on GitHub instead of making a token: GitHub shows the account and asks you to approve. This gives the platform the repo scope: it can read every repository your account can.'),
+      h('div.row', go));
+  }
+
+  function appForm() {
+    const input = h('input', { type: 'text', name: 'client-id', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', value: status?.clientIdFrom === 'saved' ? status.clientId : '', placeholder: status?.clientIdFrom === 'env' ? status.clientId : 'Ov23li…' });
+    const save = h('button.btn', { type: 'submit' }, 'Save client ID');
+    const form = h('form', { novalidate: true },
+      field('OAuth app client ID', input, { hint: status?.clientIdFrom === 'env' ? 'Set on the server (SKP_GITHUB_CLIENT_ID). One saved here is used instead.' : 'Empty removes it.' }),
+      h('div.form-actions', save));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clientId = input.value.trim() || null;
+      const out = await run(save, () => api.put('/api/v1/integrations/github/app', { clientId }), { done: clientId ? 'Client ID saved: Sign in with GitHub is ready' : 'Client ID removed' });
+      if (out && life.alive) { status = out; draw(); }
+    });
+    return h('details.more',
+      h('summary', status?.clientId ? 'The GitHub app for signing in' : 'Set up Sign in with GitHub (optional)'),
+      h('p.small', 'Signing in with GitHub needs an OAuth app of your own, once: on GitHub open ', h('a', { href: APPS_PAGE, target: '_blank', rel: 'noopener noreferrer' }, 'Settings → Developer settings → OAuth Apps'),
+        ', choose New OAuth App (any name; homepage and callback URL can be this platform\'s address), tick Enable Device Flow, register it, and copy its Client ID here. No client secret is needed.'),
+      form);
+  }
+
+  function draw() {
+    const saved = status?.using === 'saved' && status?.saved;
+    const formBox = h('div');
+    const replace = () => {
+      mount(formBox, tokenForm({ replacing: true }));
+      formBox.querySelector('input')?.focus();
+    };
+    const actions = owner && saved
+      ? [h('button.btn', { type: 'button', onclick: replace }, 'Replace token'),
+        menu('More', [{ label: 'Disconnect…', danger: true, onSelect: disconnect }], { ariaLabel: 'More for GitHub' })]
+      : [];
+    if (owner && !saved) mount(formBox, tokenForm());
+    mount(body,
+      h('div.card-head', h('h2', 'GitHub'), h('div.actions', actions)),
+      h('p.muted', 'For templates shipped as releases of a private GitHub repository: this platform installs them, and checks them for updates, with a token you give it here.'),
+      state(),
+      formBox,
+      owner ? deviceBox : h('p.small.muted', 'Only the owner can connect or disconnect GitHub.'),
+      owner ? appForm() : null);
+    if (owner && !stopPoll) {
+      if (status?.device?.status === 'pending') showDevice(status.device);
+      else drawDevice();
+    }
+  }
+
+  // Test a repository: can it be read, and its releases (nothing is installed).
+  const repo = h('input', { type: 'text', name: 'repo', inputmode: 'url', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'owner/name' });
+  const tester = repoTest({ input: repo, here: true });
+  repo.addEventListener('input', () => tester.reset());
+  repo.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); tester.button.click(); } });
+  const testCard = card('Test a repository',
+    h('p.muted', 'Check that this platform can read a repository, and see its releases. Nothing is installed.'),
+    h('div.inline-form', field('GitHub repository (owner/name)', repo), tester.button),
+    tester.results);
+
+  draw();
+  mount(panel, h('div.stack', h('section.card', body), testCard));
+  return undefined;
 }
 
 // ---- Security & exposure (07 §7.8; read only) --------------------------------------------------

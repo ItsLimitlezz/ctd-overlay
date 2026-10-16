@@ -164,10 +164,24 @@ encrypted with **AES-256-GCM** (random 96-bit nonce per record, record ID as ass
 - Decrypted secrets live only in connector memory.
 - What is encrypted, and with what associated data: an overlay's key (its id); a TOTP secret
   (`totp:<user id>`); a connection's secret settings, as one value (`connection:<id>`); its
-  account's tokens (`tokens:<id>`); credentials the v0 importer keeps (their record's id). A
-  connection's settings, its secrets and tokens and what it keeps between starts are deleted
-  together. The API never answers a secret: a connection lists which secret settings hold a
-  value (`secretFields`), and the admin UI never fills a secret field in.
+  account's tokens (`tokens:<id>`); credentials the v0 importer keeps (their record's id); the
+  GitHub token template sources read private repositories with (`integrations/github`,
+  `github:token`; 04 §4.13). A connection's settings, its secrets and tokens and what it keeps
+  between starts are deleted together. The API never answers a secret: a connection lists which
+  secret settings hold a value (`secretFields`), and the admin UI never fills a secret field in.
+- The GitHub token: only the owner (`system:admin`) saves, replaces or removes it; whoever
+  installs templates (`templates:write`) sees whether one is used and whose account it is. The
+  platform checks it with GitHub (`GET /user`) before saving, and keeps the account, how it was
+  made (pasted, or GitHub's device flow), a classic token's scopes, when and by whom. It is never
+  answered, never logged (the log redacts `ghp_`, `github_pat_`, `gho_`, `ghu_`, `ghs_`, `ghr_`
+  tokens wherever they appear), and the audit log names its account only. It goes to
+  `api.github.com` only (04 §4.13). Recommended: a fine-grained token limited to the template's
+  repository with Contents: Read-only (and Metadata: Read-only); a classic token needs the `repo`
+  scope, and so does the device flow (GitHub has no narrower scope for private repositories), so
+  those read every repository the account can. The device flow needs the owner's own OAuth app
+  (its client id, saved in the admin UI or `SKP_GITHUB_CLIENT_ID`; no client secret); its device
+  code stays in the platform's memory. `SKP_GITHUB_TOKEN` in the environment is the server-side
+  alternative, used when nothing is saved.
 
 ## 7.8 Exposure modes
 
@@ -244,7 +258,9 @@ requests carry none, so it works beside a proxy.
   delivery) **MUST** block private, loopback and link-local destinations unless the owner
   enables them, to prevent server-side request forgery. That includes IPv4-mapped IPv6 in any
   notation, and addresses written directly in the URL; of 192.0.0.0/16 only 192.0.0.0/24 and
-  192.0.2.0/24 are private.
+  192.0.2.0/24 are private. The GitHub requests behind template sources (`api.github.com`, and
+  `github.com` for the device flow) follow the same rules: `https` only, every redirect hop
+  checked, the size and time limits of a download, and a `POST` never redirected.
 - Connections reach three kinds of destination (06 §6.1.1): **service** (the connector's own
   API, HTTPS only); **lan** (an address the operator typed in a connection's settings, such as OBS
   or CTD Multi-Stream: resolved once and connected to that address, plain HTTP only to private and

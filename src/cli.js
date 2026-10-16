@@ -259,7 +259,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
               throw missing();
             }
           }
-          if (source) fetched = await fetchPackage(source, { dir: data.templates.downloadDir, token: cfg.githubToken, fetch: fetchHook, lookup: lookupHook, allowPrivate: cfg.allowPrivateDownloads });
+          // GitHub is asked with the token saved in Settings → Integrations, else SKP_GITHUB_TOKEN.
+          if (source) fetched = await fetchPackage(source, { dir: data.templates.downloadDir, github: data.github.auth, token: cfg.githubToken, fetch: fetchHook, lookup: lookupHook, allowPrivate: cfg.allowPrivateDownloads });
           const { template, warnings, noop } = fetched
             ? data.templates.install(fetched.file, { actor: 'cli', name: fetched.label, origin: fetched.origin })
             : data.templates.install(rest[0], { actor: 'cli' });
