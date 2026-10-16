@@ -296,8 +296,10 @@ test('the pages use each overlay\'s own template version and the gallery\'s summ
     return page.eval('document.querySelector("[data-view]").innerText');
   }
 
-  // Live with no show: each overlay's controls are its own version's scenes.
-  let text = await visit(undefined, '[...document.querySelectorAll("[data-view] .pad button")].length');
+  // Live: the overlay is a stream of its own; opened, its controls are its own version's scenes.
+  let text = await visit(undefined, 'document.querySelector("[data-view] .stream-card")');
+  assert.match(text, /old\s+Overlay outside a show/);
+  text = await visit('/live?overlay=old', '[...document.querySelectorAll("[data-view] .pad button")].some((b) => b.textContent.includes("First scene"))');
   assert.match(text, /First scene/);
   assert.doesNotMatch(text, /Second scene|Only in two/);
 
@@ -340,7 +342,7 @@ test('the pages use each overlay\'s own template version and the gallery\'s summ
   const offered = await page.eval('[...document.querySelectorAll("dialog[open] option")].map((o) => o.textContent)');
   assert.ok(offered.includes('First scene') && !offered.includes('Second scene') && !offered.includes('Only in two'), offered.join(', '));
   await click('dialog[open] button', 'Cancel');
-  text = await visit('/live', '[...document.querySelectorAll("[data-view] .pad button")].some((b) => b.textContent.includes("First scene"))');
+  text = await visit('/live?show=Night', '[...document.querySelectorAll("[data-view] .pad button")].some((b) => b.textContent.includes("First scene"))');
   assert.doesNotMatch(text, /Second scene|Only in two/);
 
   // Media: a picture whole, a placeholder centred, its menus named, the drop outline a class.

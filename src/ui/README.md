@@ -15,7 +15,8 @@ session cookie like any other client.
 | `api.js` | The API client: CSRF, If-Match, problems, paging, server time, live events. |
 | `dom.js` | Building blocks: `h()`, dialogs, menus, toasts, previews, time, polling. |
 | `schema-form.js` | The settings form generated from a template's schema (04 §4.3). |
-| `pages/<section>.js` | One file per section; one exported function per route. |
+| `streams.js` | A stream's status in words (On air / Offline / Unknown, platforms, viewers, connections) and the "Fed by" form. |
+| `pages/<section>.js` | One file per section; one exported function per route. `pages/live-overlay.js` is Live's overlay panel. |
 
 ## A page
 
@@ -158,6 +159,18 @@ The same form edits a connection's settings (a connector's `fields`). A `writeOn
 secret: a password input that is never filled in (the API never sends a secret back), and left
 empty keeps what is saved. The Connections page splits `values()` into `config` and `secrets` by
 `writeOnly`.
+
+## Live (pages/live.js, pages/live-overlay.js)
+
+Several streams at once: a stream is a show, or an overlay outside a show, fed by the connections
+its overlays are bound to. `#/live` lists every stream (`stream` on `GET /api/v1/shows` and
+`/overlays`: `onAir` true, false, or absent for "Unknown", never shown as "Offline"; viewers absent,
+never 0), polled every 3 s and on `system.connection`. `#/live?show=<id>&overlay=<slug>` is a
+show's console, the whole show or one member's panel (`overlayPanel(ctx, { ref, show,
+onWholeShow, onOverlay })`: preview, URLs, actions, Simulate, what feeds it); the choice is kept
+with `history.replaceState` after `ctx.alive()`. `#/live?overlay=<slug>` is an overlay outside a
+show (a member opens in its show's console). What feeds an overlay is edited on its settings tab
+("Fed by", `fedByForm()` from `streams.js`, If-Match) or for every member on the show's Details.
 
 ## Connections (pages/connections.js)
 

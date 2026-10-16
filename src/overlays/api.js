@@ -20,10 +20,12 @@
 // Bindings (01 §1.3): `connections` is "all" (every connection, including ones made later: the
 // default) or a list of connection ids, each of which must exist. `bound` lists the connections
 // that feed the overlay now, by name and status, for whoever edits overlays (operators don't hold
-// connections:read, and need to see what feeds what).
+// connections:read, and need to see what feeds what). `stream` is its stream status (src/streams.js):
+// the turned-on connections that feed it, whether it is on air on each platform, its viewers;
+// worked out on each read, so it never moves the ETag.
 import { ApiError } from '../http/api.js';
 
-export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections }) {
+export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections, streams }) {
   const tag = 'Overlays';
   const r = (def) => api.route({ tag, ...def });
   const docOf = (ref) => {
@@ -47,6 +49,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
       keyRequired: overlays.keyRequired(doc),
       connections: overlays.bindingOf(doc),
       bound: boundTo(overlays.bindingOf(doc)),
+      ...(streams ? { stream: streams.ofOverlay(doc) } : {}),
       ...(d.previous ? { previous: { template: d.previous.template, at: d.previous.at } } : {}),
       ...(shows ? { show: shows.list().find((s) => s.overlays.includes(doc.id))?.name } : {}),
     };
@@ -68,7 +71,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
   };
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
-    r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
+    r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays, each with what feeds it and its stream status', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
     r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids)', body: { fields: ['slug', 'template', 'settings', 'connections'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
       checkConnections(body.connections);
       const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all' });

@@ -60,13 +60,17 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
     if (!owners) return undefined;
     const core = owners.get('');
     if (core) return core;
-    let best;
+    return best(owners, allow)?.e;
+  }
+  // The connection entry that wins among owners passing allow (rules 2–4): { owner, e }.
+  function best(owners, allow) {
+    let top;
     for (const [owner, e] of owners) {
-      if (!allow(owner)) continue;
+      if (!owner || !allow(owner)) continue;
       const c = { owner, e };
-      if (!best || beats(c, best)) best = c;
+      if (!top || beats(c, top)) top = c;
     }
-    return best?.e;
+    return top;
   }
   // { value, src, stale? } that owners passing allow(owner) show for key, set or worked out.
   function resolve(key, allow = ALL) {
@@ -250,6 +254,15 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
         if (e) out.push({ key, value: structuredClone(e.value), ...(e.stale ? { stale: true } : {}) });
       }
       return out;
+    },
+
+    // What the connections passing allow(owner) say for key, by rules 2–4 (the core's own value
+    // left out: a stream's status is what its connections report, not what a demo set):
+    // { value, owner, stale? }, or undefined.
+    fromConnections(key, allow = ALL) {
+      const owners = state.get(key);
+      const top = owners && best(owners, allow);
+      return top && { value: structuredClone(top.e.value), owner: top.owner, ...(top.e.stale ? { stale: true } : {}) };
     },
 
     // 1 for a relay (CTD Multi-Stream): a direct connection's value wins a tie with it.

@@ -3,9 +3,11 @@
 // name). Every time of a show is in the show's own time zone; the server resolves wall-clock times
 // to instants (09 §9.2) and this page shows the instants it answers with. Edits send If-Match with
 // the show (or cue) as the form read it (H16); destructive actions sit in a menu behind a
-// confirmation (H20).
+// confirmation (H20). Details also sets what feeds every overlay of the show at once ("Fed by":
+// one change per overlay, each with its own If-Match).
 import * as api from '../api.js';
 import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
+import { fedByForm, fedByWords } from '../streams.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -454,10 +456,12 @@ export async function detail(view, ctx) {
   }
 
   // ---- Details -------------------------------------------------------------------------------
+  let health; // { list, error }: the connections "Fed by" offers (operators read them here)
   function detailsTab(panel) {
     let alive = true;
     mount(panel, h('p.loading', 'Loading…'));
-    Promise.all([fresh(), loadAll('/api/v1/overlays')]).then(([, overlays]) => {
+    Promise.all([fresh(), loadAll('/api/v1/overlays'), api.get('/api/v1/system/health').then((r) => ({ list: Array.isArray(r?.connections) ? r.connections : [] }), (error) => ({ list: [], error }))]).then(([, overlays, h2]) => {
+      health = h2;
       if (alive) drawDetails(panel, overlays);
     }).catch((err) => {
       if (!alive) return;
@@ -527,7 +531,9 @@ export async function detail(view, ctx) {
       drawDetails(panel, await loadAll('/api/v1/overlays'));
     }));
 
-    mount(panel, h('div.card',
+    const fedBox = h('div');
+    drawFedBy(fedBox, overlays);
+    mount(panel, h('div.stack', h('div.card',
       h('h2', 'Details'),
       disabled ? notice('You can look at this show; changing it needs an operator or a higher role.') : null,
       h('div.grid',
@@ -537,7 +543,69 @@ export async function detail(view, ctx) {
         field('Day boundary', boundary, { hint: `When the show's day starts. ${boundaryWords(b, formShow.date)} An afternoon show sets it earlier, like ${timeLabel('06:00')}.` }),
         field('Goes live at', goLive, { hint: formShow.goLiveAt ? `Now: ${instantLabel(formShow.goLiveAt, formShow.timezone)}${zoneNote(formShow.timezone)}. Leave empty for no countdown.` : 'When the countdown ends and the show goes on air. Leave empty for no countdown.' })),
       picker.el,
-      canWrite ? h('div.form-actions', save) : null));
+      canWrite ? h('div.form-actions', save) : null), fedBox));
+  }
+
+  // ---- Fed by: the connections every overlay of the show shows -------------------------------
+  // A convenience over each overlay's own "Fed by": the same choice for all of them, one PATCH per
+  // overlay with that overlay's If-Match (H16). Some may fail (one changed meanwhile): what was
+  // saved and what wasn't is said overlay by overlay, and the card shows them as they are now.
+  function drawFedBy(box, overlays, outcome) {
+    const ids = new Set(show.overlays || []);
+    const members = overlays.filter((o) => o && ids.has(o.id));
+    const canBind = ctx.can('overlays:write');
+    const bindingOf = (o) => (o.connections === 'all' || !Array.isArray(o.connections) ? 'all' : [...o.connections].sort());
+    const parts = [h('h2', 'Fed by')];
+    if (outcome) parts.push(outcome);
+    if (!members.length) {
+      parts.push(h('p.muted', 'Pick the show\'s overlays first: then choose here which connections feed all of them.'));
+      mount(box, h('section.card.stack', parts));
+      return;
+    }
+    const first = JSON.stringify(bindingOf(members[0]));
+    const same = members.every((o) => JSON.stringify(bindingOf(o)) === first);
+    parts.push(same
+      ? h('p', `Every overlay in the show: ${fedByWords(bindingOf(members[0]), members[0].bound)}`)
+      : h('div', h('p', 'Its overlays are fed differently now:'), h('ul', members.map((o) => h('li', `${o.slug}: ${fedByWords(bindingOf(o), o.bound)}`)))));
+    if (health?.error) parts.push(notice(`The connections could not be read: ${health.error.message}`, 'warn'));
+    if (!canBind) {
+      parts.push(h('p.muted', 'Your role can\'t change what feeds the overlays.'));
+      mount(box, h('section.card.stack', parts));
+      return;
+    }
+    const apply = h('button.btn.primary', { type: 'button', disabled: same, onclick: () => saveAll() }, 'Apply to every overlay');
+    const form = fedByForm({ connections: health?.list, value: same ? bindingOf(members[0]) : [], legend: 'Connections every overlay in the show shows', onChange: () => { apply.disabled = same && !form.changed(); } });
+    async function saveAll() {
+      const target = form.value();
+      const want = JSON.stringify(target === 'all' ? 'all' : [...target].sort());
+      await run(apply, async () => {
+        const saved = [];
+        const refused = [];
+        for (const o of members) {
+          if (JSON.stringify(bindingOf(o)) === want) continue;
+          try {
+            await api.patch(`/api/v1/overlays/${api.seg(o.id)}`, { connections: target }, { ifMatch: o });
+            saved.push(o.slug);
+          } catch (err) {
+            refused.push({ slug: o.slug, why: err.status === 412 ? 'it changed since you opened this page' : err.status === 404 ? 'it was deleted meanwhile' : err.message });
+          }
+        }
+        const latest = await loadAll('/api/v1/overlays');
+        let note;
+        if (refused.length) {
+          note = notice([
+            saved.length ? `Saved for ${andList(saved)}. ` : 'Nothing was saved. ',
+            `Not saved for ${refused.map((r) => `${r.slug} (${r.why})`).join(', ')}. This is how they are now: choose again and apply.`,
+          ], 'danger');
+          toast(`Not every overlay was changed: ${refused.map((r) => r.slug).join(', ')} ${refused.length === 1 ? 'was' : 'were'} not.`, { kind: 'error', ms: 10000 });
+        } else {
+          toast(saved.length ? `Every overlay in "${show.name}" is fed by ${target === 'all' ? 'every connection' : target.length ? target.map((id) => health?.list.find((c) => c.id === id)?.name || id).join(', ') : 'no connection'} now.` : 'Nothing to save: every overlay is fed so already.');
+        }
+        drawFedBy(box, latest, note);
+      });
+    }
+    parts.push(h('p.small.muted', 'This changes each overlay of the show; an overlay\'s own page shows and changes it too.'), form.el, h('div.form-actions', apply));
+    mount(box, h('section.card.stack', parts));
   }
 
   // ---- Lineup --------------------------------------------------------------------------------

@@ -103,7 +103,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | Method · Path | Purpose |
 |---|---|
 | `GET/POST /overlays` | List · create from a template (`connections`: `"all"`, the default, or connection ids) |
-| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections` and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: the connections that feed it now, `[{ id, name, connector, status }]` |
+| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections` and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: the connections that feed it now, `[{ id, name, connector, status }]`, and its `stream` (below) |
 | `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate`. `dryRun`, `confirm` and `runMigrate` are `true` or `false`; anything else is a `422` |
 | `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL** and ends streams opened with the old key; UI must confirm; never replayed for an `Idempotency-Key` (its answer holds the key) |
@@ -116,7 +116,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 ### Shows & timeline
 | Method · Path | Purpose |
 |---|---|
-| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change |
+| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change. `live` is true while REC runs; whether the show is on air on a platform is its `stream` (below) |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
 | `GET /alerts` · `POST /alerts/pause` · `/resume` · `/skip` · `/replay` | The alert queues (05 §5.5): one per show, or per overlay outside a show, each named by `queue` (the show's or the overlay's id). `GET` lists what is on screen and what waits; pause and resume apply to every queue; skip and replay take `{ queue }` (skip without it: every queue) |
@@ -124,6 +124,18 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `POST /shows/{id}/cues/{cueId}/fire` · `/skip` · `/rearm` | Operator overrides |
 | `POST /shows/{id}/cues/build` | Regenerate cues from the lineup (09 §9.5) |
 | `GET/POST /shows/{id}/plans` · `DELETE /shows/{id}/plans/{planId}` | Pre-planned future dates (09 §9.6) |
+
+**Stream status.** A show and an overlay carry `stream`, worked out on each read (it never moves
+the ETag): `{ connections: [{ id, name, connector, status, detail? }], onAir?, platforms: [{
+platform, live?, title?, startedAt?, viewers?, stale? }], viewers? }`. `connections` are the
+turned-on connections that feed it (an overlay's bindings; a show's members' together, and one
+member bound to `"all"` makes the show's `"all"`), by name and status only, so whoever reads
+overlays or shows sees it without `connections:read`. `platforms` come from those connections'
+`stream.<platform>.*` and `viewers.<platform>` state, each value chosen as an overlay bound the
+same way sees it (fresh over held, direct over relay, 01 §1.3), the core's own values left out.
+`onAir` is `true` while any platform is live, `false` when platforms said and none is, and absent
+when nothing says (*Unknown*, never *Offline*); `viewers` adds up the known counts and is absent
+when none is known, never `0`.
 
 ### Connections
 Seeing connections takes `connections:read`, changing them `connections:write` (owners and

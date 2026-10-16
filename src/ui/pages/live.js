@@ -1,19 +1,29 @@
 // The show-night console (08 §8.4), the default landing page: built for a phone held in one hand,
-// under pressure. One show at a time: previews of its overlays, its scenes and the templates'
-// actions, who's on, REC, and the timeline with its next cue. With no show yet, it controls the
-// overlays outside a show.
+// under pressure. Several streams can run at once (a show each, or an overlay outside a show, each
+// fed by its own connections), so Live opens on all of them:
 //
-// Everything here is a command (no If-Match, README H16). It polls the show and its cues every 2 s
-// and the viewer count every 5 s, and updates the page in place, so focus, scroll and loaded
-// previews stay; countdowns tick every second in server time.
+//   #/live                          every stream as a card: on air, offline or unknown, its
+//                                   platforms and viewers, what feeds it, REC; running ones first
+//   #/live?show=<id>[&overlay=<s>]  one show: its status, then the whole show (previews of its
+//                                   overlays, its scenes and the templates' actions, who's on, REC,
+//                                   the timeline with its next cue) or one of its overlays
+//                                   (live-overlay.js), remembered in the address
+//   #/live?overlay=<slug>           an overlay outside a show, on its own: the same overlay panel,
+//                                   with its own scenes
+//
+// Everything here is a command (no If-Match, README H16). The streams page polls every 3 s, and at
+// once when a connection's status changes; a show's console polls the show and its cues every 2 s,
+// and updates the page in place, so focus, scroll and loaded previews stay; countdowns tick every
+// second in server time.
 import * as api from '../api.js';
 import { badge, clock, confirm, countdown, empty, every, field, h, isPhone, menu, mount, notice, pageHead, preview, run, toast } from '../dom.js';
+import { isRunning, streamStatus } from '../streams.js';
+import { overlayPanel } from './live-overlay.js';
 
-const SHOW_KEY = 'skp.live.show';
 const PREVIEWS_KEY = 'skp.live.previews';
 const CUES_KEY = 'skp.live.cues';
 const SHOW_POLL_MS = 2000;
-const STATE_POLL_MS = 5000;
+const STREAMS_POLL_MS = 3000;
 const MEMBERS_RETRY_MS = 10000;
 const MAX_LIVE_PREVIEWS = 2; // H13
 const PREVIEW_BASIS_H = 90; // px: the height previews are laid out at before they grow
@@ -36,7 +46,6 @@ const set = (el, text) => { if (el.textContent !== text) el.textContent = text; 
 const sceneText = (s) => (s.seconds ? `${s.label} · ${s.seconds} s` : s.label);
 // A countdown to something still to come, rounded up: "0:01" until it is due, never "0:00" before.
 const until = (ms) => countdown(Math.ceil(ms / 1000) * 1000);
-const numbers = new Intl.NumberFormat();
 function clockBadge() {
   const b = badge('Clock change', 'warn');
   b.title = 'This time falls on a daylight-saving clock change; it is shown as it will happen.';
@@ -112,69 +121,198 @@ async function loadMembers(slugs, { urls }) {
   };
 }
 
-// The show day a show is on now, in its zone: before its day boundary, the night before's (09 §9.2).
-function showDayNow(show) {
-  try {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: show.timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-      .formatToParts(new Date(api.serverNow())).map((p) => [p.type, p.value]));
-    const date = `${parts.year}-${parts.month}-${parts.day}`;
-    if (typeof show.dayBoundary === 'string' && `${parts.hour}:${parts.minute}` < show.dayBoundary) {
-      const d = new Date(`${date}T00:00:00Z`);
-      d.setUTCDate(d.getUTCDate() - 1);
-      return d.toISOString().slice(0, 10);
-    }
-    return date;
-  } catch {
-    return undefined;
-  }
-}
-
-// Which show: the one asked for (?show=), the one chosen last time, one on air, tonight's, the first.
-function pickShow(shows, wanted) {
-  const find = (ref) => ref && shows.find((s) => s.id === ref || (typeof s.name === 'string' && s.name.toLowerCase() === String(ref).toLowerCase()));
-  return find(wanted) || find(remembered.get(SHOW_KEY)) || shows.find((s) => s.live === true) || shows.find((s) => s.date && s.date === showDayNow(s)) || shows[0];
-}
+const ALL_STREAMS = { label: 'All streams', href: '#/live' };
+const liveHref = ({ show, overlay } = {}) => `/live${show ? `?show=${encodeURIComponent(show)}${overlay ? `&overlay=${encodeURIComponent(overlay)}` : ''}` : overlay ? `?overlay=${encodeURIComponent(overlay)}` : ''}`;
 
 export async function live(view, ctx) {
   ctx.setTitle('Live');
-  const page = { gone: false, seq: 0, stop: undefined };
-  const open = async (wanted) => {
-    const seq = ++page.seq;
-    page.stop?.();
-    page.stop = undefined;
-    const stop = await start(view, ctx, { wanted, switchTo, reopen });
-    if (page.gone || seq !== page.seq) stop?.();
-    else page.stop = stop;
-  };
-  const reopen = () => open().catch((err) => toast(err));
-  const switchTo = (id) => {
-    remembered.set(SHOW_KEY, id);
-    open(id).catch((err) => toast(err));
-  };
-  await open(ctx.query.get('show') || undefined);
-  return () => {
-    page.gone = true;
-    page.stop?.();
-    page.stop = undefined;
-  };
+  const show = ctx.query.get('show');
+  const overlay = ctx.query.get('overlay');
+  if (show) return openShow(view, ctx, show, overlay || undefined);
+  if (overlay) return overlayConsole(view, ctx, overlay);
+  return streams(view, ctx);
 }
 
-async function start(view, ctx, opts) {
+// A page Live can't draw (the request failed): the problem, and Try again.
+function failed(view, ctx, title, err) {
+  mount(view, pageHead(title, { crumbs: [ALL_STREAMS] }), notice(err.message, 'danger'),
+    h('div.row', h('button.btn.primary', { type: 'button', onclick: () => ctx.navigate(`${location.hash.slice(1)}`, { replace: true }) }, 'Try again')));
+}
+
+// A show by id or name (as ?show= has it).
+async function openShow(view, ctx, wanted, overlay) {
   let shows;
   try {
     shows = await api.all('/api/v1/shows');
   } catch (err) {
     if (err.status === 401) return undefined; // signing in again
-    mount(view, pageHead('Live'), notice(err.message, 'danger'),
-      h('div.row', h('button.btn.primary', { type: 'button', onclick: () => opts.reopen() }, 'Try again')));
+    failed(view, ctx, 'Live', err);
     return undefined;
   }
-  if (!shows.length) return standalone(view, ctx);
-  return showConsole(view, ctx, pickShow(shows, opts.wanted), shows, opts);
+  const lower = String(wanted).toLowerCase();
+  const show = shows.find((s) => s.id === wanted) || shows.find((s) => typeof s.name === 'string' && s.name.toLowerCase() === lower);
+  if (!ctx.alive()) return undefined;
+  if (!show) {
+    mount(view, pageHead(`There is no show "${wanted}"`, { crumbs: [ALL_STREAMS] }),
+      h('div.card', empty('It may have been deleted or renamed.', 'Every show and overlay that can go live is on the streams page.', h('a.btn.primary', { href: '#/live' }, 'All streams'))));
+    return undefined;
+  }
+  return showConsole(view, ctx, show, shows, {
+    overlay,
+    switchTo: (id) => ctx.navigate(liveHref({ show: id })),
+    reopen: () => ctx.navigate('/live', { replace: true }),
+  });
+}
+
+// ---- every stream ------------------------------------------------------------------------------
+// A card per show, and per overlay outside a show: on air or not, its platforms, viewers and
+// connections, REC; running ones (on air, or REC) first. Read every 3 s, and soon after a
+// connection's status changes (system.connection, for whoever may read events).
+async function streams(view, ctx) {
+  const canShows = ctx.can('timeline:read');
+  let stopped = false;
+  const cards = new Map(); // key → its card, kept while the stream exists
+  let order = '';
+  let lastOk = Date.now();
+  let loaded = false;
+  const grid = h('div.grid');
+  const emptyBox = h('div', { hidden: true });
+  const problemBox = h('div', { hidden: true });
+  const intro = h('p.muted', 'A stream is a show (its overlays run together) or an overlay outside a show. Each is fed by its own connections, so several can be on air at once. Running streams come first.');
+
+  async function read() {
+    const [shows, overlays] = await Promise.all([canShows ? api.all('/api/v1/shows') : [], api.all('/api/v1/overlays')]);
+    const all = [
+      ...shows.filter((s) => s && typeof s.id === 'string').map((s) => ({
+        key: `show:${s.id}`, show: true, name: s.name || 'Show', stream: s.stream, rec: instant(s.recStartedAt) !== undefined,
+        overlays: list(s.members).length, href: `#${liveHref({ show: s.id })}`,
+      })),
+      ...overlays.filter((o) => o && typeof o.slug === 'string' && !o.show).map((o) => ({
+        key: `overlay:${o.id}`, show: false, name: o.slug, stream: o.stream, rec: false, overlays: 1, href: `#${liveHref({ overlay: o.slug })}`,
+      })),
+    ];
+    return all.map((s, i) => ({ s, i }))
+      .sort((a, b) => Number(isRunning(b.s.stream, b.s.rec)) - Number(isRunning(a.s.stream, a.s.rec)) || a.i - b.i)
+      .map((x) => x.s);
+  }
+
+  function card(key) {
+    const c = { status: streamStatus({ compact: true }) };
+    c.title = h('h2.truncate');
+    c.meta = h('p.small.muted');
+    c.open = h('a.btn.primary', {}, 'Open');
+    c.el = h('article.card.stream-card', h('div.card-head', c.title), c.meta, c.status.el, h('div.open', c.open));
+    cards.set(key, c);
+    return c;
+  }
+  function draw(all) {
+    const keys = new Set(all.map((s) => s.key));
+    for (const [key, c] of cards) if (!keys.has(key)) { c.el.remove(); cards.delete(key); }
+    const els = all.map((s) => {
+      const c = cards.get(s.key) || card(s.key);
+      set(c.title, s.name);
+      set(c.meta, s.show ? `Show · ${s.overlays} overlay${s.overlays === 1 ? '' : 's'}` : 'Overlay outside a show');
+      c.open.setAttribute('href', s.href);
+      c.open.setAttribute('aria-label', `Open ${s.name}`);
+      c.status.update(s.stream, { rec: s.rec });
+      return c.el;
+    });
+    // Moved only when the order changed: moving a card takes the focus off its button.
+    const next = all.map((s) => s.key).join('\n');
+    if (next !== order) {
+      order = next;
+      grid.append(...els);
+    }
+    grid.hidden = !all.length;
+    emptyBox.hidden = all.length > 0;
+    intro.hidden = !all.length;
+  }
+
+  let problemText = '';
+  function setProblem(err) {
+    const text = err ? (loaded ? `${err.message} Showing what was known at ${new Date(lastOk).toLocaleTimeString()}.` : err.message) : '';
+    if (text === problemText) return;
+    problemText = text;
+    problemBox.hidden = !text;
+    mount(problemBox, text ? notice(text, 'danger') : null);
+  }
+  async function refresh() {
+    if (stopped) return;
+    let all;
+    try {
+      all = await read();
+    } catch (err) {
+      if (!stopped && err.status !== 401) setProblem(err);
+      return;
+    }
+    if (stopped) return;
+    loaded = true;
+    lastOk = Date.now();
+    setProblem(null);
+    draw(all);
+  }
+
+  mount(emptyBox, h('div.card', empty('Nothing to go live with yet',
+    'A stream is a show, or an overlay on its own. Make an overlay from a template, then put overlays that run together in a show.',
+    h('a.btn.primary', { href: '#/templates' }, 'Go to Templates'), h('a.btn', { href: '#/shows' }, 'Go to Shows'))));
+  await refresh();
+  if (!ctx.alive()) return () => { stopped = true; };
+  mount(view, pageHead('Live'), h('div.stack', problemBox, intro, grid, emptyBox));
+
+  let soon;
+  const stops = [every(STREAMS_POLL_MS, (() => { let first = true; return () => { if (first) { first = false; return undefined; } return refresh(); }; })())];
+  if (ctx.can('events:read')) {
+    stops.push(api.events(['system.connection'], () => {
+      clearTimeout(soon);
+      soon = setTimeout(refresh, 300);
+    }));
+  }
+  return () => {
+    stopped = true;
+    clearTimeout(soon);
+    for (const stop of stops) stop();
+  };
+}
+
+// ---- an overlay outside a show -----------------------------------------------------------------
+async function overlayConsole(view, ctx, ref) {
+  let overlay;
+  try {
+    overlay = await api.get(`/api/v1/overlays/${api.seg(ref)}`);
+  } catch (err) {
+    if (err.status === 401) return undefined;
+    if (err.status !== 404) { failed(view, ctx, 'Live', err); return undefined; }
+    mount(view, pageHead(`There is no overlay "${ref}"`, { crumbs: [ALL_STREAMS] }),
+      h('div.card', empty('It may have been renamed or deleted.', 'Every show and overlay that can go live is on the streams page.', h('a.btn.primary', { href: '#/live' }, 'All streams'))));
+    return undefined;
+  }
+  if (!ctx.alive()) return undefined;
+  // In a show: its console, with this overlay chosen.
+  if (overlay.show && ctx.can('timeline:read')) {
+    ctx.navigate(liveHref({ show: overlay.show, overlay: overlay.slug }), { replace: true });
+    return undefined;
+  }
+  ctx.setTitle(overlay.slug);
+  const canControl = ctx.can('overlays:control');
+  const status = streamStatus();
+  status.update(overlay.stream);
+  const alerts = alertsCard(ctx, { queue: overlay.id });
+  const panel = overlayPanel(ctx, { ref: overlay.id, onOverlay: (o) => status.update(o.stream) });
+  mount(view,
+    pageHead(overlay.slug, { crumbs: [ALL_STREAMS] }),
+    h('div.stack',
+      canControl ? null : notice(NO_CONTROL, 'warn'),
+      h('section.card', h('h2.sr-only', 'Stream status'), status.el),
+      alerts.el,
+      panel.el));
+  return () => {
+    alerts.stop();
+    panel.stop();
+  };
 }
 
 // ---- the console of one show -------------------------------------------------------------------
-async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
+async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay: wantedOverlay }) {
   const canControl = ctx.can('overlays:control');
   const canPreview = ctx.can('overlays:read');
   const base = `/api/v1/shows/${api.seg(first.id)}`;
@@ -252,13 +390,13 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
       shows.map((s) => h('option', { value: s.id, selected: s.id === show.id }, s.name)));
   }
   const head = pageHead(show.name || 'Show', {
-    crumbs: [{ label: 'Live' }],
+    crumbs: [ALL_STREAMS],
     actions: [select ? h('div.inline-form', field('Show', select)) : null, h('a.btn.ghost', { href: showHref }, 'Show details')].filter(Boolean),
   });
   const titleEl = head.querySelector('h1');
   const problemBox = h('div', { hidden: true });
 
-  // ---- status: REC, on air, go-live, viewers ---------------------------------------------------
+  // ---- status: REC, go-live, and the stream: on air, platforms, viewers, connections -----------
   const recBadge = badge('REC', 'danger');
   const recTime = h('span.countdown', '0:00');
   const recOff = h('span.muted', 'REC is not running');
@@ -278,15 +416,13 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     const out = await command(null, () => api.post(`${base}/rec`, { action }), { done: action === 'start' ? 'REC restarted from 0:00' : 'REC reset: the show is off air' });
     if (out) applyShow(out);
   }
-  const airDot = h('span.dot', { 'aria-hidden': 'true' });
-  const airText = h('span', 'Off air');
   const goLiveChip = h('span.chip', { hidden: true });
-  const viewersChip = h('span.chip', { hidden: true });
+  const stream = streamStatus();
   const statusCard = h('div.card',
     h('h2.sr-only', 'Show status'),
     h('div.stack',
-      h('div.spread', h('div.row', recBadge, recTime, recOff), h('div.row', recStart, recMenu)),
-      h('div.chips', h('span.chip', airDot, airText), goLiveChip, viewersChip)));
+      h('div.spread', h('div.row', recBadge, recTime, recOff, goLiveChip), h('div.row', recStart, recMenu)),
+      stream.el));
 
   // ---- previews (H13: lite and on tap on a phone; at most two live at once) --------------------
   let previewsOpen = (() => {
@@ -322,6 +458,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
   }
   function buildPreviews() {
     unloadPreviews();
+    if (selected) return mount(previewsBody); // one overlay chosen: its panel has its preview
     set(previewsToggle, previewsOpen ? 'Hide' : 'Show');
     previewsToggle.setAttribute('aria-label', previewsOpen ? 'Hide previews' : 'Show previews'); // apart from All cues' Show
     previewsToggle.setAttribute('aria-expanded', String(previewsOpen));
@@ -351,6 +488,48 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     mount(previewsBody, row);
     for (const c of cells) noteLive(c);
     return undefined;
+  }
+
+  // ---- the whole show, or one of its overlays --------------------------------------------------
+  // "Whole show" is the console as it always was; an overlay's own panel (live-overlay.js) has its
+  // preview, URLs, actions and Simulate. The choice is kept in the address (&overlay=), so a reload
+  // keeps it.
+  let selected; // the slug of the overlay chosen, or undefined for the whole show
+  let panel; // its panel: { el, stop }
+  const selectorBox = h('div.row', { role: 'group', 'aria-label': 'Whole show or one overlay' });
+  const wholeBox = h('div.stack');
+  const overlayBox = h('div');
+  let selectorKey;
+  function buildSelector() {
+    const slugs = members.filter((m) => m.overlay).map((m) => m.slug);
+    const key = slugs.join('\n');
+    if (key === selectorKey) return;
+    selectorKey = key;
+    const choice = (label, slug, aria) => h('button.btn', { type: 'button', 'aria-pressed': String(selected === slug), 'aria-label': aria, dataset: { overlay: slug || '' }, onclick: () => choose(slug) }, label);
+    mount(selectorBox, slugs.length ? [choice('Whole show', undefined), slugs.map((s) => choice(s, s, `Overlay ${s}`))] : null);
+    selectorBox.hidden = !slugs.length;
+    if (selected && !slugs.includes(selected)) choose(undefined);
+  }
+  function choose(slug, { initial = false } = {}) {
+    if (slug === selected && !initial) return;
+    selected = slug;
+    for (const b of selectorBox.querySelectorAll('button')) b.setAttribute('aria-pressed', String((b.dataset.overlay || undefined) === slug));
+    panel?.stop();
+    panel = undefined;
+    wholeBox.hidden = !!slug;
+    if (slug) {
+      const m = members.find((x) => x.slug === slug);
+      panel = overlayPanel(ctx, { ref: m?.overlay?.id || slug, show: show.name || 'this show', onWholeShow: () => {
+        choose(undefined);
+        selectorBox.querySelector('button')?.focus(); // the panel that had the focus is gone
+      } });
+      mount(overlayBox, panel.el);
+      if (!initial) buildPreviews(); // unloads the whole show's
+    } else {
+      mount(overlayBox);
+      if (!initial) buildPreviews();
+    }
+    if (!initial && ctx.alive()) history.replaceState(null, '', `#${liveHref({ show: show.id, overlay: slug })}`);
   }
 
   // ---- scenes ----------------------------------------------------------------------------------
@@ -602,9 +781,8 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
 
   // ---- state from the server -------------------------------------------------------------------
   function renderStatus() {
-    const live = show.live === true;
-    airDot.className = live ? 'dot ok' : 'dot';
-    set(airText, live ? 'On air' : 'Off air');
+    // On air is what the show's connections say (show.stream); REC (show.live) is its own row.
+    stream.update(show.stream);
     const recOn = instant(show.recStartedAt) !== undefined;
     recBadge.hidden = !recOn;
     recTime.hidden = !recOn;
@@ -665,6 +843,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
       membersKey = key;
       membersComplete = next.complete;
       cat = catalog(members.map((m) => m.manifest));
+      buildSelector();
       buildScenes();
       buildActions();
       if (urlsChanged) buildPreviews();
@@ -709,32 +888,24 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     if (cuesR.status === 'fulfilled') cues = list(cuesR.value);
     if (err || !applyShow(showR.value)) renderTimeline();
   }
-  // The viewer count, only when it is known and current (H6: never a wrong number).
-  async function refreshState() {
-    if (stopped) return;
-    let total;
-    try {
-      const state = await api.get('/api/v1/state');
-      const value = state?.['viewers.total'];
-      if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && state['viewers.stale'] !== true) total = Math.round(value);
-    } catch { /* unknown: hidden */ }
-    if (stopped) return;
-    viewersChip.hidden = total === undefined;
-    if (total !== undefined) set(viewersChip, `${numbers.format(total)} viewer${total === 1 ? '' : 's'}`);
-  }
-
   // ---- the page --------------------------------------------------------------------------------
-  const alerts = alertsCard(ctx);
+  const alerts = alertsCard(ctx, { queue: show.id });
+  mount(wholeBox,
+    previewsCard,
+    h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', timelineCard, lineupCard)),
+    cuesCard);
   mount(view,
     head,
     h('div.stack',
       canControl ? null : notice(NO_CONTROL, 'warn'),
       problemBox,
       statusCard,
+      selectorBox,
       alerts.el,
-      previewsCard,
-      h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', timelineCard, lineupCard)),
-      cuesCard));
+      wholeBox,
+      overlayBox));
+  buildSelector();
+  if (wantedOverlay && members.some((m) => m.overlay && m.slug === wantedOverlay)) choose(wantedOverlay, { initial: true });
   buildScenes();
   buildActions();
   buildPreviews();
@@ -753,53 +924,24 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen }) {
     every(1000, tick),
     alerts.stop,
   ];
-  if (ctx.can('events:read')) stops.push(every(STATE_POLL_MS, refreshState));
   return () => {
     stopped = true;
     for (const stop of stops) stop();
     for (const t of timers) clearTimeout(t);
     timers.clear();
     unloadPreviews();
+    panel?.stop();
   };
 }
 
-// ---- no show yet: the overlays outside a show --------------------------------------------------
-async function standalone(view, ctx) {
-  const canControl = ctx.can('overlays:control');
-  let overlays = [];
-  let problem;
-  try {
-    overlays = (await api.all('/api/v1/overlays')).filter((o) => o && typeof o.slug === 'string' && !o.show);
-  } catch (err) {
-    if (err.status === 401) return undefined;
-    problem = err;
-  }
-  const manifestOf = await pinnedManifests(overlays, (p) => p.catch(() => undefined));
-  if (!ctx.alive()) return undefined;
-  const alerts = alertsCard(ctx);
-  mount(view,
-    pageHead('Live'),
-    h('div.stack',
-      canControl ? null : notice(NO_CONTROL, 'warn'),
-      alerts.el,
-      h('div.card', empty('No show yet',
-        'A show is the overlays that change together on the night, with the lineup and the timeline. Make one in Shows; until then, control each overlay on its own here.',
-        h('a.btn.primary', { href: '#/shows' }, 'Go to Shows'), h('a.btn', { href: '#/overlays' }, 'Go to Overlays'))),
-      h('section',
-        h('h2', 'Overlays outside a show'),
-        problem ? notice(problem.message, 'danger')
-          : overlays.length ? h('div.grid.wide', overlays.map((o) => overlayControls(o, manifestOf(o), canControl)))
-            : h('p.muted', 'No overlays yet. Make one from a template in Templates.'))));
-  return () => alerts.stop();
-}
-
 // ---- the alert queue (05 §5.5) -------------------------------------------------------------------
-// What is on screen and what waits, in every queue, with Skip, Replay and Pause. Polled every 2 s
-// while the page is open. Returns { el, stop }.
+// What is on screen and what waits, with Skip, Replay and Pause: in one stream's queue (queue: the
+// show's id, or the overlay's outside a show), else in every queue. Pause holds every stream's.
+// Polled every 2 s while the page is open. Returns { el, stop }.
 const ALERT_WORDS = { follow: 'Follow', subscription: 'Sub', gift: 'Gifted subs', cheer: 'Cheer', kicks: 'Kicks', raid: 'Raid', membership: 'Membership', superchat: 'Super Chat', tip: 'Tip' };
 const alertText = (a) => `${ALERT_WORDS[a.kind] || 'Alert'}${a.user ? ` from ${a.user}` : ''}`;
 
-function alertsCard(ctx) {
+function alertsCard(ctx, { queue } = {}) {
   const canControl = ctx.can('overlays:control');
   const pausedBadge = badge('Paused', 'warn');
   pausedBadge.hidden = true;
@@ -815,12 +957,13 @@ function alertsCard(ctx) {
   function render() {
     pausedBadge.hidden = !state.paused;
     pauseBtn.textContent = state.paused ? 'Resume alerts' : 'Pause alerts';
-    const queues = list(state.queues);
+    const queues = list(state.queues).filter((q) => queue === undefined || q?.queue === queue);
+    const note = queue !== undefined ? h('p.small.muted', 'Pause holds the alerts of every stream, not only this one.') : null;
     if (!queues.length) {
-      mount(body, h('p.muted', 'No alerts yet tonight. Each one plays in turn here when it arrives (try Simulate on an overlay).'));
+      mount(body, h('p.muted', `No alerts yet tonight${queue !== undefined ? ' on this stream' : ''}. Each one plays in turn here when it arrives (try Simulate on an overlay).`), note);
       return;
     }
-    mount(body, queues.map((q) => {
+    mount(body, note, queues.map((q) => {
       const showing = list(q.showing);
       const waiting = list(q.waiting);
       const skip = h('button.btn', { type: 'button', disabled: !canControl || !showing.length, 'aria-label': `Skip the alert on screen in ${q.name}` }, 'Skip');
@@ -847,29 +990,4 @@ function alertsCard(ctx) {
   refresh();
   const stop = every(SHOW_POLL_MS, refresh);
   return { el, stop };
-}
-
-function overlayControls(overlay, manifest, canControl) {
-  const slug = overlay.slug;
-  const path = `/api/v1/overlays/${api.seg(slug)}`;
-  const cat = catalog([manifest]);
-  const button = (label, fn, done) => {
-    const b = h('button.btn', { type: 'button', disabled: !canControl, onclick: () => run(b, fn, { done }) }, label);
-    return b;
-  };
-  const status = overlay.status && overlay.status !== 'ok'
-    ? badge(overlay.status === 'template-missing' ? 'Template missing' : 'Template can\'t load', 'warn')
-    : null;
-  return h('div.card',
-    h('div.card-head', h('h3', slug), status),
-    h('div.stack',
-      !manifest ? h('p.muted', 'Its template isn\'t available, so there is nothing to control here.') : null,
-      cat.scenes.length
-        ? h('div', h('p.small.muted', 'Scenes'), h('div.pad', { role: 'group', 'aria-label': `Scenes of ${slug}` },
-          cat.scenes.map((s) => button(sceneText(s), () => api.put(`${path}/scene`, { scene: s.key }), `${slug}: scene changed to ${s.label}`))))
-        : manifest ? h('p.muted', 'Its template has no scenes.') : null,
-      cat.actions.length
-        ? h('div', h('p.small.muted', 'Actions'), h('div.pad', { role: 'group', 'aria-label': `Actions of ${slug}` },
-          cat.actions.map((a) => button(a.label, () => api.post(`${path}/actions/${api.seg(a.key)}`, {}), `${slug}: ${a.label} on air`))))
-        : null));
 }
