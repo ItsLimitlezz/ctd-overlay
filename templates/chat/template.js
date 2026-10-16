@@ -57,6 +57,7 @@
     const roles = Array.isArray(user.roles) ? user.roles : [];
     const msg = el('div', 'msg');
     if (m.kind === 'event') msg.classList.add('event');
+    if (m.join) msg.classList.add('join'); // "dj_fan joined" (Instagram, TikTok): lighter than a comment
     if (m.action) msg.classList.add('action');
     if (m.highlighted) msg.classList.add('highlighted');
     const colour = s.nameColour === 'white' ? '#ffffff' : s.nameColour === 'accent' ? null : readable(user.color);

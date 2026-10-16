@@ -53,6 +53,7 @@
     "action": { "type": "boolean", "description": "/me message" },
     "platform": { "type": "string", "description": "The platform it was written on, when a relay merged several (06 §6.11)." },
     "destinationId": { "type": "string", "description": "The relay's destination it came from (06 §6.11)." },
-    "kind": { "enum": ["message", "event"], "description": "\"event\": a platform notice shown in chat (a sub, a raid), relayed as a line." }
+    "kind": { "enum": ["message", "event"], "description": "\"event\": a platform notice shown in chat (a sub, a raid), relayed as a line." },
+    "join": { "type": "boolean", "description": "A \"<name> joined\" presence line (Instagram, TikTok live), not a comment. Relayed only when the connection shows joins (06 §6.11)." }
   }
 }

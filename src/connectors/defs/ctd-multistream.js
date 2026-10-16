@@ -133,6 +133,7 @@ export const ctdMultistream = {
       chat: { type: 'boolean', title: 'Chat', default: true, description: 'Chat from every platform it streams to, merged.' },
       alerts: { type: 'boolean', title: 'Alerts', default: true, description: 'Subscriptions, gifts, cheers, raids, memberships and Super Chats.' },
       hideAlertChatLines: { type: 'boolean', title: 'Hide an alert\'s chat line', default: true, description: 'While alerts are on, a sub or a raid shows as the alert, not also as a line of chat.' },
+      showJoins: { type: 'boolean', title: 'Show who joined', default: false, description: 'Instagram and TikTok mix "dj_fan joined" lines into their comments, many of them on a busy live. Off: chat shows comments only. On: they reach overlays marked as joins (a template may show them lighter).' },
       allowAppOverlays: { type: 'boolean', title: 'Let other apps create overlays', default: true, description: 'The CTD OBS plugin can ask for a new overlay (a TAKEOVER for this profile, say): it is made from an installed template and fed by this connection only.' },
     },
   },
@@ -454,8 +455,10 @@ export const ctdMultistream = {
     function chat(env, { backfill = false, frameId, feed } = {}) {
       const d = env.data;
       if (!cfg.chat || !d || typeof d !== 'object' || !str(d.id)) return;
+      // A "<name> joined" presence line (Instagram, TikTok, v1.3): not a comment.
+      if (d.join === true && !cfg.showJoins) return;
       // From the stream (not /chat, which has no alerts), an event line waits for its alert.
-      if (d.kind === 'event' && cfg.alerts && cfg.hideAlertChatLines && !backfill) {
+      if (d.kind === 'event' && d.join !== true && cfg.alerts && cfg.hideAlertChatLines && !backfill) {
         held = { env, frameId, feed, cancel: ctx.schedule(HOLD_MS, () => release(true)) };
         return;
       }
@@ -786,6 +789,7 @@ export function chatMessage(d, platform) {
     platform,
     ...(str(d.destinationId) ? { destinationId: d.destinationId } : {}),
     ...(d.kind === 'event' ? { kind: 'event' } : {}),
+    ...(d.join === true ? { join: true } : {}),
   };
 }
 
