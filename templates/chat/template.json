@@ -1,0 +1,43 @@
+{
+  "standard": "skp/1",
+  "id": "com.dprtmnt.chat",
+  "name": "Chat",
+  "version": "1.0.0",
+  "description": "Merged chat from every connected platform, in the D/PRTMNT look: platform tags, names in their colours, emotes, moderator and VIP marks. Deleted messages and banned users leave at once.",
+  "author": { "name": "D/PRTMNT" },
+  "license": "proprietary",
+  "category": "chat",
+  "tags": ["chat", "dprtmnt", "multi-platform"],
+  "entry": "index.html",
+  "previews": ["previews/chat.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "side", "width": 560, "height": 1000, "default": true },
+    { "id": "v", "width": 1080, "height": 720 }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Chat", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "chat": { "recent": 30, "max": 30 }
+  },
+  "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Space+Mono:wght@700&display=swap"],
+  "settings": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accent": { "type": "string", "format": "color", "title": "Accent", "default": "#16E0FF" },
+      "fontSize": { "type": "integer", "title": "Text size", "minimum": 16, "maximum": 48, "default": 26, "x-skp-widget": "slider", "x-skp-preview": "live" },
+      "lines": { "type": "integer", "title": "Messages on screen", "minimum": 3, "maximum": 30, "default": 12, "x-skp-widget": "slider" },
+      "lifetime": { "type": "integer", "title": "Each message stays (seconds; 0 = until pushed out)", "minimum": 0, "maximum": 600, "default": 0 },
+      "panel": { "type": "boolean", "title": "Dark panel behind each message", "default": true },
+      "nameColour": { "type": "string", "title": "Name colour", "enum": ["user", "accent", "white"], "x-skp-labels": ["Each viewer's own colour", "The accent", "White"], "default": "user" },
+      "platformTags": { "type": "boolean", "title": "Show which platform each message is from", "default": true },
+      "roleMarks": { "type": "boolean", "title": "Mark the broadcaster, moderators, VIPs and subscribers", "default": true },
+      "hideBots": { "type": "boolean", "title": "Hide bots", "default": true },
+      "hideCommands": { "type": "boolean", "title": "Hide commands (messages starting with !)", "default": true },
+      "hideEvents": { "type": "boolean", "title": "Hide sub, raid and Super Chat lines (the alerts overlay shows them)", "default": false },
+      "hidden": { "type": "array", "title": "Hide these names", "items": { "type": "string", "maxLength": 40 }, "maxItems": 50, "uniqueItems": true, "default": [] }
+    }
+  }
+}

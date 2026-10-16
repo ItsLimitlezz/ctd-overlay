@@ -1,0 +1,28 @@
+/* D/PRTMNT alerts. The canvas is the whole frame: 1920 x 1080, or 1080 x 1920 (?canvas=v). The
+   platform's queue shows one alert at a time and times it; this only draws it. */
+:root { --accent: #16e0ff; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body, [data-skp-stage] { font-family: 'Archivo', system-ui, sans-serif; color: #fff; }
+
+.alerts { position: absolute; inset: 0; display: flex; justify-content: center; align-items: flex-start; padding-top: 70px; box-sizing: border-box; pointer-events: none; }
+.alerts.center { align-items: center; padding-top: 0; }
+.alerts.bottom { align-items: flex-end; padding: 0 0 90px; }
+[data-skp-canvas="v"] .alerts { padding-top: 220px; }
+[data-skp-canvas="v"] .alerts.bottom { padding: 0 0 260px; }
+
+.alert { position: absolute; min-width: 620px; max-width: 1200px; box-sizing: border-box; padding: 26px 40px 30px; background: rgba(8, 10, 12, .9); border-top: 6px solid var(--accent); text-align: center; }
+[data-skp-canvas="v"] .alert { min-width: 0; width: 940px; }
+.alert .eyebrow { display: flex; justify-content: center; align-items: center; gap: 14px; font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; font-size: 24px; letter-spacing: 8px; color: var(--accent); }
+.alert .plat { font-size: 16px; letter-spacing: 3px; padding: 3px 8px 2px; color: #0a0a0a; background: var(--plat, #8a8a8a); }
+.alert .who { margin-top: 10px; font-weight: 900; font-size: 74px; line-height: 1; letter-spacing: -1px; overflow-wrap: anywhere; }
+.alert .what { margin-top: 12px; font-weight: 800; font-size: 34px; color: var(--accent); }
+.alert .message { margin-top: 14px; font-weight: 500; font-size: 28px; line-height: 1.3; color: #e8e8e8; overflow-wrap: anywhere; }
+.alert.raid, .alert.superchat, .alert.tip { border-top-color: #ffd23f; }
+.alert.raid .what, .alert.superchat .what, .alert.tip .what, .alert.raid .eyebrow, .alert.superchat .eyebrow, .alert.tip .eyebrow { color: #ffd23f; }
+
+/* The lifecycle (05 §5.2): the runtime sets data-skp-state and times the exit from this CSS. */
+.alert[data-skp-state="enter"] { animation: alertIn .6s cubic-bezier(.2, .8, .2, 1) both; }
+.alert[data-skp-state="exit"] { animation: alertOut .45s ease-in both; }
+@keyframes alertIn { from { opacity: 0; transform: translateY(-40px) scale(.96); } }
+@keyframes alertOut { to { opacity: 0; transform: translateY(-24px); } }
+[data-skp-lite] .alert, [data-skp-reduced-motion] .alert { animation-duration: .01s !important; }
