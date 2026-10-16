@@ -218,6 +218,12 @@ test('an event line shows unless its alert follows; a ban by name only removes t
   await until(() => liveOf(live, 'chat.message', 'twitch:ann').length === 1, 3000, 'the announcement');
   assert.ok(Date.now() - sent < 1500, 'held for a moment only');
   assert.equal(liveOf(live, 'chat.message', 'twitch:ann')[0].data.kind, 'event');
+  // An Instagram "joined" line (v1.3, join: true) isn't a comment: left out unless "Show who joined".
+  ms.emit('chat.message', { ...msg('j1', 'dj_fan joined', { kind: 'event', join: true }), id: 'instagram:j1', platform: 'instagram', destinationId: 'd-ig' }, { platform: 'instagram', destination: 'd-ig' });
+  ms.emit('chat.message', { ...msg('c1', 'first comment'), id: 'instagram:c1', platform: 'instagram', destinationId: 'd-ig' }, { platform: 'instagram', destination: 'd-ig' });
+  await until(() => liveOf(live, 'chat.message', 'instagram:c1').length === 1, 3000, 'the comment');
+  assert.equal(liveOf(live, 'chat.message', 'instagram:j1').length, 0, 'the join line is left out');
+  assert.equal(chatMessage({ ...msg('j2', 'x joined', { kind: 'event', join: true }) }, 'instagram').join, true, 'kept marked when shown');
   // A sub's line is followed by its alert: the alert shows, the line doesn't.
   ms.emit('chat.message', msg('e2', 'DJFan subscribed!', { kind: 'event' }), { platform: 'twitch', destination: 'd-tw' });
   ms.emit('alert.subscription', { kind: 'subscription', user: { id: 'twitch:144552210', name: 'DJFan' }, amount: { unit: 'months', value: 1 }, platform: 'twitch', destinationId: 'd-tw', messageId: 'twitch:e2', ts: Date.now() }, { platform: 'twitch', destination: 'd-tw' });

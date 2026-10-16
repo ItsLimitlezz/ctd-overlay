@@ -489,6 +489,8 @@ not known here as text, text cut at 1000 characters, Twitch tiers as `1`, `2`, `
 with `src.platform` from the envelope (an unknown platform is `custom`). A `chat.cleared` for one
 platform removes that platform's messages (one `chat.message.deleted` each), not every
 platform's. While alerts are on, an alert's chat line (`kind: "event"`) is left out (a setting).
+A "<name> joined" presence line (`join: true`, Instagram and TikTok, v1.3) is not a comment: it is
+left out unless the connection's "Show who joined" is on, and then reaches overlays marked `join`.
 `viewers.<platform>` and `stream.<platform>.live | title | startedAt` come from `/status` and each
 `destination.status`; a count it doesn't know (`null`) is absent, never 0.
 

@@ -31,6 +31,8 @@ body, [data-skp-stage] { font-family: 'Archivo', system-ui, sans-serif; color: #
 .msg.action .text { font-style: italic; color: var(--name, var(--accent)); }
 .msg.event { border-left-color: #ffd23f; }
 .msg.event .text { color: #ffd23f; font-weight: 700; }
+.msg.join { opacity: 0.55; border-left-color: transparent; }
+.msg.join .text { color: inherit; font-weight: 400; font-size: 0.85em; }
 .msg.highlighted { border-left-width: 9px; }
 
 /* The lifecycle (05 §5.2): the runtime sets data-skp-state, and times the exit from this CSS. */
