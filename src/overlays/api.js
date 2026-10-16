@@ -1,9 +1,9 @@
 // Overlays over HTTP (03 §3.4), on the API's conventions (http/api.js):
 //
 //   GET    /api/v1/overlays                    every overlay, paged
-//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections? }
+//   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections?, role? }
 //   GET    /api/v1/overlays/:ref               by slug or id
-//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections? } (If-Match)
+//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections?, role? } (If-Match)
 //   DELETE /api/v1/overlays/:ref
 //   POST   /api/v1/overlays/:ref/upgrade       { version, dryRun?, confirm?, runMigrate? } (04 §4.10)
 //   POST   /api/v1/overlays/:ref/revert        back to the version and settings before the last upgrade
@@ -18,11 +18,19 @@
 // The key's changes are recorded in the audit log.
 //
 // Bindings (01 §1.3): `connections` is "all" (every connection, including ones made later: the
-// default) or a list of connection ids, each of which must exist. `bound` lists the connections
-// that feed the overlay now, by name and status, for whoever edits overlays (operators don't hold
+// default) or a list of connection ids, each of which must exist: a whole connection (every
+// profile it follows, new ones too), or "<connection id>/<profile id>", one CTD Multi-Stream
+// profile of a connection that follows every profile (it must follow it now, 422 otherwise; one
+// the overlay is bound to already is kept). `bound` lists what feeds the overlay now (connections,
+// and profiles of one), by name and status, for whoever edits overlays (operators don't hold
 // connections:read, and need to see what feeds what). `stream` is its stream status (src/streams.js):
 // the turned-on connections that feed it, whether it is on air on each platform, its viewers;
 // worked out on each read, so it never moves the ETag.
+//
+// `role` ("Role in OBS", 06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
+// overlay of every stream ("chat-main"); CTD Multi-Stream's OBS plugin uses it to re-point its
+// browser sources when it switches stream. Absent: the template's short name ("takeover").
+import { connectionOf, profileOf } from '../bus/owners.js';
 import { ApiError } from '../http/api.js';
 
 export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections, streams }) {
@@ -49,21 +57,50 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
       keyRequired: overlays.keyRequired(doc),
       connections: overlays.bindingOf(doc),
       bound: boundTo(overlays.bindingOf(doc)),
+      ...(d.role ? { role: d.role } : {}),
       ...(streams ? { stream: streams.ofOverlay(doc) } : {}),
       ...(d.previous ? { previous: { template: d.previous.template, at: d.previous.at } } : {}),
       ...(shows ? { show: shows.list().find((s) => s.overlays.includes(doc.id))?.name } : {}),
     };
   }
-  // The connections that feed an overlay with these bindings: [{ id, name, connector, status }].
+  // What feeds an overlay with these bindings: [{ id, name, connector, status }] per connection,
+  // and per profile of one (a "<connection>/<profile>" binding): { id, connection, profile, name
+  // ("Multi-Stream · DPRTMNT"), connector, status, missing? } (missing: the connection doesn't
+  // follow that profile now, say it was deleted at its service).
   function boundTo(binding) {
     const list = connections?.summary() || [];
-    return list.filter((c) => binding === 'all' || binding.includes(c.id)).map((c) => ({ id: c.id, name: c.name, connector: c.connector, status: c.status }));
+    if (binding === 'all') return list.map((c) => ({ id: c.id, name: c.name, connector: c.connector, status: c.status }));
+    const out = [];
+    for (const entry of binding) {
+      const c = list.find((x) => x.id === connectionOf(entry));
+      if (!c) continue;
+      const p = profileOf(entry);
+      if (p === undefined) { out.push({ id: c.id, name: c.name, connector: c.connector, status: c.status }); continue; }
+      const known = (c.profiles || []).find((x) => x.id === p);
+      out.push({ id: entry, connection: c.id, profile: p, name: `${c.name} · ${known?.name || p}`, connector: c.connector, status: c.status, ...(known ? {} : { missing: true }) });
+    }
+    return out;
   }
-  // Bindings as sent: "all", or ids of connections that exist (the registry checks the shape).
-  function checkConnections(value) {
+  // Bindings as sent: "all", or connections that exist, whole or one of the profiles they follow
+  // now (the registry checks the shape). An entry the overlay has already is kept as it is, so its
+  // bindings, read and sent back, never fail for a profile deleted meanwhile.
+  function checkConnections(value, had = []) {
     if (value === undefined || value === 'all' || !Array.isArray(value)) return;
-    const missing = value.filter((id) => typeof id === 'string' && !connections?.exists(id));
-    if (missing.length) throw new ApiError(422, 'invalid', `There ${missing.length > 1 ? 'are no connections' : 'is no connection'} ${missing.map((id) => `"${id}"`).join(', ')}. "connections" is "all", or ids from GET /api/v1/connections.`);
+    const named = value.filter((id) => typeof id === 'string');
+    const missing = [...new Set(named.map(connectionOf))].filter((id) => !connections?.exists(id));
+    if (missing.length) throw new ApiError(422, 'invalid', `There ${missing.length > 1 ? 'are no connections' : 'is no connection'} ${missing.map((id) => `"${id}"`).join(', ')}. "connections" is "all", or ids from GET /api/v1/connections (one of a connection's profiles: "<connection id>/<profile id>").`);
+    const kept = Array.isArray(had) ? had : [];
+    for (const entry of named) {
+      const p = profileOf(entry);
+      if (p === undefined || kept.includes(entry)) continue;
+      const conn = connectionOf(entry);
+      const follows = connections?.feedsOf?.(conn) || [];
+      if (follows.includes(p)) continue;
+      const name = connections?.summary().find((c) => c.id === conn)?.name || conn;
+      throw new ApiError(422, 'invalid', follows.length
+        ? `${name} doesn't follow a profile "${p}": it follows ${follows.map((x) => `"${x}"`).join(', ')}. Bind the whole connection ("${conn}") or one of those.`
+        : `${name} doesn't follow separate profiles now (it follows one stream, or isn't running): bind the whole connection ("${conn}").`);
+    }
   }
   const rev = (p) => {
     const { doc } = docOf(p.ref);
@@ -72,17 +109,18 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
     r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays, each with what feeds it and its stream status', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
-    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids)', body: { fields: ['slug', 'template', 'settings', 'connections'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
+    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids, or "<connection id>/<profile id>" for one CTD Multi-Stream profile)', body: { fields: ['slug', 'template', 'settings', 'connections', 'role'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
       checkConnections(body.connections);
-      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all' });
+      const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all', role: body.role });
       audit.record({ action: 'overlay.create', actor: who.label, ip: req.client?.ip, target: doc.data.slug, template: `${doc.data.template.id}@${doc.data.template.version}` });
       return { status: 201, body: resource(docOf(doc.data.slug)) };
     } }),
     r({ method: 'GET', path: '/api/v1/overlays/:ref', scope: 'overlays:read', summary: 'An overlay, by slug or id', run: ({ params }) => resource(docOf(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
+    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, role in OBS, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections', 'role'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
       const { doc } = docOf(params.ref);
       if (body.keyRequired !== undefined && typeof body.keyRequired !== 'boolean') throw new ApiError(422, 'invalid', '"keyRequired" is true or false.');
-      checkConnections(body.connections);
+      const had = overlays.bindingOf(doc);
+      checkConnections(body.connections, had === 'all' ? [] : had);
       // Opening an overlay's page and data to anyone on the network is the owner's choice (07 §7.6),
       // not every editor's. Asking for the key again only makes it safer, so that stays theirs.
       if (body.keyRequired === false && overlays.keyRequired(doc) && !who.scopes.has('system:admin')) {

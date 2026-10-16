@@ -273,6 +273,27 @@ option that keeps a live show running with nobody touching it.
     its notices are the connection's warnings; a revoked token is needs-reauth saying where to make
     a new one; quiet for 45 s, it reconnects. Tested against a pretend Multi-Stream. Its chat
     reaches only templates that consume chat (no bundled one does yet: step 19).
+16c. **CTD Multi-Stream v1.2: profiles, pairing, the hub** (added 2026-10-15). Done in
+    `ctd-multistream.js` and `ctd-multistream-hub.js` (06 §6.11): Connect is pairing (a new auth
+    kind in the host: the code and its approve link with a countdown, polled by the platform, the
+    token saved as the connection's secret; a pasted token still works); one connection per
+    profile, named after it, the profile's status on the connection and on Live (on air when the
+    profile is live), `?profile=` on every call for a token that reads every profile (a Profile
+    choice in its settings); the overlays it feeds registered in the hub with keyed URLs at
+    `SKP_HOSTS`'s address, canvas and slot (an overlay's new **Role in OBS**), every 30 s and on
+    every change, unregistered when it is deleted or turned off; `overlay.create` from the OBS
+    plugin makes an overlay fed by that connection only ("Let other apps create overlays"), always
+    answered. Tested against a pretend Multi-Stream v1.2 and in a browser. Then, after the live
+    test on the NAS (a pairing approved for every profile followed only the default one): **one
+    connection follows every profile**, each profile a feed of the connection (`src.profile`,
+    owner `<connection>/<profile>`, bus/owners.js) that overlays are bound to on its own
+    (`"<connection>/<profile>"` in "Fed by", which offers each profile), one `/events?profile=*`
+    stream, `/status` and `/chat` per profile, new profiles followed by themselves and deleted ones
+    reported where they were bound; stream status, Connections and `/system/health` per profile;
+    each overlay is registered in the hub once per profile it feeds (every profile when bound
+    whole); `overlay.create` binds to the profile asked for. Store migration 3 turns a Profile
+    setting naming the default profile into "Every profile", so the NAS upgrades with nobody
+    doing anything.
 17. **Twitch and Kick viewers and live status**, ported from v0. **This reaches v0 parity:** run
     a Saturday next to v0, then cut over.
 18. **OBS.** obs-websocket v5 handshake, state, actions, OBS→overlay scene mapping, Add to OBS

@@ -137,6 +137,12 @@ OBS browser sources can't log in, so overlays use capability URLs.
   other roles may require the key again or rotate it, never drop it). Rotating the key, or
   requiring it again, ends the overlay's open streams; a page reconnects only with the key that
   works now.
+- **Shared with CTD Multi-Stream's hub** (06 §6.11): a CTD Multi-Stream connection whose token
+  has `apps:write` sends the keyed URLs of the overlays it feeds to that server (and nowhere
+  else), so the CTD OBS plugin connected to it can add them as browser sources. The hub is LAN
+  infrastructure the owner set up and paired with, and it lists them only to tokens with
+  `apps:read`; rotating a key re-registers the new URL at once. Turning the connection off, or
+  deleting it, unregisters them.
 
 ## 7.7 Secrets at rest
 

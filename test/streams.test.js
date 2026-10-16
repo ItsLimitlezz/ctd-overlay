@@ -139,6 +139,8 @@ test('two CTD Multi-Stream servers feed two shows: one on air with its viewers, 
   defer(t, () => one.close());
   const two = await startFakeMultistream();
   defer(t, () => two.close());
+  // One profile each (their tokens read every profile: the connection follows every one there is).
+  for (const ms of [one, two]) ms.profiles = ms.profiles.filter((p) => p.id === 'default');
   // The second server's destinations are all off air, without counts.
   two.status.destinations = two.status.destinations.map((d) => ({ ...d, live: false, phase: 'idle', down: false, message: null, viewers: null }));
   two.status.platforms = two.status.platforms.map((p) => ({ ...p, live: false, startedAt: null, viewers: null, error: null }));
@@ -151,7 +153,8 @@ test('two CTD Multi-Stream servers feed two shows: one on air with its viewers, 
   const main = platform.shows.create({ name: 'Main room', overlays: ['main-h', 'main-v'], ...SHOW }, { actor: 'test' });
   const second = platform.shows.create({ name: 'Second room', overlays: ['second'], ...SHOW }, { actor: 'test' });
   const streamOf = async (id) => (await owner('GET', `/shows/${id}`)).body.stream;
-  await until(async () => (await streamOf(main.id)).viewers === 244 && (await streamOf(second.id)).platforms.length === 3, 15000, 'both servers read');
+  const up = (s) => s.connections.every((c) => ['connected', 'degraded'].includes(c.status));
+  await until(async () => (await streamOf(main.id)).viewers === 244 && (await streamOf(second.id)).platforms.length === 3 && up(await streamOf(main.id)) && up(await streamOf(second.id)), 15000, 'both servers read');
 
   const m = await streamOf(main.id);
   assert.equal(m.onAir, true);

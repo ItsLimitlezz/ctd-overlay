@@ -5,10 +5,14 @@
 //
 //   ctx.connection   { id, name, connector, config (defaults applied), secrets } (frozen copies)
 //   ctx.platform     the definition's main platform
-//   ctx.publish(type, data, { platform, dedupeKey, backfill })   an event (names.js decides which)
+//   ctx.publish(type, data, { platform, dedupeKey, backfill, profile })   an event (names.js decides
+//                            which); profile: for one of the streams it follows at its service (a
+//                            CTD Multi-Stream profile), a feed of its own that overlays are bound
+//                            to as "<connection>/<profile>" (bus/owners.js)
 //   ctx.room(n?)             resolves once n more events (1) may be published this second
-//   ctx.recentChat()         this connection's chat messages still in the chat buffer, oldest first
-//   ctx.setState(key, value, { platform })                       state; undefined removes it
+//   ctx.recentChat({ profile }?)   this connection's (that feed's) chat messages still in the chat
+//                            buffer, oldest first
+//   ctx.setState(key, value, { platform, profile })              state; undefined removes it
 //   ctx.hold(keys?)          an error for these values (all by default): held 120 s, marked stale
 //   ctx.seen(key)            true for a message id seen in the last 10 minutes (else remembers it)
 //   ctx.setHealth({ status: connected | degraded | connecting, detail, warnings, quota })
@@ -27,6 +31,11 @@
 //   ctx.endpoints            the definition's base URLs (a test's fake service's, in tests)
 //   ctx.publicUrl            SKP_PUBLIC_URL, when set
 //   ctx.inbound              { url, available }: where the service delivers (POST /hooks/…)
+//   ctx.setInfo(key, value)  what it tells about itself, on the connection (`info`, 16 KiB): the
+//                            profile it follows, what it shares; kept through an error
+//   ctx.suggestName(name)    the connection's name, while nobody has named it (records.js)
+//   ctx.overlays             for a definition that sharesOverlays: the overlays bound to it, their
+//                            URLs for OBS, and making one (share.js)
 import { MEMORY_BYTES } from './records.js';
 import { LIMITS } from './runner.js';
 import { namesOf } from './names.js';
@@ -38,7 +47,13 @@ export function makeContext(runner, gen, { def, config, secrets }) {
   const live = () => runner.current(gen);
   const names = namesOf(def);
   const env = runner.env;
-  const src = (platform) => ({ connector: def.id, connection: runner.id, ...(platform ? { platform } : {}) });
+  // profile: a feed of this connection (a CTD Multi-Stream profile it follows, bus/owners.js).
+  const src = (platform, profile) => ({ connector: def.id, connection: runner.id, ...(platform ? { platform } : {}), ...(profile ? { profile } : {}) });
+  const profileFor = (profile) => {
+    if (profile === undefined || profile === null) return undefined;
+    if (typeof profile !== 'string' || !/^[^\s/]{1,100}$/.test(profile)) throw new TypeError(`"${profile}" isn't a profile id (no spaces or "/", at most 100 characters).`);
+    return profile;
+  };
   const scrubbed = (fn) => (msg, context) => fn(runner.scrub(msg), context === undefined ? undefined : runner.scrubDeep(context));
   const log = { debug: scrubbed(env.log.debug), info: scrubbed(env.log.info), warn: scrubbed(env.log.warn), error: scrubbed(env.log.error) };
 
@@ -77,15 +92,16 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     log,
     now: () => env.now(),
 
-    publish(type, data = {}, { platform, dedupeKey, backfill = false } = {}) {
+    publish(type, data = {}, { platform, dedupeKey, backfill = false, profile } = {}) {
       names.event(type);
       const p = platformFor(platform);
+      const feed = profileFor(profile);
       if (!live()) return undefined;
       const keyed = dedupeKey !== undefined && dedupeKey !== null;
       if (keyed && runner.dedupe.has(dedupeKey)) return undefined;
       const history = backfill && type === 'chat.message';
       admit(history || QUIET.has(type));
-      const out = env.bus.publish(type, data, { src: src(p), backfill: history });
+      const out = env.bus.publish(type, data, { src: src(p, feed), backfill: history });
       // Marked seen only once it is published: one that was refused can come again.
       if (keyed) runner.dedupe.seen(dedupeKey);
       runner.health.event();
@@ -103,13 +119,15 @@ export function makeContext(runner, gen, { def, config, secrets }) {
 
     // Copies, so a connector can work out what a moderation event removes (the lines a platform's
     // /clear takes, say) from what overlays may still show, across restarts of its instance.
-    recentChat: () => env.bus.chatRecent().filter((m) => m.src?.connection === runner.id).map((m) => structuredClone(m.data)),
+    // profile: one feed's only.
+    recentChat: ({ profile } = {}) => env.bus.chatRecent().filter((m) => m.src?.connection === runner.id && (profile === undefined || m.src.profile === profile)).map((m) => structuredClone(m.data)),
 
-    setState(key, value, { platform } = {}) {
+    setState(key, value, { platform, profile } = {}) {
       names.state(key);
       const p = platformFor(platform, key);
+      const feed = profileFor(profile);
       if (!live()) return undefined;
-      return env.bus.setState(key, value, { src: src(p) });
+      return env.bus.setState(key, value, { src: src(p, feed) });
     },
 
     hold(keys) {
@@ -172,6 +190,15 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     fail(err, opts) { runner.failNow(gen, err instanceof Error ? err : new Error(String(err)), opts); },
     reauth(detail) { runner.reauthNow(gen, String(detail || 'The service refused the credentials: enter them again.')); },
 
+    setInfo(key, value) {
+      if (typeof key !== 'string' || !/^[a-z][A-Za-z0-9]{0,39}$/.test(key)) throw new TypeError(`"${key}" isn't a name for ctx.setInfo (camelCase).`);
+      runner.setInfo(gen, key, value);
+    },
+    suggestName(name) {
+      if (live() && typeof name === 'string') env.suggestName?.(runner.id, name);
+    },
+    overlays: def.sharesOverlays && env.share ? overlaysFor(runner, gen, live, env) : undefined,
+
     memory: Object.freeze({
       get: (key) => {
         const v = runner.memory.data[key];
@@ -207,6 +234,30 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     }),
   };
   return Object.freeze(ctx);
+}
+
+// ctx.overlays: share.js's capability for this connection, through this instance only: a listener
+// it adds ends when it stops, and a stopped instance makes nothing.
+function overlaysFor(runner, gen, live, env) {
+  const share = env.share.forConnection({ id: runner.id, get name() { return runner.doc.data.name; } });
+  return Object.freeze({
+    get baseUrl() { return share.baseUrl; },
+    get baseProblem() { return share.baseProblem; },
+    list: () => share.list(),
+    onChange(fn) {
+      if (!live()) return () => {};
+      const off = share.onChange(() => {
+        if (!live()) return;
+        try { fn(); } catch (err) { runner.failNow(gen, err); }
+      });
+      runner.disposers.add(off);
+      return () => { off(); runner.disposers.delete(off); };
+    },
+    create(spec) {
+      if (!live()) throw new Error('The connection stopped.');
+      return share.create(spec);
+    },
+  });
 }
 
 function deepFreeze(o) {

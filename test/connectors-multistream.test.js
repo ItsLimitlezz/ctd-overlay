@@ -3,7 +3,8 @@
 // template that consumes alerts (its chat line hidden); viewers.<platform> and viewers.total from
 // its status; a destination down makes the connection degraded, saying why; after a disconnect it
 // resumes from its cursor without duplicates; a reset backfills quietly; a revoked token is
-// needs-reauth with what to do; a 429 is waited out; the token never reaches a log line.
+// needs-reauth with what to do; a 429 is waited out; the token never reaches a log line. Its token
+// reads every profile (the pretend one has two), so the connection follows both (step 16c).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -58,7 +59,8 @@ test('chat, deletions, alerts and counts reach an overlay bound to every connect
   assert.equal(platform.bus.getState('stream.instagram.live'), false);
   assert.equal(platform.bus.getState('stream.twitch.title'), 'DPRTMNT Saturday');
   assert.equal(get().health.status, 'degraded');
-  assert.equal(get().health.detail, 'Instagram: ended the live (copyright). Starting a new one…');
+  // (The token reads every profile, so it follows both: the destination's profile is named.)
+  assert.equal(get().health.detail, 'Instagram (Miami or Bust): ended the live (copyright). Starting a new one…');
 
   // Live chat, with the platform it came from.
   ms.emit('chat.message', msg('m1', 'this set is fire'), { platform: 'twitch', destination: 'd-tw' });
@@ -112,7 +114,7 @@ test('after a disconnect it resumes from its cursor: what was missed arrives onc
   ms.emit('chat.message', msg('c', 'after'), { platform: 'twitch', destination: 'd-tw' });
   await until(() => liveOf(live, 'chat.message', 'twitch:c').length === 1, 3000, 'c');
   assert.deepEqual(['twitch:a', 'twitch:b', 'twitch:c'].map((id) => liveOf(live, 'chat.message', id).length), [1, 1, 1]);
-  assert.equal(ms.requests.filter((r) => r.path === '/api/v1/chat').length, 1, 'no backfill on a resume');
+  assert.equal(ms.requests.filter((r) => r.path === '/api/v1/chat').length, 2, 'no backfill on a resume (once per profile, when it started)');
   await until(() => get().health.status === 'degraded', 3000, 'running again');
 });
 
@@ -123,7 +125,7 @@ test('a reset (the cursor no longer buffered) reads /status and /chat again, qui
   ms.dropStreams();
   ms.emit('chat.message', msg('b', 'during the restart'), { platform: 'twitch', destination: 'd-tw' });
   ms.forget();
-  await until(() => ms.requests.filter((r) => r.path === '/api/v1/chat').length === 2, 8000, 'a backfill');
+  await until(() => ms.requests.filter((r) => r.path === '/api/v1/chat').length === 4, 8000, 'a backfill (of both profiles)');
   await until(() => channel.snapshot().chat.recent.some((m) => m.id === 'twitch:b'), 3000, 'b in the buffer');
   assert.equal(liveOf(live, 'chat.message', 'twitch:b').length, 0, 'backfilled, not played');
   assert.equal(channel.snapshot().chat.recent.filter((m) => m.id === 'twitch:a').length, 1, 'no duplicate');

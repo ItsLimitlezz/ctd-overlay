@@ -15,7 +15,7 @@ session cookie like any other client.
 | `api.js` | The API client: CSRF, If-Match, problems, paging, server time, live events. |
 | `dom.js` | Building blocks: `h()`, dialogs, menus, toasts, previews, time, polling. |
 | `schema-form.js` | The settings form generated from a template's schema (04 §4.3). |
-| `streams.js` | A stream's status in words (On air / Offline / Unknown, platforms, viewers, connections) and the "Fed by" form. |
+| `streams.js` | A stream's status in words (On air / Offline / Unknown, CTD Multi-Stream profiles, platforms, viewers, connections) and the "Fed by" form. |
 | `pages/<section>.js` | One file per section; one exported function per route. `pages/live-overlay.js` is Live's overlay panel. |
 
 ## A page
@@ -171,6 +171,11 @@ onWholeShow, onOverlay })`: preview, URLs, actions, Simulate, what feeds it); th
 with `history.replaceState` after `ctx.alive()`. `#/live?overlay=<slug>` is an overlay outside a
 show (a member opens in its show's console). What feeds an overlay is edited on its settings tab
 ("Fed by", `fedByForm()` from `streams.js`, If-Match) or for every member on the show's Details.
+A CTD Multi-Stream connection that follows every profile (`everyProfile` and `profiles` in `GET
+/api/v1/system/health`) is offered whole ("All its profiles, including new ones") and profile by
+profile ("Multi-Stream · DPRTMNT (Live)"), saved as `"<connection id>/<profile id>"`; while the
+whole connection is ticked its profiles show ticked and "included", not changeable; a profile
+saved that it doesn't follow any more is kept and says so. `bindingName()` names an entry.
 
 ## Connections (pages/connections.js)
 
@@ -178,6 +183,14 @@ show (a member opens in its show's console). What feeds an overlay is edited on 
 guide: warnings first, steps, the redirect URI with Copy, scopes and why; then the form) and
 `#/connections/:id` (status, sign-in: a device code with its countdown, or a redirect with the
 always-visible **Finish sign-in** paste box; what it feeds; actions; settings with If-Match).
+A connector that pairs (`auth: 'pairing'`, CTD Multi-Stream) is set up with its address and
+**Connect** (the whole form under **Paste a token instead**); its page shows the code, the link
+to approve it and the countdown, then **Connect again**. A connection's `info` shows the profile
+it follows, or every profile with each one's status (`profileChip()` from `streams.js`: its
+colour, never alone), the values each profile sets (`feeds`), and what it shares with the OBS
+plugin; a setting marked `x-skp-choices` is a select of `info.choices[field]`, hidden
+(its value kept) while the connection offers none. The settings form is drawn again when the
+connection's version changes and nobody is editing it.
 Owners and admins only (`connections:read`/`write`); operators get each connection's status
 from `GET /api/v1/system/health`. Delete and Sign out are in a menu, behind a confirmation that
 names the consequence.

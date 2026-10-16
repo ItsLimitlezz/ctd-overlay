@@ -1,11 +1,14 @@
 // Overlays on installed templates: resolved settings (04 §4.3–4.4), the files they serve, and
-// moving to a newer version (04 §4.10) without the OBS URL ever changing.
+// moving to a newer version (04 §4.10) without the OBS URL ever changing. And data from the
+// version before this one, upgraded with nobody doing anything (store migrations).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { until } from './connector-helpers.js';
+import { startFakeMultistream } from './fixtures/fake-multistream.mjs';
 import { DIAG_DIR, FIXTURE_TEMPLATES, defer, memoryLogger, packTemplate, signedIn, startWithOverlay, tempDir } from './helpers.js';
 
 const ID = 'dev.skp.sample';
@@ -552,4 +555,45 @@ test('what counts as a major upgrade', async () => {
   assert.equal(isMajor('0.3.0', '0.4.0'), true, 'under 1.0.0 a minor version can break things');
   assert.equal(isMajor('0.3.0', '0.3.9'), false);
   assert.equal(isMajor('1.0.0-rc.1', '1.0.0'), true, 'a prerelease promises nothing');
+});
+
+test('upgrading the NAS: a CTD Multi-Stream connection paired for every profile that followed the default one follows every profile, with nobody doing anything; its TAKEOVER bound to every connection keeps working', { timeout: 60000 }, async (t) => {
+  const ms = await startFakeMultistream();
+  defer(t, () => ms.close());
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  // Before: the token reads every profile, the setting names the default one, the connection is
+  // named after it, a cursor kept from that profile's stream, one overlay fed by everything.
+  const before = await start(t, config);
+  const token = ms.addToken({ profileId: null });
+  const made = before.connectors.create({ connector: 'ctd-multistream', config: { baseUrl: `${ms.url}/api/v1`, profile: 'default' }, secrets: { token } });
+  before.overlays.create({ slug: 'takeover', template: { id: 'com.dprtmnt.takeover', version: '1.0.0' }, settings: {}, connections: 'all' });
+  const was = () => before.connectors.get(made.id);
+  await until(() => ['connected', 'degraded'].includes(was().health.status) && was().name === 'Multi-Stream · Miami or Bust', 8000, 'following the default profile');
+  ms.emit('chat.message', { id: 'twitch:x1', platform: 'twitch', destinationId: 'd-tw', user: { id: 'twitch:1', name: 'Fan', roles: [] }, text: 'hi', fragments: [{ type: 'text', text: 'hi' }], kind: 'message', ts: Date.now() }, { platform: 'twitch', destination: 'd-tw' });
+  await until(() => before.connectors.runnerOf(made.id).memory.data.cursor, 5000, 'a cursor kept');
+  before.connectors.runnerOf(made.id).flushMemory();
+  assert.ok(before.store.get('connection_state', made.id).data.memory.cursor);
+  before.store.transaction((tx) => tx.setMeta('schemaVersion', 2)); // as the version before this one left it
+  await before.stop();
+
+  // After: every profile, each its own stream; the overlay on "all" sees both.
+  const n = ms.requests.length;
+  const after = await start(t, config);
+  const conn = () => after.connectors.get(made.id);
+  await until(() => ['connected', 'degraded'].includes(conn().health.status) && conn().info?.everyProfile === true, 8000, 'following every profile');
+  assert.equal(after.store.schemaVersion, 3);
+  assert.equal(after.store.get('connections', made.id).data.config.profile, undefined);
+  assert.deepEqual(conn().info.profiles.map((p) => p.name), ['Miami or Bust', 'DPRTMNT']);
+  assert.equal(conn().name, 'Multi-Stream', 'the name it was given by its profile follows');
+  const events = ms.requests.slice(n).filter((r) => r.path === '/api/v1/events');
+  assert.equal(events[0].query.profile, '*');
+  assert.equal(events[0].headers['last-event-id'], undefined, 'the one profile\'s cursor isn\'t resumed from');
+  assert.deepEqual(new Set(ms.requests.slice(n).filter((r) => r.path === '/api/v1/chat').map((r) => r.query.profile)), new Set(['default', 'p-dprtmnt']));
+  const takeover = after.overlays.resolve('takeover').channel;
+  assert.equal(takeover.snapshot().state['viewers.total'], 244);
+  ms.emit('destination.status', { ...ms.statuses['p-dprtmnt'].destinations[0], live: true, viewers: 50 }, { platform: 'kick', destination: 'd2-kk', profile: 'p-dprtmnt' });
+  await until(() => takeover.snapshot().state['viewers.total'] === 294, 5000, 'both profiles\' viewers');
+  const stream = (await (await fetch(`${after.url}/api/v1/overlays/takeover`, { headers: signedIn(after) })).json()).stream;
+  assert.deepEqual(stream.profiles.map((p) => [p.name, p.status]), [['Miami or Bust', 'live'], ['DPRTMNT', 'offline']]);
 });

@@ -7,7 +7,7 @@
 // one change per overlay, each with its own If-Match).
 import * as api from '../api.js';
 import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
-import { fedByForm, fedByWords } from '../streams.js';
+import { bindingName, fedByForm, fedByWords } from '../streams.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -599,7 +599,7 @@ export async function detail(view, ctx) {
           ], 'danger');
           toast(`Not every overlay was changed: ${refused.map((r) => r.slug).join(', ')} ${refused.length === 1 ? 'was' : 'were'} not.`, { kind: 'error', ms: 10000 });
         } else {
-          toast(saved.length ? `Every overlay in "${show.name}" is fed by ${target === 'all' ? 'every connection' : target.length ? target.map((id) => health?.list.find((c) => c.id === id)?.name || id).join(', ') : 'no connection'} now.` : 'Nothing to save: every overlay is fed so already.');
+          toast(saved.length ? `Every overlay in "${show.name}" is fed by ${target === 'all' ? 'every connection' : target.length ? target.map((entry) => bindingName(health?.list, entry)).join(', ') : 'no connection'} now.` : 'Nothing to save: every overlay is fed so already.');
         }
         drawFedBy(box, latest, note);
       });
