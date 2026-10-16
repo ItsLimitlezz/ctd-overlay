@@ -310,8 +310,12 @@ test('the look: field edges and placeholders read in both themes, the focus stop
   await signIn(page, 'juan', '/settings/appearance');
   await page.waitFor('document.querySelector("[data-view] input[placeholder]")', 10000);
   for (const theme of ['light', 'dark']) {
-    const ratios = await page.eval(`(() => {
+    // Two frames after the switch: a newer Chrome can still answer ::placeholder's computed
+    // colour from before it (macOS and Windows CI read the light grey on the dark field).
+    const ratios = await page.eval(`(async () => {
       document.documentElement.dataset.theme = ${JSON.stringify(theme)};
+      void document.body.offsetHeight;
+      for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
       const rgb = (c) => (/rgba?\\(([^)]+)\\)/.exec(c)?.[1] || '0,0,0').split(/[ ,/]+/).filter(Boolean).map(Number);
       const lum = (c) => { const [r, g, b] = rgb(c).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
       const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
