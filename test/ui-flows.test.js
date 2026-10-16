@@ -310,8 +310,9 @@ test('the look: field edges and placeholders read in both themes, the focus stop
   await signIn(page, 'juan', '/settings/appearance');
   await page.waitFor('document.querySelector("[data-view] input[placeholder]")', 10000);
   for (const theme of ['light', 'dark']) {
-    // Two frames after the switch: a newer Chrome can still answer ::placeholder's computed
-    // colour from before it (macOS and Windows CI read the light grey on the dark field).
+    // Two frames after the switch, and the placeholder read on a fresh copy of the field: Chrome
+    // on macOS keeps answering a drawn field's ::placeholder colour from before the switch (the
+    // light grey on the dark field), though it paints the new one.
     const ratios = await page.eval(`(async () => {
       document.documentElement.dataset.theme = ${JSON.stringify(theme)};
       void document.body.offsetHeight;
@@ -321,10 +322,15 @@ test('the look: field edges and placeholders read in both themes, the focus stop
       const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
       const input = document.querySelector('[data-view] input[placeholder]');
       const s = getComputedStyle(input);
+      const fresh = input.cloneNode();
+      fresh.value = '';
+      input.after(fresh);
+      const placeholder = getComputedStyle(fresh, '::placeholder').color;
+      fresh.remove();
       return {
         edgeOnField: ratio(s.borderTopColor, s.backgroundColor),
         edgeOnPage: ratio(s.borderTopColor, getComputedStyle(document.body).backgroundColor),
-        placeholder: ratio(getComputedStyle(input, '::placeholder').color, s.backgroundColor),
+        placeholder: ratio(placeholder, s.backgroundColor),
       };
     })()`);
     assert.ok(ratios.edgeOnField >= 3 && ratios.edgeOnPage >= 3, `${theme}: field edges ${JSON.stringify(ratios)}`);
