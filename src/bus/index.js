@@ -5,7 +5,9 @@
 //
 // State is kept per owner: the core ('') and each connection (src.connection) have their own value
 // for a key, so two accounts on one platform, or a relay (CTD Multi-Stream) beside a direct
-// connector, never overwrite each other. Each overlay sees the one value its bindings allow
+// connector, never overwrite each other. A connection that follows several streams at its service
+// (CTD Multi-Stream's profiles) sets each one's values as a feed of its own, "<connection>/<profile>"
+// (src.profile; owners.js): what is done to a connection (cleared, ranked) is done to its feeds. Each overlay sees the one value its bindings allow
 // (01 §1.3), chosen by one rule everywhere (resolve()):
 //   1. the core's own value, if it set one (the demo, a test, PUT /state from an app);
 //   2. a fresh value over one held through an error (02 §2.8);
@@ -20,6 +22,7 @@ import { ulid as defaultIdgen } from '../ids.js';
 import { silentLogger } from '../log.js';
 import { Channel, changeData } from './channel.js';
 import { KEY, TYPE } from './names.js';
+import { connectionOf, isOfConnection, ownerOf } from './owners.js';
 
 export class BusError extends Error {
   constructor(message, code) {
@@ -36,7 +39,8 @@ const ALL = () => true;
 // viewers.<platform>: what viewers.total adds up (not total or stale themselves).
 const VIEWERS = /^viewers\.(?!total$|stale$)[a-z0-9-]+$/;
 
-export const ownerOf = (src) => (src && typeof src.connection === 'string' && src.connection ? src.connection : '');
+export { ownerOf };
+const PROFILE = /^[^\s/]{1,100}$/;
 
 export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { setTimeout, clearTimeout }, log = silentLogger } = {}) {
   const state = new Map(); // key → Map(owner → { value, src, ts, stale? })
@@ -50,7 +54,10 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
   let lastId = idgen(now());
 
   // ---- choosing the value a set of owners shows ----------------------------------------------
-  const rank = (owner) => ranks.get(owner) || 0;
+  // A feed ranks as its connection does (a CTD Multi-Stream profile is a relay like it).
+  const rank = (owner) => ranks.get(owner) ?? ranks.get(connectionOf(owner)) ?? 0;
+  // The owners of a connection's values: itself and its feeds ('' only for the core).
+  const ownersUnder = (owners, owner) => [...owners.keys()].filter((o) => (owner ? isOfConnection(o, owner) : o === ''));
   // a beats b (both connection entries): fresh over stale, direct over relay, older connection.
   const beats = (a, b) => (Boolean(a.e.stale) !== Boolean(b.e.stale) ? !a.e.stale
     : rank(a.owner) !== rank(b.owner) ? rank(a.owner) < rank(b.owner)
@@ -234,24 +241,38 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       return true;
     },
 
-    // Takes every value an owner set away (a connection stopped on purpose, or deleted).
+    // Takes every value an owner set away (a connection stopped on purpose, or deleted): a
+    // connection's id takes its feeds' values too ("<id>/<profile>"); a feed's, that feed's only.
     clearOwner(owner) {
       let n = 0;
       for (const [key, owners] of [...state]) {
-        const e = owners.get(owner);
-        if (!e) continue;
-        change([key], () => dropEntry(key, owner), e.src);
-        n++;
+        const mine = ownersUnder(owners, owner);
+        if (!mine.length) continue;
+        const src = owners.get(mine[0]).src;
+        change([key], () => { for (const o of mine) dropEntry(key, o); }, src);
+        n += mine.length;
       }
       return n;
     },
 
-    // What an owner has set now: [{ key, value, stale? }].
+    // What an owner has set now (that owner only, not its feeds): [{ key, value, stale? }].
     stateOf(owner) {
       const out = [];
       for (const [key, owners] of state) {
         const e = owners.get(owner);
         if (e) out.push({ key, value: structuredClone(e.value), ...(e.stale ? { stale: true } : {}) });
+      }
+      return out;
+    },
+
+    // What a connection and its feeds have set now: [{ owner, key, value, src, stale? }].
+    connectionState(connId) {
+      const out = [];
+      for (const [key, owners] of state) {
+        for (const o of ownersUnder(owners, connId)) {
+          const e = owners.get(o);
+          out.push({ owner: o, key, value: structuredClone(e.value), src: e.src, ...(e.stale ? { stale: true } : {}) });
+        }
       }
       return out;
     },
@@ -265,15 +286,16 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       return top && { value: structuredClone(top.e.value), owner: top.owner, ...(top.e.stale ? { stale: true } : {}) };
     },
 
-    // 1 for a relay (CTD Multi-Stream): a direct connection's value wins a tie with it.
+    // 1 for a relay (CTD Multi-Stream): a direct connection's value wins a tie with it. A
+    // connection's rank is its feeds' too.
     setRank(owner, r = 0) {
       const next = r ? 1 : 0;
-      if (rank(owner) === next) return;
+      if ((ranks.get(owner) || 0) === next) return;
       const set = () => {
         if (next) ranks.set(owner, next);
         else ranks.delete(owner);
       };
-      const keys = [...state].filter(([, owners]) => owners.has(owner)).map(([key]) => key);
+      const keys = [...state].filter(([, owners]) => ownersUnder(owners, owner).length).map(([key]) => key);
       if (keys.length) change(keys, set);
       else set();
     },
@@ -303,10 +325,11 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
     },
     chatRecent: () => chat,
 
-    // A deleted connection's chat leaves the buffer: a new overlay's snapshot doesn't show it.
+    // A deleted connection's chat (its feeds' too) leaves the buffer: a new overlay's snapshot
+    // doesn't show it.
     purgeChat(owner) {
       const before = chat.length;
-      chat = chat.filter((m) => ownerOf(m.src) !== owner);
+      chat = chat.filter((m) => (owner ? !isOfConnection(ownerOf(m.src), owner) : ownerOf(m.src) !== ''));
       return before - chat.length;
     },
 
@@ -400,6 +423,10 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
 function checkSrc(src) {
   if (!src || typeof src.connector !== 'string' || !src.connector) {
     throw new BusError('src.connector is required', 'bad-src');
+  }
+  // A feed of a connection (06 §6.11): the profile it follows at its service.
+  if (src.profile !== undefined && (typeof src.profile !== 'string' || !PROFILE.test(src.profile) || !src.connection)) {
+    throw new BusError('src.profile is a profile id (no spaces or "/", at most 100 characters) of the connection that sends it', 'bad-src');
   }
 }
 

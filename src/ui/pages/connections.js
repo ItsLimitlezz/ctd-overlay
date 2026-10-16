@@ -54,11 +54,35 @@ const pairs = (def) => def?.auth === 'pairing';
 const connectLabel = (c) => (c.secretFields?.length ? 'Connect again' : 'Connect');
 const needsConnect = (c) => !c.secretFields?.length || c.health?.status === 'needs-reauth';
 
-// The profile it follows at its service: "DPRTMNT · Live", since when.
+// The profile it follows at its service: "DPRTMNT · Live", since when; following every profile,
+// each one so ("Miami or Bust · Offline").
+const profileItem = (p) => h('div.row', { role: 'listitem' }, profileChip(p), p.status === 'live' && p.startedAt ? h('span.small.muted', `since ${clock(p.startedAt)}`) : null);
+const everyProfile = (c) => c.info?.everyProfile === true || c.everyProfile === true;
+const profilesOf = (c) => {
+  const list = Array.isArray(c.info?.profiles) ? c.info.profiles : Array.isArray(c.profiles) ? c.profiles : [];
+  return list.filter((p) => p && typeof p === 'object');
+};
 function profileLine(c) {
-  const p = c.info?.profile;
+  if (everyProfile(c)) {
+    const list = profilesOf(c);
+    return h('div.stack.profiles',
+      h('p.small', list.length ? `Follows every CTD Multi-Stream profile (${list.length}), each a stream of its own:` : 'Follows every CTD Multi-Stream profile: none yet.'),
+      list.length ? h('div.stack', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, list.map(profileItem)) : null);
+  }
+  const p = c.info?.profile || (Array.isArray(c.profiles) && c.profiles.length === 1 ? c.profiles[0] : undefined);
   if (!p || typeof p !== 'object') return null;
   return h('div.row', profileChip(p), p.status === 'live' && p.startedAt ? h('span.small.muted', `since ${clock(p.startedAt)}`) : null);
+}
+// What each profile it follows feeds now, under the profile's name.
+function feedValues(c) {
+  const order = profilesOf(c).map((p) => p.id);
+  const at = (f) => (order.includes(f.profile) ? order.indexOf(f.profile) : order.length);
+  const feeds = (Array.isArray(c.feeds) ? [...c.feeds] : []).sort((a, b) => at(a) - at(b));
+  const names = new Map(profilesOf(c).map((p) => [p.id, p.name]));
+  return feeds.map((f) => {
+    const rows = valueRows(f.state, f.stale);
+    return rows.length ? h('div', h('h3.small', names.get(f.profile) || f.profile), kv(rows)) : null;
+  });
 }
 // What it shares with the OBS plugin (CTD Multi-Stream's hub); a failure's reason is a warning.
 function hubLine(c) {
@@ -192,6 +216,7 @@ export async function list(view, ctx) {
       c.account ? h('p.small', `Signed in as ${c.account.name || c.account.login || c.account.id}`) : null,
       hubLine(c),
       values.length ? kv(values) : null,
+      feedValues(c),
       c.health?.lastEventAt ? h('p.small.muted', `Last event ${ago(c.health.lastEventAt)}`) : null,
       quotaBar(c.health?.quota),
       warningsOf(c.health?.warnings),
@@ -246,7 +271,10 @@ async function operatorList(view) {
     list.length
       ? h('ul.list', list.map((c) => {
         const [kind, label] = statusOf(c);
-        return h('li', statusDot(kind, label), h('div.grow', h('strong', c.name), h('div.small.muted', [label, c.detail].filter(Boolean).join(' · '))), Number.isFinite(c.viewers) ? h('span', `${c.viewers.toLocaleString()} viewers`) : null);
+        const profiles = Array.isArray(c.profiles) ? c.profiles : [];
+        return h('li', statusDot(kind, label), h('div.grow', h('strong', c.name), h('div.small.muted', [label, c.detail].filter(Boolean).join(' · ')),
+          profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null),
+        Number.isFinite(c.viewers) ? h('span', `${c.viewers.toLocaleString()} viewers`) : null);
       }))
       : empty('Nothing connected yet', 'Ask an owner or admin to connect your services.'));
   return undefined;
@@ -449,11 +477,16 @@ export async function detail(view, ctx) {
     }
     const p = c.info?.profile;
     const up = c.health?.status === 'connected' || c.health?.status === 'degraded';
-    if (c.secretFields?.length && c.health?.status !== 'needs-reauth') parts.push(h('p', p ? ['Follows the profile ', h('strong', p.name), `${c.info?.choices?.profile ? ' (pick another in Settings below)' : ''}.`] : up ? 'Running with its token.' : 'It has a token, but isn\'t running now: see Status.'));
+    const every = everyProfile(c);
+    if (c.secretFields?.length && c.health?.status !== 'needs-reauth') {
+      parts.push(h('p', every
+        ? ['Follows every profile', profilesOf(c).length ? [': ', h('strong', profilesOf(c).map((x) => x.name).join(', '))] : '', '. Each one is a stream of its own: pick which feeds an overlay in its "Fed by" (or one profile only in Settings below).']
+        : p ? ['Follows the profile ', h('strong', p.name), `${c.info?.choices?.profile ? ' (pick another, or "Every profile", in Settings below)' : ''}.`] : up ? 'Running with its token.' : 'It has a token, but isn\'t running now: see Status.'));
+    }
     else parts.push(h('p.muted', `Not connected: press ${connectLabel(c)}, then approve the code in ${def.name} → Settings → API.`));
     if (canWrite) {
       const go = h('button.btn', { class: needsConnect(c) ? 'primary' : undefined, type: 'button', onclick: () => authorize(go) }, connectLabel(c));
-      parts.push(h('div.row', go), h('p.small.muted', 'Connect again for another profile, or after the token was revoked. Or paste a token under Settings.'));
+      parts.push(h('div.row', go), h('p.small.muted', 'Connect again for another profile (or every profile), or after the token was revoked. Or paste a token under Settings.'));
     }
     mount(signBox, parts);
   }
@@ -507,7 +540,9 @@ export async function detail(view, ctx) {
     const fed = Array.isArray(c.overlays) ? c.overlays : [];
     mount(valuesBox,
       h('h2', 'What it feeds now'),
-      rows.length ? kv(rows) : h('p.muted', c.health?.status === 'connected' ? 'Nothing yet: values appear as the service sends them.' : 'Nothing while it isn\'t connected.'),
+      rows.length ? kv(rows) : null,
+      feedValues(c),
+      !rows.length && !c.feeds?.length ? h('p.muted', c.health?.status === 'connected' ? 'Nothing yet: values appear as the service sends them.' : 'Nothing while it isn\'t connected.') : null,
       h('h3', 'Overlays it feeds'),
       fed.length ? h('ul.list', fed.map((slug) => h('li', h('a', { href: `#/overlays/${api.seg(slug)}` }, slug)))) : h('p.small.muted', 'None: no overlay is bound to it.'));
   }
@@ -536,8 +571,8 @@ export async function detail(view, ctx) {
     const schema = def ? withChoices(def.fields, c.info) : undefined;
     // A setting whose choices the connection offers none of now is kept as it is, not dropped.
     const hiddenValues = Object.fromEntries(Object.entries(c.config || {}).filter(([k]) => def?.fields?.properties?.[k] && !schema?.properties?.[k]));
-    // The choice it follows when none is set (the default profile), as the placeholder.
-    const resolved = c.info?.profile && schema?.properties?.profile ? { profile: c.info.profile.id } : {};
+    // The choice it follows when none is set (every profile), as the placeholder.
+    const resolved = schema?.properties?.profile && (everyProfile(c) || c.info?.profile) ? { profile: everyProfile(c) ? '*' : c.info.profile.id } : {};
     const form = def ? schemaForm({ schema, values: c.config || {}, resolved, saved: c.secretFields || [] }) : null;
     const save = h('button.btn.primary', { type: 'submit' }, 'Save');
     mount(settingsBox,

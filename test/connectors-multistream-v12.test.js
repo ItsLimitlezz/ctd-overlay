@@ -1,8 +1,8 @@
 // CTD Multi-Stream v1.2 (PLAN step 16c), against a pretend Multi-Stream on 127.0.0.1: Connect is
 // pairing (the code shown, the token handed over once, kept encrypted, never logged or answered;
 // denied, expired, too many waiting); a token limited to a profile names the connection and keeps
-// its live status; a token for every profile follows the profile picked, with ?profile= on every
-// call; the overlays a connection feeds are registered in the hub (one resource per canvas, keyed
+// its live status; a token for every profile follows every profile, or the profile picked, with
+// ?profile= on every call; the overlays a connection feeds are registered in the hub (one resource per canvas, keyed
 // URLs at SKP_HOSTS's address, canvas, slot), every 30 s and when they change, and unregistered
 // when it is deleted; another app's overlay.create makes one (or says why not), always answered.
 import { test } from 'node:test';
@@ -90,7 +90,7 @@ test('Connect is pairing: the code to approve, then the token kept encrypted, ne
   // Its live status: an overlay it feeds is on air when the profile is, before any platform says.
   platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {}, connections: [conn.id] });
   const stream = async () => (await api('GET', '/overlays/tk')).body.stream;
-  assert.deepEqual([(await stream()).onAir, (await stream()).profiles], [false, [{ connection: conn.id, name: 'DPRTMNT', color: '#E11D48', status: 'offline' }]]);
+  assert.deepEqual([(await stream()).onAir, (await stream()).profiles], [false, [{ connection: conn.id, profile: 'p-dprtmnt', name: 'DPRTMNT', color: '#E11D48', status: 'offline' }]]);
   ms.setProfileStatus('p-dprtmnt', 'live');
   await until(async () => (await stream()).onAir === true, 5000, 'on air from the profile');
   assert.equal((await stream()).platforms.every((x) => x.live === false), true, 'no platform said so');
@@ -146,19 +146,22 @@ test('pairing that is denied, expires, or finds too many requests waiting says s
   assert.equal(platform.connectors.get(conn.id).info.profile.name, 'Miami or Bust');
 });
 
-test('a token for every profile follows the one picked: ?profile= on every call, and only that profile\'s chat reaches overlays', { timeout: 60000 }, async (t) => {
+test('a token for every profile follows every one until one is picked in its settings: then ?profile= on every call, and only that profile\'s chat reaches overlays', { timeout: 60000 }, async (t) => {
   const ctx = await start(t);
   const { ms, platform, api } = ctx;
   const token = ms.addToken({ profileId: null, scopes: ['status:read', 'chat:read'] });
   const conn = await connect(ctx, { token });
   const get = () => platform.connectors.get(conn.id);
-  await until(() => running(get().health.status), 8000, 'connected');
-  // The default profile until one is picked; the list for the settings' choice.
-  assert.equal(get().info.profile.id, 'default');
-  assert.deepEqual(get().info.choices, { profile: [{ value: 'default', label: 'Miami or Bust' }, { value: 'p-dprtmnt', label: 'DPRTMNT' }] });
+  await until(() => running(get().health.status) && get().info?.everyProfile === true, 8000, 'connected');
+  // Every profile until one is picked ("Every profile" first in the settings' choice).
+  assert.equal(get().info.profile, undefined);
+  assert.deepEqual(get().info.profiles.map((p) => p.id), ['default', 'p-dprtmnt']);
+  assert.deepEqual(get().info.choices, { profile: [{ value: '*', label: 'Every profile' }, { value: 'default', label: 'Miami or Bust' }, { value: 'p-dprtmnt', label: 'DPRTMNT' }] });
+  assert.equal(get().name, 'Multi-Stream');
   assert.equal(get().info.hub.status, 'off', 'no apps:write: nothing shared');
   const mine = (p) => ms.requests.filter((r) => r.path === p && r.headers.authorization === `Bearer ${token}`);
-  for (const p of ['/api/v1/status', '/api/v1/chat', '/api/v1/events']) assert.ok(mine(p).length && mine(p).every((r) => r.query.profile === 'default'), p);
+  for (const p of ['/api/v1/status', '/api/v1/chat']) assert.deepEqual(new Set(mine(p).map((r) => r.query.profile)), new Set(['default', 'p-dprtmnt']), p);
+  assert.ok(mine('/api/v1/events').every((r) => r.query.profile === '*'), 'one stream for every profile');
   assert.match(mine('/api/v1/events').at(-1).query.types, /profile\.status/);
 
   platform.overlays.create({ slug: 'main', template: TESTBED, settings: {}, connections: [conn.id] });
@@ -169,6 +172,8 @@ test('a token for every profile follows the one picked: ?profile= on every call,
   assert.equal((await api('PATCH', `/connections/${conn.id}`, { config: { baseUrl: `${ms.url}/api/v1`, profile: 'p-dprtmnt' } })).status, 200);
   await until(() => running(get().health.status) && get().info?.profile?.id === 'p-dprtmnt' && mine('/api/v1/events').length > n && ms.openStreams === 1, 8000, 'following DPRTMNT');
   assert.equal(mine('/api/v1/events').at(-1).query.profile, 'p-dprtmnt');
+  assert.equal(get().info.everyProfile, undefined, 'one profile now');
+  assert.equal(get().name, 'Multi-Stream · DPRTMNT');
   ms.emit('chat.message', msg('other'), { platform: 'kick', destination: 'd2-kk', profile: 'default' });
   ms.emit('chat.message', msg('ours'), { platform: 'kick', destination: 'd2-kk', profile: 'p-dprtmnt' });
   await until(() => live.some((e) => e.type === 'chat.message' && e.data.id === 'kick:ours'), 5000, 'its own chat');

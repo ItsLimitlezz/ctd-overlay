@@ -283,7 +283,17 @@ option that keeps a live show running with nobody touching it.
     `SKP_HOSTS`'s address, canvas and slot (an overlay's new **Role in OBS**), every 30 s and on
     every change, unregistered when it is deleted or turned off; `overlay.create` from the OBS
     plugin makes an overlay fed by that connection only ("Let other apps create overlays"), always
-    answered. Tested against a pretend Multi-Stream v1.2 and in a browser.
+    answered. Tested against a pretend Multi-Stream v1.2 and in a browser. Then, after the live
+    test on the NAS (a pairing approved for every profile followed only the default one): **one
+    connection follows every profile**, each profile a feed of the connection (`src.profile`,
+    owner `<connection>/<profile>`, bus/owners.js) that overlays are bound to on its own
+    (`"<connection>/<profile>"` in "Fed by", which offers each profile), one `/events?profile=*`
+    stream, `/status` and `/chat` per profile, new profiles followed by themselves and deleted ones
+    reported where they were bound; stream status, Connections and `/system/health` per profile;
+    each overlay is registered in the hub once per profile it feeds (every profile when bound
+    whole); `overlay.create` binds to the profile asked for. Store migration 3 turns a Profile
+    setting naming the default profile into "Every profile", so the NAS upgrades with nobody
+    doing anything.
 17. **Twitch and Kick viewers and live status**, ported from v0. **This reaches v0 parity:** run
     a Saturday next to v0, then cut over.
 18. **OBS.** obs-websocket v5 handshake, state, actions, OBS→overlay scene mapping, Add to OBS

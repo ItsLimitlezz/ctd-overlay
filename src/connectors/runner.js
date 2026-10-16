@@ -53,7 +53,7 @@ export class ConnectionRunner {
     this.attempt = 0;
     this.closed = false;
     this.instanceTimers = new Set();
-    this.holds = new Map(); // key → when its hold ends
+    this.holds = new Map(); // owner + key → { owner, key, until (when its hold ends), src }
     this.holdTimer = null;
     this.restartTimer = null;
     this.stableTimer = null;
@@ -356,18 +356,20 @@ export class ConnectionRunner {
   }
 
   // ---- holds (H6, 02 §2.8) -------------------------------------------------------------------
+  // Its values and its feeds' (the profiles it follows, bus/owners.js), each held on its own:
+  // holds are keyed by owner and key.
   hold(keys) {
     const bus = this.env.bus;
-    const mine = bus.stateOf(this.id);
     if (!this.def?.holdOnError) {
       bus.clearOwner(this.id);
       return;
     }
     const until = this.env.now() + this.env.holdMs;
-    for (const e of mine) {
+    for (const e of bus.connectionState(this.id)) {
       if (keys && !keys.includes(e.key)) continue;
-      if (!e.stale || !this.holds.has(e.key)) this.holds.set(e.key, until);
-      bus.setStale(e.key, this.id, true);
+      const id = holdId(e.owner, e.key);
+      if (!e.stale || !this.holds.has(id)) this.holds.set(id, { owner: e.owner, key: e.key, until, src: e.src });
+      bus.setStale(e.key, e.owner, true);
     }
     this.armHold();
   }
@@ -375,19 +377,20 @@ export class ConnectionRunner {
     if (this.holdTimer) this.env.timers.clearTimeout(this.holdTimer);
     this.holdTimer = null;
     if (!this.holds.size) return;
-    const next = Math.min(...this.holds.values());
+    const next = Math.min(...[...this.holds.values()].map((x) => x.until));
     this.holdTimer = this.env.timers.setTimeout(() => this.expireHolds(), Math.max(0, next - this.env.now()));
     this.holdTimer?.unref?.();
   }
   expireHolds() {
     this.holdTimer = null;
     const t = this.env.now();
-    const stale = new Map(this.env.bus.stateOf(this.id).map((e) => [e.key, e.stale]));
-    for (const [key, until] of [...this.holds]) {
-      if (!stale.get(key)) { this.holds.delete(key); continue; } // set again meanwhile: it stays
-      if (until > t) continue;
-      this.holds.delete(key);
-      try { this.env.bus.setState(key, undefined, { src: this.src }); } catch (err) { this.env.log.error('a held value could not be removed', { connection: this.id, key, err: err.message }); }
+    const stale = new Map(this.env.bus.connectionState(this.id).map((e) => [holdId(e.owner, e.key), e.stale]));
+    for (const [id, h] of [...this.holds]) {
+      if (!stale.get(id)) { this.holds.delete(id); continue; } // set again meanwhile: it stays
+      if (h.until > t) continue;
+      this.holds.delete(id);
+      const src = { ...this.src, ...(h.src?.profile ? { profile: h.src.profile } : {}) };
+      try { this.env.bus.setState(h.key, undefined, { src }); } catch (err) { this.env.log.error('a held value could not be removed', { connection: this.id, key: h.key, err: err.message }); }
     }
     this.armHold();
   }
@@ -543,6 +546,8 @@ export class ConnectionRunner {
     return { health: this.health.view(), ...(Object.keys(this.info).length ? { info: this.info } : {}), ...(this.stats.inboundAccepted || this.stats.inboundRefused ? { deliveries: { accepted: this.stats.inboundAccepted, refused: this.stats.inboundRefused } } : {}) };
   }
 }
+
+const holdId = (owner, key) => `${owner}\n${key}`;
 
 export function withTimeout(promise, ms, timers) {
   return new Promise((resolve, reject) => {

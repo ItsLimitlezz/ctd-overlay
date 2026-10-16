@@ -1,8 +1,8 @@
 // The admin UI in a real browser, quickly: node scripts/ui-smoke.js [routes…] [--phone] [--shots <dir>]
 //
 // Starts a throwaway platform (its own temporary data directory, in lan mode) with the TAKEOVER
-// overlays, a show (and an overlay outside it), a pretend CTD Multi-Stream connected by pairing
-// and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
+// overlays, a show (and an overlay outside it, fed by one CTD Multi-Stream profile), a pretend CTD
+// Multi-Stream connected by pairing twice (for one profile, and for every profile) and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
 // (default: every section), printing per route the page's text and every console error,
 // uncaught exception and CSP violation. --phone uses a 390 × 844 viewport; --shots saves a PNG
 // per route there. Exits 1 if any route had a problem.
@@ -21,7 +21,7 @@ import { fakeConnector } from '../test/fixtures/connectors/fake.js';
 import { startFakeMultistream } from '../test/fixtures/fake-multistream.mjs';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { phone: { type: 'boolean' }, shots: { type: 'string' }, wait: { type: 'string', default: '1500' } } });
-const routes = positionals.length ? positionals : ['/live', '/live?show=<show>', '/live?show=<show>&overlay=takeover', '/live?overlay=solo', '/overlays', '/overlays/takeover', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/connections/<paired>', '/media', '/settings'];
+const routes = positionals.length ? positionals : ['/live', '/live?show=<show>', '/live?show=<show>&overlay=takeover', '/live?overlay=solo', '/overlays', '/overlays/takeover', '/overlays/solo?tab=settings', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/connections/<paired>', '/connections/<every>', '/media', '/settings'];
 
 const root = mkdtempSync(path.join(tmpdir(), 'skp-ui-'));
 // On the LAN, as on the NAS: SKP_HOSTS is the address the OBS plugin gets overlay URLs at.
@@ -60,7 +60,13 @@ const paired = platform.connectors.create({ connector: 'ctd-multistream', config
 await platform.connectors.authorize(paired.id, { who: { label: 'smoke' } });
 ms.approve({ profileId: 'p-dprtmnt' });
 for (let i = 0; i < 100 && platform.connectors.get(paired.id).info?.hub?.status !== 'shared'; i++) await new Promise((r) => setTimeout(r, 100));
-const routeOf = (r) => r.replace('<fake>', fake.id).replace('<show>', show.id).replace('<paired>', paired.id);
+// And one approved for every profile: each profile a stream of its own, "solo" fed by DPRTMNT only.
+const every = platform.connectors.create({ connector: 'ctd-multistream', config: { baseUrl: `${ms.url}/api/v1` } });
+await platform.connectors.authorize(every.id, { who: { label: 'smoke' } });
+ms.approve({ profileId: null });
+for (let i = 0; i < 100 && !(platform.connectors.get(every.id).info?.profiles?.length && platform.connectors.get(every.id).info?.hub?.status === 'shared'); i++) await new Promise((r) => setTimeout(r, 100));
+platform.overlays.updateConnections('solo', [`${every.id}/p-dprtmnt`]);
+const routeOf = (r) => r.replace('<fake>', fake.id).replace('<show>', show.id).replace('<paired>', paired.id).replace('<every>', every.id);
 
 let failed = false;
 const browser = await launchBrowser();

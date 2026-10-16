@@ -21,7 +21,7 @@ need to know which service a value came from unless they want to.
 | `id` | **MUST** be unique and sortable by creation time (ULID recommended). Doubles as the SSE cursor. |
 | `type` | **MUST** be a registered type (§2.6) or a namespaced custom type (§2.7). |
 | `ts` | Server epoch milliseconds at which the platform accepted the event. |
-| `src` | Where it came from. `platform` is the user-facing service name (`twitch`, `kick`, `youtube`, `facebook`, `x`, `instagram`, `tiktok`, `spotify`, `obs`, `custom`); `connection` identifies the account. Core-originated envelopes use `{ "connector": "core" }`. A relayed envelope (CTD Multi-Stream, 06 §6.11) names the platform it was relayed from. |
+| `src` | Where it came from. `platform` is the user-facing service name (`twitch`, `kick`, `youtube`, `facebook`, `x`, `instagram`, `tiktok`, `spotify`, `obs`, `custom`); `connection` identifies the account. Core-originated envelopes use `{ "connector": "core" }`. A relayed envelope (CTD Multi-Stream, 06 §6.11) names the platform it was relayed from. `profile` (optional, with `connection`): the stream at the service that the connection's data belongs to, when it follows several (a CTD Multi-Stream profile id, no spaces or `/`, ≤ 100): that connection's **feed** `"<connection>/<profile>"`, which overlays are bound to on its own (01 §1.3) and whose values are kept apart from the connection's other feeds (§2.5.0). |
 | `data` | Type-specific payload, defined below. |
 
 Schema: [schemas/envelope.schema.json](schemas/envelope.schema.json).
@@ -172,6 +172,11 @@ the connections it is bound to (01 §1.3), by one rule:
 2. a fresh value wins over one held through an error (§2.8);
 3. a direct connection wins over a relay (CTD Multi-Stream, 06 §6.11);
 4. the older connection wins.
+
+A connection's feeds (`src.profile`, §2.1: its CTD Multi-Stream profiles) keep their own values
+the same way, and rank as their connection does; between two feeds of one connection, the lower
+profile id wins (as two accounts on one platform: an overlay fed by every profile of a
+connection that stream to the same platform shows one profile's count for it).
 
 `viewers.total` is the sum of the `viewers.<platform>` values the overlay shows, one per
 platform (two accounts on one platform count once), unless the core set `viewers.total` itself;

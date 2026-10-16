@@ -14,6 +14,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { isOfConnection, profileOf } from '../bus/owners.js';
 import { newId } from '../ids.js';
 import { runMigrate } from '../templates/migrate.js';
 import { compareVersions } from '../templates/registry.js';
@@ -44,17 +45,28 @@ export const newOverlayKey = () => `skp_ovl_${base62(randomBytes(24), 33)}`;
 
 // Bindings (01 §1.3): which connections feed an overlay. 'all' (every connection, including ones
 // made later: the default, so an overlay shows the Twitch count as soon as Twitch is connected), or
-// a list of connection ids. A stored overlay without one (made before migration 2) is 'all'.
+// a list of connection ids, each the whole connection (every profile it follows at its service,
+// new ones too) or "<connection id>/<profile id>": one CTD Multi-Stream profile of a connection
+// that follows them all (bus/owners.js). A stored overlay without one (made before migration 2) is
+// 'all'.
 export const MAX_BINDINGS = 50;
+const ENTRY = /^[\x21-\x2e\x30-\x7e]{1,64}(?:\/[^\s/]{1,100})?$/;
 export const bindingOf = (doc) => (Array.isArray(doc.data.connections) ? doc.data.connections : 'all');
 export function checkBinding(value) {
   if (value === 'all') return 'all';
-  if (!Array.isArray(value) || value.length > MAX_BINDINGS || value.some((c) => typeof c !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(c))) {
-    throw new OverlayError(`"connections" is "all" (every connection, including ones made later), or a list of up to ${MAX_BINDINGS} connection ids.`, 'bad-connections');
+  if (!Array.isArray(value) || value.length > MAX_BINDINGS || value.some((c) => typeof c !== 'string' || !ENTRY.test(c))) {
+    throw new OverlayError(`"connections" is "all" (every connection, including ones made later), or a list of up to ${MAX_BINDINGS} connection ids, each one whole or one of its profiles ("<connection id>/<profile id>").`, 'bad-connections');
   }
   return [...new Set(value)];
 }
-const feeds = (doc, connId) => { const b = bindingOf(doc); return b === 'all' || b.includes(connId); };
+// How a binding takes a connection: undefined (not at all), null (whole: 'all', or its id: every
+// profile it follows, new ones too), or the profiles named ("<id>/<profile>").
+export function scopeOf(binding, connId) {
+  if (binding === 'all' || binding.includes(connId)) return null;
+  const named = binding.filter((c) => isOfConnection(c, connId)).map(profileOf);
+  return named.length ? named : undefined;
+}
+const feeds = (doc, connId) => scopeOf(bindingOf(doc), connId) !== undefined;
 
 // "Role in OBS" (06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
 // overlay of every stream ("chat-main"), so the CTD OBS plugin can re-point its browser sources
@@ -364,20 +376,23 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     },
 
     bindingOf,
+    scopeOf,
 
-    // Slugs of the overlays a connection feeds (bound to it, or to every connection).
+    // Slugs of the overlays a connection feeds (bound to it, to one of its profiles, or to every
+    // connection).
     fedBy(connId) {
       return [...all()].filter((doc) => feeds(doc, connId)).map((doc) => doc.data.slug).sort();
     },
 
-    // A deleted connection leaves every list it was named in, so an overlay's bindings, read and
-    // sent back, name only connections that exist. Returns the slugs whose list changed.
+    // A deleted connection leaves every list it was named in (whole or by profile), so an overlay's
+    // bindings, read and sent back, name only connections that exist. Returns the slugs whose list
+    // changed.
     unbind(connId) {
       const slugs = [];
       for (const doc of all()) {
         const b = bindingOf(doc);
-        if (b === 'all' || !b.includes(connId)) continue;
-        const saved = store.put('overlays', doc.id, { ...doc.data, connections: b.filter((c) => c !== connId) });
+        if (b === 'all' || !b.some((c) => isOfConnection(c, connId))) continue;
+        const saved = store.put('overlays', doc.id, { ...doc.data, connections: b.filter((c) => !isOfConnection(c, connId)) });
         open(saved);
         slugs.push(saved.data.slug);
       }

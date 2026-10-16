@@ -19,11 +19,12 @@
 //   ms.skewMs = -90000   its clock runs that far from this machine's (envelope ts and Date header)
 //   ms.requests          [{ method, path, query, headers, body? }]
 //
-// ms.token is a token from before v1.2 (every profile; without ?profile= its stream is the default
-// profile's), with ms.scopes and limited to ms.tokenProfile (null). Tokens made since read every
-// profile at once without ?profile=, as the real server does.
+// ms.token is a token from before v1.2 (every profile), with ms.scopes and limited to
+// ms.tokenProfile (null). A token for every profile reads the default profile without ?profile=,
+// and every profile at once with ?profile=* on /events (each envelope's src.profile says whose).
 //   ms.profiles · ms.statuses[id]   the profiles, and each one's /status (the default's is ms.status)
 //   ms.setProfileStatus(id, 'live') · ms.renameProfile(id, name) · ms.deleteProfile(id)
+//   ms.addProfile({ id, name, slug, color }, status?)   a new profile (profiles.changed)
 //   ms.addToken({ profileId, scopes }) → a token, as an admin makes in Settings → API
 //   pairing: ms.pairings; ms.approve({ code?, profileId, scopes? }) → its token; ms.deny(); ms.expire();
 //            ms.pairingLimited = n (the next n POST /pairing get 429); ms.pairingInterval (s)
@@ -140,8 +141,14 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     ms.emit('profile.status', view(profileOf(id)), { profile: id });
     return ms.emit('profiles.changed', {}, { profile: null });
   };
+  ms.addProfile = (p, status) => {
+    ms.profiles.push({ createdAt: t0, updatedAt: t0, ...p });
+    ms.statuses[p.id] = status || { session: { status: 'idle', startedAt: null, title: p.name, testMode: false, autoGoLive: true }, feeds: [], destinations: [], platforms: [] };
+    return ms.emit('profiles.changed', {}, { profile: null });
+  };
   ms.deleteProfile = (id) => {
     ms.profiles = ms.profiles.filter((p) => p.id !== id);
+    delete ms.statuses[id];
     for (const app of ms.apps.values()) app.resources = (app.resources || []).filter((r) => r.profileId !== id);
     return ms.emit('profiles.changed', {}, { profile: null });
   };
@@ -188,8 +195,8 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     const t = ms.tokens.get(bearer);
     return t ? { key: bearer, ...t } : undefined;
   };
-  // The profile a request reads: the token's, else ?profile= (* for every one where allowed), else
-  // the default (a token made since v1.2 reads every profile on /events without it).
+  // The profile a request reads: the token's, else ?profile= (* for every one, /events only), else
+  // the default (its §9.1: as before profiles existed, whatever the token).
   function profileFor(tok, asked, { every = false } = {}) {
     if (tok.profileId) {
       if (asked && asked !== '*' && asked !== 'all' && asked !== tok.profileId) return { error: [403, 'profile_forbidden', 'This token is limited to another profile.'] };
@@ -197,7 +204,7 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     }
     if (asked === '*' || asked === 'all') return every ? { profile: '*' } : { error: [400, 'invalid', 'profile=* is for /events only'] };
     if (asked) return profileOf(asked) ? { profile: asked } : { error: [404, 'unknown_profile', `No profile ${asked}`] };
-    return { profile: every && tok.v12 ? '*' : 'default' };
+    return { profile: 'default' };
   }
 
   const server = http.createServer(async (req, res) => {

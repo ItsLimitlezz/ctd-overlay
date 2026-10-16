@@ -3,11 +3,13 @@
 // (02 §2.9). Channels keep buffering while no client is connected; that's the point.
 //
 // Bindings (01 §1.3): 'all' (every connection, including ones made later: the default) or a list
-// of connection ids. Events from a connection the overlay isn't bound to never reach it; for state
-// the bus works out the one value the bound connections show (bus/index.js resolve()), and the
-// channel sends a change only when that value moves.
+// of connection ids, each the whole connection (every profile it follows, new ones too) or
+// "<connection>/<profile>" (that profile only, owners.js). Events from a connection or profile the
+// overlay isn't bound to never reach it; for state the bus works out the one value the bound ones
+// show (bus/index.js resolve()), and the channel sends a change only when that value moves.
 import { ULID_PATTERN } from '../ids.js';
 import { CHAT_TYPES, OPERATOR_ONLY, RUNTIME_KEYS, RUNTIME_TYPES, compilePatterns } from './names.js';
+import { listAllows, ownerOf } from './owners.js';
 
 // Keep at least 120 s or 500 envelopes, whichever is more (01 §1.5). The hard cap bounds memory
 // during a chat flood; a client that falls that far behind gets 410 and re-fetches the snapshot,
@@ -37,7 +39,7 @@ export class Channel {
   #all = true; // bound to every connection
   #bound = new Set(); // else these
   #configured = false;
-  #allow = (owner) => owner === '' || this.#all || this.#bound.has(owner);
+  #allow = (owner) => owner === '' || this.#all || listAllows(this.#bound, owner);
 
   constructor(bus, id, spec) {
     this.#bus = bus;
@@ -75,7 +77,7 @@ export class Channel {
   get connections() { return this.#all ? 'all' : [...this.#bound]; }
 
   bound(src) {
-    return !src?.connection || this.#all || this.#bound.has(src.connection);
+    return !src?.connection || this.#all || listAllows(this.#bound, ownerOf(src));
   }
 
   consumesKey(key) {

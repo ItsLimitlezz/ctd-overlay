@@ -5,10 +5,14 @@
 //
 //   ctx.connection   { id, name, connector, config (defaults applied), secrets } (frozen copies)
 //   ctx.platform     the definition's main platform
-//   ctx.publish(type, data, { platform, dedupeKey, backfill })   an event (names.js decides which)
+//   ctx.publish(type, data, { platform, dedupeKey, backfill, profile })   an event (names.js decides
+//                            which); profile: for one of the streams it follows at its service (a
+//                            CTD Multi-Stream profile), a feed of its own that overlays are bound
+//                            to as "<connection>/<profile>" (bus/owners.js)
 //   ctx.room(n?)             resolves once n more events (1) may be published this second
-//   ctx.recentChat()         this connection's chat messages still in the chat buffer, oldest first
-//   ctx.setState(key, value, { platform })                       state; undefined removes it
+//   ctx.recentChat({ profile }?)   this connection's (that feed's) chat messages still in the chat
+//                            buffer, oldest first
+//   ctx.setState(key, value, { platform, profile })              state; undefined removes it
 //   ctx.hold(keys?)          an error for these values (all by default): held 120 s, marked stale
 //   ctx.seen(key)            true for a message id seen in the last 10 minutes (else remembers it)
 //   ctx.setHealth({ status: connected | degraded | connecting, detail, warnings, quota })
@@ -43,7 +47,13 @@ export function makeContext(runner, gen, { def, config, secrets }) {
   const live = () => runner.current(gen);
   const names = namesOf(def);
   const env = runner.env;
-  const src = (platform) => ({ connector: def.id, connection: runner.id, ...(platform ? { platform } : {}) });
+  // profile: a feed of this connection (a CTD Multi-Stream profile it follows, bus/owners.js).
+  const src = (platform, profile) => ({ connector: def.id, connection: runner.id, ...(platform ? { platform } : {}), ...(profile ? { profile } : {}) });
+  const profileFor = (profile) => {
+    if (profile === undefined || profile === null) return undefined;
+    if (typeof profile !== 'string' || !/^[^\s/]{1,100}$/.test(profile)) throw new TypeError(`"${profile}" isn't a profile id (no spaces or "/", at most 100 characters).`);
+    return profile;
+  };
   const scrubbed = (fn) => (msg, context) => fn(runner.scrub(msg), context === undefined ? undefined : runner.scrubDeep(context));
   const log = { debug: scrubbed(env.log.debug), info: scrubbed(env.log.info), warn: scrubbed(env.log.warn), error: scrubbed(env.log.error) };
 
@@ -82,15 +92,16 @@ export function makeContext(runner, gen, { def, config, secrets }) {
     log,
     now: () => env.now(),
 
-    publish(type, data = {}, { platform, dedupeKey, backfill = false } = {}) {
+    publish(type, data = {}, { platform, dedupeKey, backfill = false, profile } = {}) {
       names.event(type);
       const p = platformFor(platform);
+      const feed = profileFor(profile);
       if (!live()) return undefined;
       const keyed = dedupeKey !== undefined && dedupeKey !== null;
       if (keyed && runner.dedupe.has(dedupeKey)) return undefined;
       const history = backfill && type === 'chat.message';
       admit(history || QUIET.has(type));
-      const out = env.bus.publish(type, data, { src: src(p), backfill: history });
+      const out = env.bus.publish(type, data, { src: src(p, feed), backfill: history });
       // Marked seen only once it is published: one that was refused can come again.
       if (keyed) runner.dedupe.seen(dedupeKey);
       runner.health.event();
@@ -108,13 +119,15 @@ export function makeContext(runner, gen, { def, config, secrets }) {
 
     // Copies, so a connector can work out what a moderation event removes (the lines a platform's
     // /clear takes, say) from what overlays may still show, across restarts of its instance.
-    recentChat: () => env.bus.chatRecent().filter((m) => m.src?.connection === runner.id).map((m) => structuredClone(m.data)),
+    // profile: one feed's only.
+    recentChat: ({ profile } = {}) => env.bus.chatRecent().filter((m) => m.src?.connection === runner.id && (profile === undefined || m.src.profile === profile)).map((m) => structuredClone(m.data)),
 
-    setState(key, value, { platform } = {}) {
+    setState(key, value, { platform, profile } = {}) {
       names.state(key);
       const p = platformFor(platform, key);
+      const feed = profileFor(profile);
       if (!live()) return undefined;
-      return env.bus.setState(key, value, { src: src(p) });
+      return env.bus.setState(key, value, { src: src(p, feed) });
     },
 
     hold(keys) {

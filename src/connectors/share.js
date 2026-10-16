@@ -5,17 +5,21 @@
 //   ctx.overlays.baseUrl       where OBS reaches this platform: SKP_PUBLIC_URL, else the first
 //                              SKP_HOSTS name (lan and public modes) with the platform's port;
 //                              undefined when it isn't known (baseProblem says what to set)
-//   ctx.overlays.list()        the overlays bound to this connection ("all" counts), by slug, each
-//                              { id, slug, role?, template: { id, version, name }, canvases: [{ id,
-//                              label, kind: landscape | vertical, width, height, url }] }; an
-//                              overlay whose template can't run is left out
+//   ctx.overlays.list()        the overlays bound to this connection ("all" counts, and a binding to
+//                              one of its profiles), by slug, each { id, slug, role?, template: {
+//                              id, version, name }, canvases: [{ id, label, kind: landscape |
+//                              vertical, width, height, url }], profiles: null (bound whole) | [the
+//                              profile ids it is bound to] }; one whose template can't run is left out
 //   ctx.overlays.onChange(fn)  fn() after an overlay is made, deleted, renamed, re-keyed, re-bound…
-//   ctx.overlays.create({ template, canvas?, slugBase?, from })   an overlay bound to this connection
-//                              only, recorded in the audit log as made by app:<from>; throws an
-//                              Error whose message says in plain words why not
+//   ctx.overlays.create({ template, canvas?, slugBase?, from, profile? })   an overlay bound to this
+//                              connection only ("<connection>/<profile>" with a profile), recorded
+//                              in the audit log as made by app:<from>; throws an Error whose
+//                              message says in plain words why not
 //
 // The URLs carry the overlays' keys: they go only to the service this connection reaches, which
 // the owner set up (07 §7.6).
+import { feedKey } from '../bus/owners.js';
+import { scopeOf } from '../overlays/registry.js';
 import { compareVersions } from '../templates/registry.js';
 
 const SLUG_CHARS = 56; // room for "-99" under the 63 a slug may have
@@ -88,16 +92,18 @@ export function createShare({ overlays, templates, audit, log, base = () => unde
   return {
     // The capability for one connection: { id, name } (its name read when it is used).
     forConnection(conn) {
-      const bound = (doc) => { const b = overlays.bindingOf(doc); return b === 'all' || b.includes(conn.id); };
+      const scope = (doc) => scopeOf(overlays.bindingOf(doc), conn.id);
       return {
         get baseUrl() { return base().url; },
         get baseProblem() { return base().problem; },
         list() {
           const url = base().url;
-          return overlays.list().filter(bound).map((d) => itemOf(d, url)).filter(Boolean).sort((a, b) => (a.slug < b.slug ? -1 : 1));
+          return overlays.list().map((d) => [d, scope(d)]).filter(([, s]) => s !== undefined)
+            .map(([d, s]) => { const item = itemOf(d, url); return item && { ...item, profiles: s }; })
+            .filter(Boolean).sort((a, b) => (a.slug < b.slug ? -1 : 1));
         },
         onChange: (fn) => overlays.onChange(fn),
-        create({ template, canvas, slugBase, from }) {
+        create({ template, canvas, slugBase, from, profile }) {
           if (canvas !== undefined && canvas !== null && canvas !== 'landscape' && canvas !== 'vertical') throw new Error('"canvas" is "landscape" or "vertical" (or left out for every canvas).');
           const t = templateOf(template);
           const list = t.manifest.canvases || [];
@@ -105,10 +111,11 @@ export function createShare({ overlays, templates, audit, log, base = () => unde
           if (canvas && !picked) throw new Error(`${t.manifest.name || t.id} has no ${canvas} canvas.`);
           const tail = typeof slugBase === 'string' ? slugBase.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') : '';
           const slug = uniqueSlug(tail ? `${shortName(t.id)}-${tail}` : shortName(t.id));
-          const doc = overlays.create({ slug, template: { id: t.id, version: t.version }, settings: {}, connections: [conn.id] });
-          audit?.record({ action: 'overlay.create', actor: `app:${String(from || 'unknown').slice(0, 40)}`, target: slug, template: `${t.id}@${t.version}`, via: conn.name, connection: conn.id });
-          log?.info('another app made an overlay through a connection', { overlay: slug, template: t.id, connection: conn.id, app: from });
-          return { ...itemOf(doc, base().url), ...(picked ? { canvas: picked.id } : {}) };
+          const fed = feedKey(conn.id, typeof profile === 'string' && profile ? profile : undefined);
+          const doc = overlays.create({ slug, template: { id: t.id, version: t.version }, settings: {}, connections: [fed] });
+          audit?.record({ action: 'overlay.create', actor: `app:${String(from || 'unknown').slice(0, 40)}`, target: slug, template: `${t.id}@${t.version}`, via: conn.name, connection: conn.id, ...(fed !== conn.id ? { profile } : {}) });
+          log?.info('another app made an overlay through a connection', { overlay: slug, template: t.id, connection: conn.id, ...(fed !== conn.id ? { profile } : {}), app: from });
+          return { ...itemOf(doc, base().url), profiles: fed !== conn.id ? [profile] : null, ...(picked ? { canvas: picked.id } : {}) };
         },
       };
     },

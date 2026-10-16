@@ -82,8 +82,10 @@ platform to get a new code.
 
 CTD Multi-Stream merges chat from every platform it streams to, and sends alerts, viewer counts
 and live status. Its **profiles** are separate streams that can be live at the same time (for
-example DPRTMNT and Miami or Bust). **One connection follows one profile**: connect once per
-profile.
+example DPRTMNT and Miami or Bust). **One connection follows every profile** (approve it for
+every profile): each profile is a stream of its own in CTD Overlay, new ones show up by
+themselves, and each overlay's **Fed by** picks which profile it shows. (Approved for one profile,
+the connection follows only that one.)
 
 1. In **CTD Multi-Stream → Settings → API**, copy the **LAN URL**, which ends in `/api/v1` (for
    example `http://192.168.1.50:30080/api/v1`).
@@ -91,26 +93,33 @@ profile.
    press **Set up**. Paste the address into **API address** and press **Connect**. A code appears,
    like `KQ7-2MX`, with a countdown (10 minutes).
 3. In **CTD Multi-Stream → Settings → API** (the link under the code opens it), a banner says CTD
-   Overlay wants to connect. Check that the code matches, pick the **profile** this connection
-   follows, and approve.
-4. Back in CTD Overlay, the connection connects by itself within a few seconds and names itself
-   **Multi-Stream · <profile>**. It shows the profile's status (**DPRTMNT · Live**), and
+   Overlay wants to connect. Check that the code matches, pick **every profile** (or the one
+   profile this connection follows), and approve.
+4. Back in CTD Overlay, the connection connects by itself within a few seconds. Its card lists
+   every profile with its status (**Miami or Bust · Offline**, **DPRTMNT · Live**), and
    **Connected**. While a destination is down, it shows **Partly working** with the reason (for
-   example, Instagram ended the live). That message is for you; viewers never see it.
-5. For another profile, set up another connection the same way. Then, on each overlay's page,
-   **Fed by** chooses which connection (so which profile) it shows.
+   example, Instagram (DPRTMNT) ended the live). That message is for you; viewers never see it.
+5. On each overlay's page (Settings → **Fed by**), choose **Only these** and tick the profile it
+   shows (**Multi-Stream · DPRTMNT**), or **All its profiles, including new ones**. An overlay fed
+   by every connection shows every profile. Each show's stream on Live is then its profile's.
 
 **Paste a token instead:** on the setup page, open **Paste a token instead**, and paste a token
 made in **Settings → API → New token** (`chat:read` and `status:read`; add `apps:read` and
-`apps:write` to share overlays with the OBS plugin). A token that reads every profile follows the
-default profile until you pick another under **Profile** in the connection's settings.
+`apps:write` to share overlays with the OBS plugin). A token that reads every profile follows
+every profile; to follow only one, pick it under **Profile** in the connection's settings.
+
+**Upgrading from the version that followed one profile:** nothing to do. A connection approved
+for every profile follows every profile after the update (one whose **Profile** setting names
+another profile than the default one keeps following only that one), and an overlay fed by every
+connection keeps working; choose per overlay which profile feeds it when you are ready.
 
 If CTD Multi-Stream says the token was revoked, press **Connect again** on the connection's page.
 
 ### The CTD OBS plugin
 
 A connection made with Connect also shares the overlays it feeds with the **CTD OBS plugin**,
-through CTD Multi-Stream: the plugin lists them for its profile and adds them as browser sources at
+through CTD Multi-Stream: the plugin lists them for its profile (an overlay fed by one profile is
+listed for that profile; one fed by every profile, for every profile) and adds them as browser sources at
 the right size and canvas (main or vertical), and can ask for a new one ("Let other apps create
 overlays", on by default in the connection's settings). The connection's card says **Shared with
 the OBS plugin: 4 overlays**. For this, CTD Overlay must know the address OBS reaches it at:

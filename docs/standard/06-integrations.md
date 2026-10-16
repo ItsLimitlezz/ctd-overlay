@@ -40,8 +40,10 @@ interface Connector {
 
 interface ConnectorContext {
   connection: { id, name, config, secrets }    // decrypted, in memory only
-  publish(type, data, { platform?, dedupeKey? }): void  // events its capabilities allow (6.2)
-  setState(key: string, value: unknown): void  // state; undefined = remove
+  publish(type, data, { platform?, dedupeKey?, profile? }): void  // events its capabilities allow (6.2)
+  setState(key: string, value: unknown, { platform?, profile? }): void  // state; undefined = remove
+                                      // profile: one of the streams it follows at its service, a
+                                      // feed of its own ("<connection>/<profile>", 01 §1.3; 6.11)
   hold(keys?: string[]): void        // a value can't be had now: held 120 s, stale (02 §2.8)
   setHealth({ status, detail, warnings, quota }): void  // connected | degraded | connecting
   fail(err, { retryAfterMs?, retry? }): void   // give up this start: held, started again later
@@ -386,15 +388,17 @@ its `docs/API.md` v1.2) streams to every platform at once and merges their chat 
 standard's envelope. Its **profiles** are independent streaming set-ups, live at the same time
 ("DPRTMNT", "Miami or Bust"). Its connector (`ctd-multistream`) is a **relay**: where a direct
 connector also sets a value (`viewers.twitch`), the direct one is shown (02 §2.5.0). **One
-connection follows one profile**; overlays are assigned to a profile by being fed by its
-connection (01 §1.3).
+connection follows every profile** its token reads (or one): each profile is a **feed** of the
+connection (`src.profile`, 02 §2.1), a stream of its own here, and an overlay is assigned to a
+profile by being fed by it, `"<connection id>/<profile id>"` in its bindings (01 §1.3); bound to
+the whole connection (or `"all"`), it is fed by every profile, new ones too.
 
 **Auth: pairing** (its §9.3). The operator types the LAN URL ending in `/api/v1` (plain HTTP on the
 local network, or its HTTPS address with the certificate's SHA-256 fingerprint when self-signed)
 and presses Connect: `POST /pairing` (no token) asks for `status:read`, `chat:read`, `apps:read`,
 `apps:write` with `appName: "CTD Overlay"`, `kind: "ctd-overlay"`, `profileId: null`. The code
 shows on the connection's page with its `approveUrl`; an admin approves it in CTD Multi-Stream →
-Settings → API and picks the profile. The platform polls `POST /pairing/{id}/token` every
+Settings → API and picks the profile, or every profile. The platform polls `POST /pairing/{id}/token` every
 `interval` s (`202` pending, `200` the token, once; `403` denied, `410` expired; a `429` waits for
 its `Retry-After`), and saves the token as the connection's token secret; the poll secret is
 never answered, logged or stored. Too many requests waiting (`429` on `POST /pairing`) is said in
@@ -403,15 +407,28 @@ token was revoked or is wrong: `needs-reauth` until Connect again (or a new toke
 missing scope) is an error until it is fixed; a `429` is waited out.
 
 **Profiles:** `GET /api/v1/` names the token's `profileId`. A token limited to a profile reads
-that one (`GET /profiles/{id}`); a token for every profile (`null`, pasted tokens from before
-v1.2 too) follows the profile picked in the connection's settings (`GET /profiles` lists them; the
-default profile until one is picked) and passes `?profile=<id>` on `/status`, `/chat` and
-`/events`, always. The profile (name, colour, `offline | starting | live | stopping`, since when)
-is the connection's `info.profile`, kept fresh by `profile.status`; `profiles.changed` reads it
-again, and a profile deleted there is an `error` saying so. A connection nobody named is called
-"Multi-Stream · <profile name>". A stream fed by the connection (src/streams.js) shows the profile
-and is **on air when the profile is live**, before any platform says so. A server older than v1.2
-(no `profileId` in `GET /`) is read as before.
+that one (`GET /profiles/{id}`): the connection is that profile, its data its own (no
+`src.profile`). A token for every profile (`null`, pasted tokens from before v1.2 too) follows
+**every profile** while the connection's Profile setting is empty or `*` ("Every profile", the
+default): `GET /profiles` lists them, **one** event stream reads them all (`/events?profile=*`,
+each envelope's `src.profile` naming its profile; one cursor), and `/status` and `/chat` are read
+per profile (`?profile=<id>`); what it publishes for a profile carries `src.profile`. A profile made
+there is followed at once (`profiles.changed`, or the first event naming it: its status read, its
+recent chat buffered quietly); one deleted there is dropped, its values gone, and an overlay bound
+to it alone gets nothing more (its `bound` and `stream` say `missing`). `system.reset` reads the
+profiles, then each one's status and chat, again. Events about no single profile
+(`profiles.changed`, `system.notice`, `app.message`) are the connection's. Each profile (name,
+colour, `offline | starting | live | stopping`, since when) is in the connection's `info.profiles`
+(with `info.everyProfile: true`, and in `GET /system/health`), kept fresh by `profile.status`. A
+connection nobody named is called "Multi-Stream". With one profile picked in the setting instead,
+it passes `?profile=<id>` on `/status`, `/chat` and `/events`, always: the profile is the
+connection's `info.profile`, `profiles.changed` reads it again, a profile deleted there is an
+`error` saying so, and a connection nobody named is called "Multi-Stream · <profile name>". A
+cursor kept from the other kind of stream (one profile, every profile) is never resumed from. A
+stream fed by a profile (src/streams.js) shows it and is **on air when the profile is live**,
+before any platform says so. A server older than v1.2 (no `profileId` in `GET /`) is read as
+before. (Upgrading: a connection whose setting named the default profile, set so before "Every
+profile" existed, follows every profile; store migration 3.)
 
 **Hub** (its §9.2), with `apps:write`: the connection registers the overlays it feeds (bound to
 it, or to every connection) with `PUT /apps/{appId}`, `appId` `ctd-overlay-<profile slug>` for a
@@ -419,6 +436,12 @@ token limited to a profile and `ctd-overlay` for one that reads every profile: `
 Overlay", kind: "ctd-overlay", version, baseUrl, capabilities: ["overlays", "overlay.create"],
 resources }`. One resource per canvas: `{ type: "overlay", id: "<overlay id>:<canvas id>", name:
 "<slug> — <canvas>", profileId, url, width, height, meta: { canvas, slot, transparent: true } }`.
+`profileId` is the profile it follows. Following every profile, an overlay is registered once
+per profile it is fed by, assigned to it, id `<overlay id>:<canvas id>:<profile id>`, the same URL,
+canvas and slot each time: the profiles of its `"<connection>/<profile>"` bindings, or every
+profile followed now when it is bound to the whole connection or to `"all"` (the OBS plugin lists
+a profile's overlays with `GET /profiles/{id}/overlays`, which leaves unassigned ones out). A
+profile made or deleted there registers them again.
 `url` is the overlay's URL for OBS, its key included, at `baseUrl`: `SKP_PUBLIC_URL`, else the
 first `SKP_HOSTS` name with its port (lan and public modes; `192.168.1.50:4850` →
 `http://192.168.1.50:4850`); without one the connection warns and shares no URLs. `canvas` is
@@ -440,7 +463,9 @@ replyTo: <id>, data }`): `overlay.create { template, canvas? }` makes an overlay
 connection's **Let other apps create overlays** is on (the default): `template` is an installed
 template's id, or its id's last part or its name (any case); `canvas` `landscape` or `vertical`
 picks that canvas (absent: every canvas). The overlay is named `<template short name>-<profile
-slug>` (`-2`, `-3`… when taken), fed by this connection only, recorded in the audit log as
+slug>` (`-2`, `-3`… when taken), fed by this connection only (following every profile: by the
+message's `profileId`, `"<connection>/<profile>"`, or by the whole connection when it names none;
+a profile it doesn't follow is refused), recorded in the audit log as
 `app:<from>` (`via` the connection), registered, then answered `overlay.created { ok: true,
 resource }` (or `resources`). Anything else is `{ ok: false, reason }` in plain words: the switch
 off, no such template or canvas, no address for OBS, more than 10 a minute; a type it doesn't
@@ -449,7 +474,8 @@ message is handled once (its id remembered across restarts); a request replayed 
 connection was away over two minutes is refused; at most 100 answers a minute (the hub takes 120).
 
 **Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`
-(and `profile.status,profiles.changed`, and `app.message` with `apps:read`),
+(and `profile.status,profiles.changed`, and `app.message` with `apps:read`; `profile=*` following
+every profile),
 resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
 when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
 `/status` and `/chat?limit=200` again; that chat goes into the chat buffer **without being sent

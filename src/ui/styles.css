@@ -380,6 +380,9 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
 .stream-status p { margin: 0; }
 .fed-by-list { padding-left: 32px; }
 .fed-by-list .field { margin-bottom: 0; }
+.fed-by-group { margin: 4px 0 8px; }
+.fed-by-group .fed-by-list { padding-left: 24px; }
+.fed-by-name { margin: 8px 0 0; overflow-wrap: anywhere; }
 .stream-card { display: flex; flex-direction: column; }
 .stream-card > .open { margin-top: auto; padding-top: var(--gap); }
 .overlay-preview { max-width: 720px; }

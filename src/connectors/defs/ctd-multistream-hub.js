@@ -12,10 +12,15 @@
 //   ctd-overlay-<profile slug> for a token limited to one profile, ctd-overlay for one that reads
 //   every profile; only the token that registered an id may update it (409 app_owned: a warning
 //   saying where to delete the old one). Its id is remembered so deleting or turning off the
-//   connection unregisters it (the definition's retire).
+//   connection unregisters it (the definition's retire). Each resource's profileId: the profile
+//   followed; following every profile, one resource per profile an overlay is fed by (its
+//   "<connection>/<profile>" bindings, or every profile followed now when bound whole or "all"),
+//   id "<overlay id>:<canvas id>:<profile id>": the OBS plugin lists a profile's overlays by
+//   profileId (its §9.2), never unassigned ones. Registered again when the profiles change.
 // - Messages (app.message to this app id): overlay.create { template, canvas? } makes an overlay
-//   from an installed template (its id, or its short name or name), bound to this connection only,
-//   when the connection's "Let other apps create overlays" is on; it is registered at once, then
+//   from an installed template (its id, or its short name or name), bound to this connection only
+//   (following every profile: to the message's profileId, "<connection>/<profile>", or the whole
+//   connection when it names none), when "Let other apps create overlays" is on; it is registered at once, then
 //   the answer goes back: overlay.created { ok: true, resource } (the canvas asked for) or
 //   { ok: true, resources } (every canvas). Every request addressed here gets an answer, refusals
 //   included ({ ok: false, reason } in plain words; "error" for a type it doesn't handle);
@@ -46,8 +51,10 @@ export function appIdFor({ limited, slug, id }) {
   return tail ? `ctd-overlay-${tail}` : 'ctd-overlay';
 }
 
-// One overlay's resources, one per canvas that has a URL.
-export function resourcesOf(item, profileId) {
+// One overlay's resources, one per canvas that has a URL, assigned to profileId. tag: the profile,
+// in the id ("<overlay id>:<canvas id>:<profile id>"), when the connection follows every profile
+// (the same overlay may be registered for several).
+export function resourcesOf(item, profileId, { tag } = {}) {
   const base = item.role || tidy(shortName(item.template?.id), 54) || 'overlay';
   const canvases = (item.canvases || []).filter((c) => str(c.url));
   const labels = canvases.map((c) => c.label || c.kind);
@@ -58,7 +65,7 @@ export function resourcesOf(item, profileId) {
     const label = labels.filter((l) => l === labels[i]).length > 1 ? `${labels[i]} (${c.id})` : labels[i];
     return {
       type: 'overlay',
-      id: `${item.id}:${c.id}`,
+      id: `${item.id}:${c.id}${tag ? `:${tag}` : ''}`.slice(0, 100),
       name: `${item.slug} — ${label}`.slice(0, 120),
       profileId: profileId ?? null,
       url: c.url,
@@ -71,7 +78,23 @@ export function resourcesOf(item, profileId) {
 
 // request: the connector's (token, address, TLS pin); onChange(): its health and info changed;
 // reauth(): the token was refused; isOld(env): a message replayed after being away too long.
-export function createHub(ctx, { request, appId, profileId, profileSlug, version, allowMaking, isOld, onChange, reauth }) {
+// The resources a connection registers for the overlays it feeds (ctx.overlays.list() items):
+// following one profile, every overlay's is that profile's. Following every profile, each is
+// registered once per profile it is fed by, assigned to it (the OBS plugin lists a profile's
+// overlays by profileId, GET /profiles/{id}/overlays, never the unassigned ones): bound to some of
+// its profiles, those; bound to the whole connection (or "all"), every profile it follows now
+// (profiles). The same URL, canvas and slot for each.
+export function resourcesFor(items, { every, profileId, profiles = [] }) {
+  return items.flatMap((item) => {
+    if (!every) return resourcesOf(item, profileId);
+    const list = Array.isArray(item.profiles) ? item.profiles : profiles;
+    return list.flatMap((p) => resourcesOf(item, p, { tag: p }));
+  });
+}
+
+// every: the connection follows every profile (profileId null); profileOf(id): { id, slug? } of a
+// profile it follows then, or undefined; profiles(): the ids of every profile it follows now.
+export function createHub(ctx, { request, appId, profileId, profileSlug, every = false, profileOf = () => undefined, profiles = () => [], version, allowMaking, isOld, onChange, reauth }) {
   let warning;
   let busy = null; // the registration under way
   let next = null; // the one asked for while it was
@@ -92,7 +115,7 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, version
 
   // ---- registration ----------------------------------------------------------------------------
   function payload() {
-    const all = ctx.overlays.list().flatMap((item) => resourcesOf(item, profileId));
+    const all = resourcesFor(ctx.overlays.list(), { every, profileId, profiles: profiles() });
     const body = (resources) => ({
       name: 'CTD Overlay', kind: 'ctd-overlay', version,
       ...(ctx.overlays.baseUrl ? { baseUrl: ctx.overlays.baseUrl } : {}),
@@ -163,6 +186,8 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, version
     ctx.memory.set('hubHandled', [...seen, m.id].slice(-HANDLED_KEEP));
     const about = str(m.profileId) ? m.profileId : null;
     if (about && profileId && about !== profileId) return answer(m, { ok: false, reason: 'This CTD Overlay connection follows another CTD Multi-Stream profile.' });
+    const feed = every && about ? profileOf(about) : undefined;
+    if (every && about && !feed) return answer(m, { ok: false, reason: `CTD Overlay doesn't follow a CTD Multi-Stream profile "${about.slice(0, 100)}" (yet): try again in a moment.` });
     if (m.type !== 'overlay.create') return answer(m, { ok: false, reason: `CTD Overlay doesn't handle ${m.type.slice(0, 64)}.` });
     if (isOld(env)) return answer(m, { ok: false, reason: 'CTD Overlay wasn\'t connected when this was asked: ask again.' });
     if (!allowMaking()) return answer(m, { ok: false, reason: 'Making overlays from other apps is turned off in CTD Overlay (the "Let other apps create overlays" setting of its CTD Multi-Stream connection).' });
@@ -171,15 +196,22 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, version
     const d = m.data && typeof m.data === 'object' && !Array.isArray(m.data) ? m.data : {};
     let item;
     try {
-      item = ctx.overlays.create({ template: d.template, canvas: d.canvas ?? undefined, slugBase: profileSlug, from: m.from });
+      // Following every profile: bound to the profile it was asked for (to every profile when
+      // it names none); else to this connection, which follows one.
+      item = ctx.overlays.create({
+        template: d.template, canvas: d.canvas ?? undefined, from: m.from,
+        slugBase: every ? (feed ? feed.slug || feed.id : undefined) : profileSlug,
+        ...(feed ? { profile: feed.id } : {}),
+      });
     } catch (err) {
       return answer(m, { ok: false, reason: String(err.message || 'It could not be made.').slice(0, 300) });
     }
     made.push(ctx.now());
     // Registered before the answer, so the hub lists it when the answer arrives.
     await register();
-    const list = resourcesOf(item, profileId);
-    const one = item.canvas ? list.find((r) => r.id === `${item.id}:${item.canvas}`) : undefined;
+    const list = resourcesFor([item], { every, profileId, profiles: profiles() });
+    const want = every ? (feed ? `${item.id}:${item.canvas}:${feed.id}`.slice(0, 100) : undefined) : `${item.id}:${item.canvas}`;
+    const one = item.canvas && want ? list.find((r) => r.id === want) : undefined;
     return answer(m, { ok: true, ...(one ? { resource: one } : { resources: list }) });
   }
 

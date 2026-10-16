@@ -139,6 +139,8 @@ test('two CTD Multi-Stream servers feed two shows: one on air with its viewers, 
   defer(t, () => one.close());
   const two = await startFakeMultistream();
   defer(t, () => two.close());
+  // One profile each (their tokens read every profile: the connection follows every one there is).
+  for (const ms of [one, two]) ms.profiles = ms.profiles.filter((p) => p.id === 'default');
   // The second server's destinations are all off air, without counts.
   two.status.destinations = two.status.destinations.map((d) => ({ ...d, live: false, phase: 'idle', down: false, message: null, viewers: null }));
   two.status.platforms = two.status.platforms.map((p) => ({ ...p, live: false, startedAt: null, viewers: null, error: null }));

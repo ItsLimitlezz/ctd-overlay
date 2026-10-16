@@ -4,7 +4,7 @@
 // template versions (upgrade, go back), and the More menu (rename, the key, delete).
 import * as api from '../api.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
-import { connectionChip, fedByForm, fedByWords } from '../streams.js';
+import { bindingName, connectionChip, fedByForm, fedByWords } from '../streams.js';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SLUG_HELP = 'Use lower-case letters, digits and dashes, starting with a letter or digit (63 at most).';
@@ -664,7 +664,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     } else {
       const saveFed = h('button.btn.primary', { type: 'button', disabled: true, onclick: () => saveFedBy() }, 'Save connections');
       const fedForm = fedByForm({ connections: data.health?.list, value: binding, legend: 'Connections it shows', onChange: () => { saveFed.disabled = !fedForm.changed(); } });
-      const nameOf = (id) => data.health?.list.find((c) => c.id === id)?.name || id;
+      const nameOf = (entry) => bindingName(data.health?.list, entry);
       async function saveFedBy() {
         const next = fedForm.value();
         await run(saveFed, async () => {

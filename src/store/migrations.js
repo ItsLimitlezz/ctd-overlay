@@ -28,4 +28,26 @@ export const migrations = [
       }
     },
   },
+  {
+    // A CTD Multi-Stream connection with a token for every profile followed one profile, the
+    // default one unless another was picked: one connection now follows every profile, each a
+    // stream of its own (06 §6.11), when its Profile setting is empty. One set to the default
+    // profile was set so before "Every profile" existed (the only way to name what it followed):
+    // it follows every profile too. Another profile picked stays picked; a token limited to one
+    // profile never reads this setting.
+    version: 3,
+    name: 'CTD Multi-Stream: every profile',
+    up(tx) {
+      for (let after = ''; ;) {
+        const page = tx.list('connections', { after, limit: 1000 });
+        for (const doc of page) {
+          if (doc.data.connector !== 'ctd-multistream' || doc.data.config?.profile !== 'default') continue;
+          const { profile: _p, ...config } = doc.data.config;
+          tx.put('connections', doc.id, { ...doc.data, config });
+        }
+        if (page.length < 1000) break;
+        after = page[page.length - 1].id;
+      }
+    },
+  },
 ];

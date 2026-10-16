@@ -17,6 +17,11 @@
 //   (once) is saved into the connection's secret field as if typed.
 // - Connections that share overlays with their service (CTD Multi-Stream's hub) get them through
 //   share.js; deleting or turning one off lets its definition undo what it registered (retire).
+// - A connection that follows several streams at its service (every CTD Multi-Stream profile)
+//   publishes each one's data as a feed of its own ("<connection>/<profile>", bus/owners.js):
+//   what is done to the connection's values (cleared, held, ranked as a relay, its chat purged)
+//   is done to its feeds' through the bus; the resource shows them as `feeds`, and the summary
+//   (GET /system/health) the profiles it follows, which feedsOf() gives bindings to check against.
 // - Nothing secret leaves it: not in answers, the audit log, health details or logs.
 import { randomBytes as cryptoRandom } from 'node:crypto';
 import { ConnectorError } from './errors.js';
@@ -26,6 +31,7 @@ import { createRecords, fieldsOf, withDefaults } from './records.js';
 import { isOAuthFlow } from './registry.js';
 import { ConnectionRunner, LIMITS } from './runner.js';
 import { createShare } from './share.js';
+import { profileOf } from '../bus/owners.js';
 
 // Where the v0 importer keeps Twitch and Kick credentials until a connector takes them (import/v0.js).
 const PENDING_CONNECTIONS = 'pending_connections';
@@ -142,7 +148,17 @@ export function createConnectorHost({
   // ---- a connection as the API shows it ------------------------------------------------------
   function resource(doc) {
     const r = runners.get(doc.id);
-    const mine = bus.stateOf(doc.id);
+    const everything = bus.connectionState(doc.id);
+    const mine = everything.filter((e) => e.owner === doc.id);
+    // The values each profile it follows sets (its feeds, bus/owners.js), profile by profile.
+    const byFeed = new Map();
+    for (const e of everything) {
+      if (e.owner === doc.id) continue;
+      const p = profileOf(e.owner);
+      if (!byFeed.has(p)) byFeed.set(p, []);
+      byFeed.get(p).push(e);
+    }
+    const feeds = [...byFeed].map(([profile, list]) => ({ profile, state: Object.fromEntries(list.map((e) => [e.key, e.value])), ...(list.some((e) => e.stale) ? { stale: list.filter((e) => e.stale).map((e) => e.key) } : {}) }));
     const def = registry.get(doc.data.connector);
     const out = outcomes.get(doc.id);
     const dev = devices.get(doc.id);
@@ -158,6 +174,7 @@ export function createConnectorHost({
       health: r ? r.health.view() : { status: doc.data.enabled ? 'connecting' : 'disabled', since: doc.data.updatedAt, warnings: [] },
       state: Object.fromEntries(mine.map((e) => [e.key, e.value])),
       ...(mine.some((e) => e.stale) ? { stale: mine.filter((e) => e.stale).map((e) => e.key) } : {}),
+      ...(feeds.length ? { feeds } : {}),
       ...(authorization ? { authorization } : {}),
       capabilities: def?.capabilities || [],
       overlays: overlays?.fedBy(doc.id) || [],
@@ -165,6 +182,22 @@ export function createConnectorHost({
       ...(r?.view().deliveries ? { deliveries: r.view().deliveries } : {}),
     };
   }
+  // What a running connection says it follows at its service (its info): { every, profile?,
+  // profiles: [{ id, name, color?, status, startedAt? }] }. every: it follows every profile, each a
+  // feed of its own (src.profile); else profile is the one it follows, if any.
+  function profilesInfo(r) {
+    const info = r?.info || {};
+    const view = (p) => (p && typeof p === 'object' && typeof p.id === 'string' && p.id ? {
+      id: p.id, name: typeof p.name === 'string' && p.name ? p.name : p.id,
+      ...(typeof p.color === 'string' ? { color: p.color } : {}),
+      status: typeof p.status === 'string' ? p.status : 'offline',
+      ...(typeof p.startedAt === 'string' ? { startedAt: p.startedAt } : {}),
+    } : undefined);
+    if (info.everyProfile === true) return { every: true, profiles: (Array.isArray(info.profiles) ? info.profiles : []).map(view).filter(Boolean) };
+    const one = info.profile && typeof info.profile === 'object' ? info.profile : undefined;
+    return { every: false, ...(one ? { profile: one } : {}), profiles: view(one) ? [view(one)] : [] };
+  }
+
   // A pairing as the resource and the authorize answer show it: the code and where to approve it,
   // never what it is polled with.
   const pairingView = (p, status) => ({ flow: 'pairing', ...(status ? { status } : {}), code: p.code, ...(p.approveUrl ? { approveUrl: p.approveUrl } : {}), expiresAt: new Date(p.expiresAt).toISOString(), intervalS: p.intervalS });
@@ -260,18 +293,29 @@ export function createConnectorHost({
       return [...records.all()].map((doc) => {
         const r = runners.get(doc.id);
         const h = r ? r.health.view() : { status: doc.data.enabled ? 'connecting' : 'disabled' };
-        const mine = bus.stateOf(doc.id);
+        const mine = bus.connectionState(doc.id);
         const counts = mine.filter((e) => /^viewers\.[a-z0-9-]+$/.test(e.key) && typeof e.value === 'number');
-        // The stream it follows at its service (a CTD Multi-Stream profile: name, colour, live or not).
-        const profile = r?.info?.profile;
+        // The stream it follows at its service (a CTD Multi-Stream profile: name, colour, live or
+        // not), or the streams: every profile, each a feed overlays can be bound to on its own.
+        const { profile, profiles, every } = profilesInfo(r);
         return {
           id: doc.id, name: doc.data.name, connector: doc.data.connector, status: h.status,
           ...(h.detail ? { detail: h.detail } : {}), ...(h.since ? { since: h.since } : {}),
           ...(counts.length ? { viewers: counts.reduce((n, e) => n + e.value, 0) } : {}),
           ...(mine.some((e) => e.stale) ? { stale: true } : {}),
-          ...(profile && typeof profile === 'object' ? { profile } : {}),
+          ...(profile ? { profile } : {}),
+          ...(profiles.length ? { profiles } : {}),
+          ...(every ? { everyProfile: true } : {}),
         };
       });
+    },
+
+    // The profiles a connection follows as feeds of its own (every profile of a CTD Multi-Stream
+    // token that reads them all), by id: what "<connection>/<profile>" bindings may name. Empty for
+    // a connection that follows one stream, or that isn't running.
+    feedsOf(id) {
+      const { every, profiles } = profilesInfo(runners.get(id));
+      return every ? profiles.map((p) => p.id) : [];
     },
 
     create(body, { who, ip } = {}) {

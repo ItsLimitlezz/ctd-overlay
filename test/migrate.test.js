@@ -69,10 +69,27 @@ test('migration 2: overlays made before connections existed take every connectio
   store.put('overlays', 'ovl_A', { slug: 'a', connections: [] });
   store.put('overlays', 'ovl_B', { slug: 'b' });
   store.put('overlays', 'ovl_C', { slug: 'c', connections: ['con_x'] });
-  const out = migrate(store, migrations, { log });
+  const out = migrate(store, migrations.slice(0, 2), { log });
   assert.deepEqual([out.from, out.to], [1, 2]);
   assert.deepEqual(['ovl_A', 'ovl_B', 'ovl_C'].map((id) => store.get('overlays', id).data.connections), ['all', 'all', ['con_x']]);
   assert.equal(store.get('overlays', 'ovl_A').data.slug, 'a');
+});
+
+test('migration 3: a CTD Multi-Stream connection set to the default profile follows every profile; another profile picked, or another connector, stays', (t) => {
+  const { store, log } = open(t, tempDir(t));
+  migrate(store, migrations.slice(0, 2), { log });
+  const base = { name: 'Multi-Stream', enabled: true, secretFields: ['token'] };
+  store.put('connections', 'con_A', { ...base, connector: 'ctd-multistream', config: { baseUrl: 'http://192.168.1.50:30080/api/v1', profile: 'default', chat: true } });
+  store.put('connections', 'con_B', { ...base, connector: 'ctd-multistream', config: { baseUrl: 'http://192.168.1.50:30080/api/v1', profile: 'p-dprtmnt' } });
+  store.put('connections', 'con_C', { ...base, connector: 'ctd-multistream', config: { baseUrl: 'http://192.168.1.50:30080/api/v1' } });
+  store.put('connections', 'con_D', { ...base, connector: 'other', config: { profile: 'default' } });
+  const out = migrate(store, migrations, { log });
+  assert.deepEqual([out.from, out.to], [2, 3]);
+  assert.deepEqual(store.get('connections', 'con_A').data.config, { baseUrl: 'http://192.168.1.50:30080/api/v1', chat: true });
+  assert.equal(store.get('connections', 'con_A').data.name, 'Multi-Stream');
+  assert.equal(store.get('connections', 'con_B').data.config.profile, 'p-dprtmnt');
+  assert.equal(store.get('connections', 'con_C').rev, 1, 'nothing to change');
+  assert.equal(store.get('connections', 'con_D').data.config.profile, 'default');
 });
 
 test('the shipped migrations apply cleanly and create the installation record', (t) => {
