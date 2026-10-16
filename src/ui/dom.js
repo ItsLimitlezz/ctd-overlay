@@ -331,7 +331,9 @@ export function preview(url, { width = 1920, height = 1080, label, eager, title 
   };
   const load = () => {
     box.querySelector('.tap')?.remove();
-    frame = h('iframe', { src, title, width, height, loading: 'lazy', tabindex: '-1', referrerpolicy: 'same-origin' });
+    // Not loading="lazy": this runs only when the preview should load (H13 decides), and Safari
+    // never loads a lazy frame drawn through a scale() transform, leaving the preview blank.
+    frame = h('iframe', { src, title, width, height, tabindex: '-1', referrerpolicy: 'same-origin' });
     frame.style.width = `${width}px`;
     frame.style.height = `${height}px`;
     box.append(frame);
