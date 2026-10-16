@@ -8,11 +8,9 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Linux only for now: the platform ships as a Linux container (TrueNAS). macOS and Windows
+    # come back when there are builds for them (PLAN step 23).
+    runs-on: ubuntu-latest
     timeout-minutes: 20 # a hung test fails the job instead of holding a runner for 6 h
     steps:
       - uses: actions/checkout@v4
@@ -20,8 +18,6 @@ jobs:
         with:
           node-version: 24
       - run: node --version
-      # A real ffmpeg on one OS, so phone-video conversion (H12) is tested end to end somewhere;
-      # the others test without one, as many installs run.
-      - if: runner.os == 'Linux'
-        run: (command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)) && ffmpeg -version | head -1
+      # A real ffmpeg, so phone-video conversion (H12) is tested end to end.
+      - run: (command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)) && ffmpeg -version | head -1
       - run: npm test

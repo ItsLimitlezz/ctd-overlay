@@ -310,17 +310,29 @@ test('the look: field edges and placeholders read in both themes, the focus stop
   await signIn(page, 'juan', '/settings/appearance');
   await page.waitFor('document.querySelector("[data-view] input[placeholder]")', 10000);
   for (const theme of ['light', 'dark']) {
-    const ratios = await page.eval(`(() => {
+    // Two frames after the switch, and the placeholder read on a fresh copy of the field: Chrome
+    // on macOS keeps answering a drawn field's ::placeholder colour from before the switch (the
+    // light grey on the dark field), though it paints the new one.
+    const ratios = await page.eval(`(async () => {
       document.documentElement.dataset.theme = ${JSON.stringify(theme)};
+      void document.body.offsetHeight;
+      for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
       const rgb = (c) => (/rgba?\\(([^)]+)\\)/.exec(c)?.[1] || '0,0,0').split(/[ ,/]+/).filter(Boolean).map(Number);
       const lum = (c) => { const [r, g, b] = rgb(c).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
       const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
       const input = document.querySelector('[data-view] input[placeholder]');
-      const s = getComputedStyle(input);
+      const fresh = input.cloneNode();
+      fresh.removeAttribute('style');
+      fresh.value = '';
+      input.after(fresh);
+      const s = getComputedStyle(fresh);
+      const colours = { field: s.backgroundColor, edge: s.borderTopColor, placeholder: getComputedStyle(fresh, '::placeholder').color, page: getComputedStyle(document.body).backgroundColor, input: input.outerHTML.slice(0, 200) };
+      fresh.remove();
       return {
-        edgeOnField: ratio(s.borderTopColor, s.backgroundColor),
-        edgeOnPage: ratio(s.borderTopColor, getComputedStyle(document.body).backgroundColor),
-        placeholder: ratio(getComputedStyle(input, '::placeholder').color, s.backgroundColor),
+        edgeOnField: ratio(colours.edge, colours.field),
+        edgeOnPage: ratio(colours.edge, colours.page),
+        placeholder: ratio(colours.placeholder, colours.field),
+        colours,
       };
     })()`);
     assert.ok(ratios.edgeOnField >= 3 && ratios.edgeOnPage >= 3, `${theme}: field edges ${JSON.stringify(ratios)}`);
