@@ -418,10 +418,35 @@ each new release by itself.
   `https` URL that always serves the current package. Anything but `https` is refused, on every
   redirect hop too, and so is any hop to a private, loopback or link-local address unless the
   owner allows them (07 §7.11; `SKP_ALLOW_PRIVATE_DOWNLOADS`, 10 §10.5).
-- From a GitHub release the platform takes the attached `.skp`, else an attached `.zip`, else
-  the release's source zip (which works when `template.json` is at the repository's root). A
-  private repository needs a token with read access (`SKP_GITHUB_TOKEN`, 10 §10.5); it **MUST**
-  be sent to the GitHub API only, never to the hosts downloads are redirected to.
+- From a GitHub release the platform takes the attached file the operator chose (a release
+  file's download link, `github.com/<owner>/<name>/releases/download/<tag>/<file>`, names one),
+  else the file named like the one this source installed before with its version taken out
+  (`miami-or-bust-1.0.0.zip`, then `miami-or-bust-1.1.0.zip`), else the attached `.skp`, else an
+  attached `.zip`, else the release's source zip (which works when `template.json` is at the
+  repository's root).
+- A source **MAY** follow only the releases whose tag starts with a prefix (`overlay-v`), for a
+  repository that releases other things too: the operator gives it when following, or it comes
+  from the tag of the newest version already installed from that repository, else from the
+  first release the source installs (a bare `v` is no prefix). It then reads the repository's
+  newest releases and takes the newest published one (no draft, no pre-release) with the prefix.
+- A private repository needs a GitHub token with read access. The owner saves one in the admin
+  UI (Settings → Integrations → GitHub, by pasting a token or signing in with GitHub's device
+  flow; 07 §7.7), else the server's `SKP_GITHUB_TOKEN` (10 §10.5) is used; with neither, only
+  public repositories can be read. The token is used for every GitHub request a source, an
+  install or a release list makes, and it **MUST** be sent to the GitHub API only, never to the
+  hosts downloads are redirected to: a private release file is downloaded through the API (its
+  asset URL, `Accept: application/octet-stream`), which redirects to a signed link that gets no
+  `Authorization`.
+- When GitHub answers 404 (or a 403 that isn't its rate limit) for a repository or a release the
+  platform says so plainly, with `fix: "connect-github"` on the problem (03 §3.2) so a client can
+  link to where a token is given: "This repository is private or the GitHub token can't read it",
+  then why: no token (public repositories only), the saved token's account can't read it, or
+  the server's token can't. A repository that can be read but has no such release is "no
+  release". The rate limit says until when it lasts.
+- Before installing, a client **MAY** test a repository: whether the platform can read it, with
+  which token and as whom, and its newest releases with their `.skp` and `.zip` files
+  (`GET /api/v1/integrations/github/repos/<owner>/<name>/releases`), so the operator picks a
+  release and its file rather than typing a tag.
 - The platform checks each source on an interval (default hourly), using `ETag`s (or a URL's
   `Last-Modified`) so an unchanged release costs one small request. Downloads have the package
   limits of §4.1 and a time limit. A release that fails validation is not installed: the error

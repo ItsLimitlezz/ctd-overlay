@@ -5,7 +5,7 @@
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
 
-const SECRET_KEY = /pass(word|phrase)?|secret|token|authorization|cookie|credential|api[-_]?key|master[-_]?key|private[-_]?key|^key$/i;
+const SECRET_KEY = /pass(word|phrase)?|secret|token|authorization|cookie|credential|api[-_]?key|master[-_]?key|private[-_]?key|device[-_]?code|^key$/i;
 
 const SECRET_STRINGS = [
   [/\b(skp_(?:pat|ovl)_)[A-Za-z0-9]+/g, '$1[redacted]'],
@@ -14,7 +14,9 @@ const SECRET_STRINGS = [
   [/([?&](?:key|token|access_token|refresh_token|code|client_secret|code_verifier|device_code)=)[^&#\s"']+/gi, '$1[redacted]'],
   [/\b(ctd_pat_)[A-Za-z0-9_-]+/g, '$1[redacted]'], // CTD Multi-Stream API tokens (step 16b)
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]'],
-  [/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/g, '$1[redacted]'], // GitHub tokens (template sources)
+  // GitHub tokens (template sources, Settings → Integrations): ghp_ classic, github_pat_
+  // fine-grained, gho_ OAuth (the device sign-in), ghu_/ghs_/ghr_ app tokens.
+  [/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/g, '$1[redacted]'],
 ];
 
 export const REDACTED = '[redacted]';

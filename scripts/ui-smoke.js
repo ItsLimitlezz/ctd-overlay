@@ -21,7 +21,7 @@ import { fakeConnector } from '../test/fixtures/connectors/fake.js';
 import { startFakeMultistream } from '../test/fixtures/fake-multistream.mjs';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { phone: { type: 'boolean' }, shots: { type: 'string' }, wait: { type: 'string', default: '1500' } } });
-const routes = positionals.length ? positionals : ['/live', '/live?show=<show>', '/live?show=<show>&overlay=takeover', '/live?overlay=solo', '/overlays', '/overlays/takeover', '/overlays/solo?tab=settings', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/connections/<paired>', '/connections/<every>', '/media', '/settings'];
+const routes = positionals.length ? positionals : ['/live', '/live?show=<show>', '/live?show=<show>&overlay=takeover', '/live?overlay=solo', '/overlays', '/overlays/takeover', '/overlays/solo?tab=settings', '/templates', '/templates/com.dprtmnt.takeover', '/shows', '/connections', '/connections/new/ctd-multistream', '/connections/<fake>', '/connections/<paired>', '/connections/<every>', '/media', '/settings', '/settings/integrations'];
 
 const root = mkdtempSync(path.join(tmpdir(), 'skp-ui-'));
 // On the LAN, as on the NAS: SKP_HOSTS is the address the OBS plugin gets overlay URLs at.

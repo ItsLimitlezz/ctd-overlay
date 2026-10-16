@@ -264,6 +264,8 @@ legend { font-weight: 700; padding: 0 6px; }
 details.group { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: var(--gap); }
 details.group > summary { min-height: var(--tap); display: flex; align-items: center; padding: 0 var(--pad); font-weight: 700; cursor: pointer; }
 details.group > .group-body { padding: 0 var(--pad) var(--pad); }
+/* A "more about this" section in a card (how to make a token): its summary a finger wide. */
+details.more > summary { min-height: var(--tap); box-sizing: border-box; padding: 10px 0; cursor: pointer; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: var(--gap); }
 .inline-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
 .inline-form .field { margin-bottom: 0; flex: 1 1 180px; }

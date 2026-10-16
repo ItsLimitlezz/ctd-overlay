@@ -109,7 +109,8 @@ Precedence: **command-line flags > environment variables > `config.json` > defau
 | `SKP_LOG_LEVEL` | `info` | `debug`·`info`·`warn`·`error` |
 | `TZ` | system | Default timezone for new shows |
 | `SKP_TEMPLATE_CHECK_MINUTES` | `60` | How often template sources are checked (04 §4.13); `0` never, else 5–10080 |
-| `SKP_GITHUB_TOKEN` | — | Read access to private template repositories (environment only; 04 §4.13) |
+| `SKP_GITHUB_TOKEN` | — | Read access to private template repositories (environment only; 04 §4.13), used when no token is saved in Settings → Integrations → GitHub |
+| `SKP_GITHUB_CLIENT_ID` | — | A GitHub OAuth app's client ID, for **Sign in with GitHub** (the device flow; 07 §7.7), used when none is saved in the admin UI |
 | `SKP_ALLOW_PRIVATE_DOWNLOADS` | `false` | Let template downloads reach private and local addresses (07 §7.11) |
 | `SKP_AUDIT_DAYS` | `90` | How long the audit log keeps entries (07 §7.12), 1–3650 |
 | `SKP_HOSTS` | — | More names the platform answers to in `lan`/`public` mode, besides its addresses, host name and `SKP_PUBLIC_URL`: in a container, the host's LAN address and DNS name; on a machine, its own addresses are read as they change |

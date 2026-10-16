@@ -16,6 +16,7 @@ session cookie like any other client.
 | `dom.js` | Building blocks: `h()`, dialogs, menus, toasts, previews, time, polling. |
 | `schema-form.js` | The settings form generated from a template's schema (04 §4.3). |
 | `streams.js` | A stream's status in words (On air / Offline / Unknown, CTD Multi-Stream profiles, platforms, viewers, connections) and the "Fed by" form. |
+| `github.js` | GitHub for templates: which token is used (`usingText`), **Test** for a repository with its releases to pick from (`repoTest`), and `problemNotice(err)`, which links a problem whose `fix` is `"connect-github"` to Settings → Integrations. |
 | `pages/<section>.js` | One file per section; one exported function per route. `pages/live-overlay.js` is Live's overlay panel. |
 
 ## A page
@@ -80,7 +81,11 @@ link back) and show it in the page.
   `users:admin`, `system:admin`. Roles: viewer < operator < admin < owner (src/auth/roles.js).
 - **Copy (08 §8.8).** Name things as users know them ("Viewer count", "Title card"), never
   internals ("state key", "envelope", "rev"). Success says what changed ("Scene changed to BRB").
-  Errors are the problem's `detail` (`toast(err)` does this), which says what to do.
+  Errors are the problem's `detail` (`toast(err)` does this), which says what to do. A problem
+  with `fix: "connect-github"` (a private repository, a token that can't read it) also links to
+  `#/settings/integrations`: show it with `problemNotice(err)` from `github.js`.
+- **Secrets typed in.** A token or password field is `type="password"`, emptied after it is sent,
+  and what the server saved is never shown again (Settings → Integrations shows whose it is).
 - **Accessibility (WCAG 2.2 AA).** Every control has a label (`field(label, input)`, or text, or
   `aria-label`); state is not colour alone (a dot has a label); headings in order (one `h1` per
   page, from `pageHead`); dialogs from `dialog()`/`confirm()`/`prompt()` (focus handled).
@@ -176,6 +181,19 @@ A CTD Multi-Stream connection that follows every profile (`everyProfile` and `pr
 profile ("Multi-Stream · DPRTMNT (Live)"), saved as `"<connection id>/<profile id>"`; while the
 whole connection is ticked its profiles show ticked and "included", not changeable; a profile
 saved that it doesn't follow any more is kept and says so. `bindingName()` names an entry.
+
+## Integrations: GitHub (pages/settings.js, github.js)
+
+`#/settings/integrations` (whoever has `templates:write`): the GitHub card says which token template
+installs and update checks use ("Connected as @login · saved <date>", "Using SKP_GITHUB_TOKEN from
+the server's environment", "Not connected: public repositories only"). The owner (`system:admin`)
+saves a token (a password field, checked by the server with GitHub, never shown again), replaces
+it, or disconnects (in a menu, behind a confirmation); with an OAuth app's client ID saved (or
+SKP_GITHUB_CLIENT_ID) also **Sign in with GitHub**: the code, the link to github.com/login/device,
+a countdown, polled every 2 s. **Test a repository** reads a repository's releases without
+installing. The Templates page's install dialog has the same **Test** beside its GitHub field: a
+release (newest published one chosen) and its file (chosen when there is one) install by its
+download link, and "Install its new releases by themselves" follows the repository after.
 
 ## Connections (pages/connections.js)
 

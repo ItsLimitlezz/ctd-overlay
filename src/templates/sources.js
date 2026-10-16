@@ -13,13 +13,18 @@
 // run (04 §4.10). The rest wait for the operator (`skp overlay upgrade`), and the log says so.
 // "off" only installs. Every install and upgrade it makes is in the audit log.
 //
-// From a GitHub release it takes the attached .skp (else a .zip), or failing both the release's
-// source zip, which works for a repository with template.json at its root.
+// From a GitHub release it takes the attached file named (a release's download link names one),
+// else the one named like the file this source installed before (miami-or-bust-1.0.0.zip, then
+// miami-or-bust-1.1.0.zip), else the attached .skp (else a .zip), or failing all of them the
+// release's source zip, which works for a repository with template.json at its root. A source
+// whose releases carry a tag prefix (overlay-v1.0.0: "overlay-v") follows only releases with
+// that prefix, so a repository that releases other things too can be followed.
 //
 // Trust: what a source installs is code from whoever controls it (04 §4.1). The first release
 // fixes the template id a source may install; a later one with another id is refused, so a
-// repository can't take over another template's overlays. A token (SKP_GITHUB_TOKEN, for private
-// repositories) is sent to api.github.com only, never to a host a download is redirected to.
+// repository can't take over another template's overlays. A GitHub token (the one saved in
+// Settings → Integrations, else SKP_GITHUB_TOKEN; for private repositories) is sent to
+// api.github.com only, never to a host a download is redirected to.
 import { randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { createWriteStream, rmSync } from 'node:fs';
@@ -46,17 +51,46 @@ const API = 'https://api.github.com';
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const TAG = /^[^\s~^:?*[\\\u0000-\u001f\u007f]{1,128}$/; // eslint-disable-line no-control-regex
+const ASSET = /^[^/\\\u0000-\u001f\u007f]{1,255}$/; // eslint-disable-line no-control-regex
+// Where an operator gives the platform a GitHub token (the admin UI's route, 08).
+export const CONNECT_GITHUB = 'Settings → Integrations → GitHub';
 
+// fix: what the operator can do about it, for a client to offer ("connect-github": Settings →
+// Integrations → GitHub).
 export class SourceError extends Error {
-  constructor(message, code) {
+  constructor(message, code, fix) {
     super(message);
     this.name = 'SourceError';
     this.code = code;
+    if (fix) this.fix = fix;
   }
 }
 
+// Who GitHub is asked as: { token, from: 'saved' | 'env', login? } or { from: 'none' }. github: a
+// function answering that (templates/github.js: the token saved in Settings → Integrations first,
+// then SKP_GITHUB_TOKEN); token: a token as it is (SKP_GITHUB_TOKEN), when there is no github.
+export function authOf({ github, token } = {}) {
+  const a = typeof github === 'function' ? github() : undefined;
+  if (a?.token) return a;
+  return token ? { token, from: 'env' } : { from: 'none' };
+}
+
+// A release tag's prefix before its version ("overlay-v1.0.0" → "overlay-v"), when it says more
+// than "v": the releases a source follows. Undefined for "v1.0.0", "1.0.0" or no version.
+export function tagPrefixOf(tag) {
+  const m = /^(.*?)\d+\.\d+/.exec(String(tag ?? ''));
+  return m && !/^v?$/i.test(m[1]) ? m[1] : undefined;
+}
+
+// A release file's name with its version taken out ("miami-or-bust-1.0.0.zip" →
+// "miami-or-bust-*.zip"): how a later release's file is recognised.
+export const assetPattern = (name) => String(name).replace(/v?\d+(?:\.\d+)+/g, '*');
+
 // "owner/repo", "owner/repo@tag", "github:owner/repo[@tag]" or a github.com repository or release
-// URL → { kind: 'github', repo, tag? }; any other https URL → { kind: 'url', url }.
+// URL → { kind: 'github', repo, tag? }; a release file's download link
+// (github.com/owner/repo/releases/download/<tag>/<file>) → { kind: 'github', repo, tag, asset },
+// which works for a private repository too (through the API, with the token); any other https
+// URL → { kind: 'url', url }.
 export function parseSource(input) {
   const s = String(input ?? '').trim();
   if (!s.includes('://')) {
@@ -70,11 +104,17 @@ export function parseSource(input) {
   let url;
   try { url = new URL(s); } catch { throw new SourceError(`"${s}" is not a GitHub repository (owner/name) or an https URL.`, 'bad-source'); }
   if (url.protocol !== 'https:') throw new SourceError('Only https URLs are accepted: a package is code, and must not be changed on the way.', 'not-https');
-  if (url.username || url.password) throw new SourceError('Put no credentials in the URL; for a private GitHub repository set SKP_GITHUB_TOKEN.', 'bad-source');
+  if (url.username || url.password) throw new SourceError(`Put no credentials in the URL; for a private GitHub repository, connect GitHub (${CONNECT_GITHUB}).`, 'bad-source', 'connect-github');
   if (url.hostname === 'github.com' && !url.search && !url.hash) {
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts.length === 2) return parseSource(`${parts[0]}/${parts[1]}`);
     if (parts.length >= 5 && parts[2] === 'releases' && parts[3] === 'tag') return parseSource(`${parts[0]}/${parts[1]}@${decodeURIComponent(parts.slice(4).join('/'))}`);
+    if (parts.length >= 6 && parts[2] === 'releases' && parts[3] === 'download') {
+      let asset;
+      try { asset = decodeURIComponent(parts.at(-1)); } catch { asset = ''; }
+      if (!ASSET.test(asset)) throw new SourceError(`"${s}" names no release file.`, 'bad-source');
+      return { ...parseSource(`${parts[0]}/${parts[1]}@${decodeURIComponent(parts.slice(4, -1).join('/'))}`), asset };
+    }
   }
   return { kind: 'url', url: url.href };
 }
@@ -114,8 +154,8 @@ export const defaultLookup = (host) => lookup(host, { all: true });
 
 // One request, following redirects by hand: every hop must be https and public (checkHost), and
 // a token goes to api.github.com only (a release download redirects to a storage host with its
-// own signature).
-async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE_LIMITS, net }) {
+// own signature). method and body: a POST (GitHub's device sign-in), which is never redirected.
+export async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE_LIMITS, net, method, body }) {
   let current = url;
   for (let hop = 0; hop <= max.redirects; hop++) {
     let target;
@@ -126,7 +166,7 @@ async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE
     if (token && target.hostname === 'api.github.com') h.authorization = `Bearer ${token}`;
     let res;
     try {
-      res = await fetchFn(target.href, { headers: h, redirect: 'manual', signal });
+      res = await fetchFn(target.href, { headers: h, redirect: 'manual', signal, ...(method ? { method } : {}), ...(body !== undefined ? { body } : {}) });
     } catch (err) {
       if (err?.code === 'EPRIVATE') throw new SourceError(`${err.message}; downloads go to the public internet only, unless the owner sets SKP_ALLOW_PRIVATE_DOWNLOADS=true.`, 'private-address');
       throw failure(err, signal, `${target.host} could not be reached`, 'unreachable');
@@ -134,6 +174,7 @@ async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       const location = res.headers.get('location');
       await res.body?.cancel().catch(() => {});
+      if (method && method !== 'GET') throw new SourceError(`${target.host} redirected a ${method}; it isn't followed.`, 'bad-response');
       if (!location) throw new SourceError(`${target.host} redirected without saying where.`, 'bad-response');
       current = new URL(location, target).href;
       continue;
@@ -143,10 +184,10 @@ async function request(fetchFn, url, { headers = {}, token, signal, max = SOURCE
   throw new SourceError(`More than ${max.redirects} redirects.`, 'bad-response');
 }
 
-async function readJson(res, signal, max) {
+export async function readJson(res, signal, max, bytes = max.apiBytes) {
   let text;
   try {
-    text = await readLimited(res, max.apiBytes);
+    text = await readLimited(res, bytes);
   } catch (err) {
     throw failure(err, signal, 'GitHub\'s answer was cut off', 'unreachable');
   }
@@ -176,13 +217,68 @@ async function readLimited(res, max) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// The release a GitHub source points at (its tag, or the latest published one): { unchanged }
-// when the ETag says nothing changed, else { tag, etag, download: { name, url, size, accept } }.
-async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURCE_LIMITS, net }) {
+const GITHUB_JSON = Object.freeze({ accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' });
+// A list of releases is bigger than one release (each carries its notes).
+const LIST_BYTES = (max) => max.apiBytes * 4;
+
+// A failed answer from GitHub's API, in words that say what to do. A 404 (or a 403 that isn't
+// the rate limit) on a release is either a release that isn't there or a repository this token
+// (or no token) can't see: GitHub answers the same for a private repository as for none. whatRelease:
+// the release asked for ('release "v1.0.0"'); then the repository itself is asked for, and if it
+// can be read, the release is what's missing.
+async function githubProblem(fetchFn, res, { repo, auth, whatRelease, signal, max, net }) {
+  await res.body?.cancel().catch(() => {});
+  if ((res.status === 403 || res.status === 429) && res.headers.get('x-ratelimit-remaining') === '0') {
+    const reset = Number(res.headers.get('x-ratelimit-reset'));
+    const until = reset ? ` until ${new Date(reset * 1000).toISOString()}` : ' for now';
+    return auth.token
+      ? new SourceError(`GitHub's limit on requests from this address is used up${until}. Try again then.`, 'rate-limited')
+      : new SourceError(`GitHub's limit on requests from this address is used up${until}. Connecting GitHub (${CONNECT_GITHUB}) raises it.`, 'rate-limited', 'connect-github');
+  }
+  if (res.status === 401) {
+    return new SourceError(auth.from === 'saved'
+      ? `GitHub refused the token saved for @${auth.login || 'your account'}: it expired or was revoked. Connect GitHub again (${CONNECT_GITHUB}).`
+      : `GitHub refused the token in the server's environment (SKP_GITHUB_TOKEN): it expired or was revoked. Connect GitHub (${CONNECT_GITHUB}) to use another one.`, 'unauthorized', 'connect-github');
+  }
+  if (res.status === 404 || res.status === 403) {
+    if (whatRelease && await readable(fetchFn, repo, { auth, signal, max, net })) return new SourceError(`${repo} has no ${whatRelease}.`, 'no-release');
+    return noAccess(repo, auth);
+  }
+  return new SourceError(`GitHub answered ${res.status}.`, 'bad-response');
+}
+
+// "This repository is private or the GitHub token can't read it", and why, for whoever asks as auth.
+export function noAccess(repo, auth) {
+  const why = auth.from === 'saved'
+    ? `The token for @${auth.login || 'your account'} can't read ${repo}: give it access to this repository (or check the name).`
+    : auth.from === 'env'
+      ? `The token in the server's environment (SKP_GITHUB_TOKEN) can't read ${repo}: give it access to this repository, or connect GitHub (${CONNECT_GITHUB}) with a token that can.`
+      : `Without a token only public repositories can be read, and ${repo} isn't one (or doesn't exist). Connect GitHub (${CONNECT_GITHUB}) with a token that can read it.`;
+  return new SourceError(`This repository is private or the GitHub token can't read it. ${why}`, 'no-access', 'connect-github');
+}
+
+async function readable(fetchFn, repo, { auth, signal, max, net }) {
+  try {
+    const res = await request(fetchFn, `${API}/repos/${repo}`, { headers: GITHUB_JSON, token: auth.token, signal: anySignal(signal, max.apiMs), max, net });
+    await res.body?.cancel().catch(() => {});
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// The release a GitHub source points at: its tag; else, with a tag prefix, the newest published
+// release whose tag has it; else the latest published one. { unchanged } when the ETag says
+// nothing changed, else { tag, etag, download: { name, url, size, accept } }. The file: the one
+// source.asset names, else one named like `pattern` (assetPattern of what was installed before),
+// else the .skp, else a .zip, else the source zip.
+async function githubRelease(fetchFn, source, { auth = { from: 'none' }, etag, pattern, tagPrefix, signal, max = SOURCE_LIMITS, net }) {
+  const token = auth.token;
+  const listed = source.tag === undefined && tagPrefix;
   const url = source.tag !== undefined
     ? `${API}/repos/${source.repo}/releases/tags/${encodeURIComponent(source.tag)}`
-    : `${API}/repos/${source.repo}/releases/latest`;
-  const headers = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' };
+    : listed ? `${API}/repos/${source.repo}/releases?per_page=30` : `${API}/repos/${source.repo}/releases/latest`;
+  const headers = { ...GITHUB_JSON };
   if (etag) headers['if-none-match'] = etag;
   const deadline = anySignal(signal, max.apiMs);
   const res = await request(fetchFn, url, { headers, token, signal: deadline, max, net });
@@ -190,28 +286,32 @@ async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURC
     await res.body?.cancel().catch(() => {});
     return { unchanged: true, etag };
   }
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    if (res.status === 404) {
-      throw new SourceError(`${source.repo} has no ${source.tag !== undefined ? `release "${source.tag}"` : 'published release'}${token ? '' : ', or it is private (set SKP_GITHUB_TOKEN to a token that can read it)'}.`, 'no-release');
-    }
-    if (res.status === 401) throw new SourceError('GitHub refused SKP_GITHUB_TOKEN (expired, or not allowed to read this repository).', 'unauthorized');
-    if ((res.status === 403 || res.status === 429) && res.headers.get('x-ratelimit-remaining') === '0') {
-      const reset = Number(res.headers.get('x-ratelimit-reset'));
-      const until = reset ? ` until ${new Date(reset * 1000).toISOString()}` : '';
-      throw new SourceError(`GitHub's limit on requests from this address is used up${until}${token ? '' : '; SKP_GITHUB_TOKEN raises it'}.`, 'rate-limited');
-    }
-    throw new SourceError(`GitHub answered ${res.status}.`, 'bad-response');
+  const whatRelease = source.tag !== undefined ? `release "${source.tag}"` : 'published release';
+  if (!res.ok) throw await githubProblem(fetchFn, res, { repo: source.repo, auth, whatRelease, signal, max, net });
+  let body;
+  if (listed) {
+    const list = await readJson(res, deadline, max, LIST_BYTES(max));
+    if (!Array.isArray(list)) throw new SourceError('GitHub\'s answer has no releases in it.', 'bad-response');
+    body = list.find((r) => r && !r.draft && !r.prerelease && typeof r.tag_name === 'string' && r.tag_name.startsWith(tagPrefix));
+    if (!body) throw new SourceError(`${source.repo} has no published release whose tag starts with "${tagPrefix}".`, 'no-release');
+  } else {
+    body = await readJson(res, deadline, max);
   }
-  const body = await readJson(res, deadline, max);
   if (!body || typeof body !== 'object' || typeof body.tag_name !== 'string') throw new SourceError('GitHub\'s answer has no release in it.', 'bad-response');
   const assets = (Array.isArray(body.assets) ? body.assets : []).filter((a) => a && typeof a.name === 'string');
-  const ending = (ext) => assets.filter((a) => a.name.toLowerCase().endsWith(ext)).sort((a, b) => (a.name < b.name ? -1 : 1))[0];
-  const asset = ending('.skp') || ending('.zip');
+  const packages = assets.filter((a) => /\.(skp|zip)$/i.test(a.name)).sort((a, b) => (a.name < b.name ? -1 : 1));
+  const ending = (ext) => packages.find((a) => a.name.toLowerCase().endsWith(ext));
+  let asset;
+  if (source.asset !== undefined) {
+    asset = assets.find((a) => a.name === source.asset);
+    if (!asset) throw new SourceError(`Release "${body.tag_name}" of ${source.repo} has no file named "${source.asset}".`, 'no-release');
+  } else {
+    asset = (pattern && packages.find((a) => assetPattern(a.name) === pattern)) || ending('.skp') || ending('.zip');
+  }
   let download;
   if (asset) {
-    // With a token, the asset's API URL (which works for private repositories too); without one,
-    // its public download link.
+    // With a token, the asset's API URL (which works for private repositories too, and redirects
+    // to a signed link the token never goes to); without one, its public download link.
     const assetUrl = token ? asset.url : asset.browser_download_url;
     if (typeof assetUrl !== 'string') throw new SourceError('GitHub\'s answer has no link for the release\'s package.', 'bad-response');
     download = { name: asset.name, url: assetUrl, size: Number(asset.size) || undefined, accept: token ? 'application/octet-stream' : undefined };
@@ -220,6 +320,40 @@ async function githubRelease(fetchFn, source, { token, etag, signal, max = SOURC
     download = { name: 'source zip', url: body.zipball_url };
   }
   return { tag: body.tag_name, etag: res.headers.get('etag') || undefined, download };
+}
+
+// A repository's releases, newest first, for choosing one to install (and a check that the token
+// can read it): { repo, private, releases: [{ tag, name, publishedAt, prerelease, draft,
+// assets: [{ name, size }] }] } (the first `limit`; assets: the .skp and .zip files). Throws the
+// clear "private, or the token can't read it" for a repository it can't see.
+export async function githubReleases(input, { auth = { from: 'none' }, fetch, lookup: lookupFn = defaultLookup, allowPrivate = false, signal, limits, limit = 30 } = {}) {
+  const fetchFn = fetch || pinnedFetch({ lookup: lookupFn, allowPrivate });
+  const max = { ...SOURCE_LIMITS, ...limits };
+  const net = { lookup: lookupFn, allowPrivate };
+  const source = typeof input === 'string' ? parseSource(input) : input;
+  if (source.kind !== 'github') throw new SourceError('That is a link, not a GitHub repository (owner/name).', 'bad-source');
+  const deadline = anySignal(signal, max.apiMs);
+  const info = await request(fetchFn, `${API}/repos/${source.repo}`, { headers: GITHUB_JSON, token: auth.token, signal: deadline, max, net });
+  if (!info.ok) throw await githubProblem(fetchFn, info, { repo: source.repo, auth, signal, max, net });
+  const meta = await readJson(info, deadline, max);
+  const res = await request(fetchFn, `${API}/repos/${source.repo}/releases?per_page=${limit}`, { headers: GITHUB_JSON, token: auth.token, signal: deadline, max, net });
+  if (!res.ok) throw await githubProblem(fetchFn, res, { repo: source.repo, auth, signal, max, net });
+  const list = await readJson(res, deadline, max, LIST_BYTES(max));
+  if (!Array.isArray(list)) throw new SourceError('GitHub\'s answer has no releases in it.', 'bad-response');
+  const text = (v) => (typeof v === 'string' ? v : undefined);
+  const releases = list.filter((r) => r && typeof r.tag_name === 'string').map((r) => ({
+    tag: r.tag_name,
+    name: text(r.name) || r.tag_name,
+    publishedAt: text(r.published_at) || text(r.created_at) || null,
+    prerelease: Boolean(r.prerelease),
+    draft: Boolean(r.draft),
+    assets: (Array.isArray(r.assets) ? r.assets : []).filter((a) => a && typeof a.name === 'string' && /\.(skp|zip)$/i.test(a.name))
+      .map((a) => ({ name: a.name, size: Number(a.size) || 0 })),
+  }));
+  // Newest first: a draft (not published yet) on top, as GitHub lists it.
+  const when = (r) => (r.draft ? Number.MAX_SAFE_INTEGER : Date.parse(r.publishedAt) || 0);
+  releases.sort((a, b) => when(b) - when(a));
+  return { repo: typeof meta?.full_name === 'string' ? meta.full_name : source.repo, private: Boolean(meta?.private), releases };
 }
 
 // Downloads to a file in dir, refusing more than the limit: { file, size, etag, lastModified },
@@ -264,7 +398,7 @@ async function download(fetchFn, url, dir, { token, accept, etag, lastModified, 
 }
 
 // A signal that aborts with `signal` or after ms.
-function anySignal(signal, ms) {
+export function anySignal(signal, ms) {
   const timeout = AbortSignal.timeout(ms);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
@@ -276,18 +410,19 @@ function tooLarge(rel, max) {
 }
 
 // Fetches one package from a source, once, for `skp template install <source>`: { file, origin,
-// label } (the caller installs it, then removes the file). allowPrivate: the owner's
-// SKP_ALLOW_PRIVATE_DOWNLOADS. lookup and limits: test hooks.
-export async function fetchPackage(input, { dir, token, fetch, signal, limits, lookup: lookupFn = defaultLookup, allowPrivate = false } = {}) {
+// label } (the caller installs it, then removes the file). github / token: who GitHub is asked as
+// (authOf). allowPrivate: the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. lookup and limits: test hooks.
+export async function fetchPackage(input, { dir, github, token, fetch, signal, limits, lookup: lookupFn = defaultLookup, allowPrivate = false } = {}) {
   // The default connects only to the address it checked (net.js pinnedFetch).
   const fetchFn = fetch || pinnedFetch({ lookup: lookupFn, allowPrivate });
   const max = { ...SOURCE_LIMITS, ...limits };
   const net = { lookup: lookupFn, allowPrivate };
   const source = typeof input === 'string' ? parseSource(input) : input;
   if (source.kind === 'github') {
-    const rel = await githubRelease(fetchFn, source, { token, signal, max, net });
+    const auth = authOf({ github, token });
+    const rel = await githubRelease(fetchFn, source, { auth, signal, max, net });
     tooLarge(rel, max);
-    const got = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal, max, net });
+    const got = await download(fetchFn, rel.download.url, dir, { token: auth.token, accept: rel.download.accept, signal, max, net });
     return { file: got.file, origin: { kind: 'github', repo: source.repo, tag: rel.tag, asset: rel.download.name }, label: `${source.repo}@${rel.tag}`, tag: rel.tag, etag: rel.etag };
   }
   const got = await download(fetchFn, source.url, dir, { signal, max, net });
@@ -299,9 +434,10 @@ export async function fetchPackage(input, { dir, token, fetch, signal, limits, l
 const LASTING = new Set(['invalid', 'wrong-template', 'id-taken', 'reserved-id', 'version-exists', 'too-large']);
 
 // The sources the platform follows. record(action, details) writes the audit log. onAir(overlayId):
-// whether the overlay's show is live (an upgrade reloads its pages, so it waits). allowPrivate:
-// the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. limits and lookup: test hooks.
-export function createTemplateSources({ store, templates, overlays, log, token, fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
+// whether the overlay's show is live (an upgrade reloads its pages, so it waits). github / token:
+// who GitHub is asked as, read at every check (authOf: a token saved meanwhile is used at the
+// next one). allowPrivate: the owner's SKP_ALLOW_PRIVATE_DOWNLOADS. limits and lookup: test hooks.
+export function createTemplateSources({ store, templates, overlays, log, github, token, fetch, record = () => {}, limits, onAir = () => false, lookup: lookupFn = defaultLookup, allowPrivate = false }) {
   const fetchFn = fetch || pinnedFetch({ lookup: lookupFn, allowPrivate });
   const max = { minuteMs: 60000, ...SOURCE_LIMITS, ...limits };
   const net = { lookup: lookupFn, allowPrivate };
@@ -329,14 +465,31 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
   }
 
   // claim: a template id this source may take over although it is installed from elsewhere (the
-  // operator's own choice: `follow … --template <id>`).
-  function add(input, { autoUpgrade = 'safe', actor = 'cli', claim } = {}) {
+  // operator's own choice: `follow … --template <id>`). tagPrefix: follow only releases whose tag
+  // starts with it ("overlay-v"); left out, it comes from the newest version already installed
+  // from this repository (installed from overlay-v1.0.0: "overlay-v"), else from the first
+  // release this source installs. Its file's name, without the version, is remembered the same
+  // way, for picking the file of later releases.
+  function add(input, { autoUpgrade = 'safe', actor = 'cli', claim, tagPrefix } = {}) {
     if (!AUTO_UPGRADE.includes(autoUpgrade)) throw new SourceError(`autoUpgrade must be one of ${AUTO_UPGRADE.join(', ')}.`, 'bad-option');
     if (claim !== undefined && (typeof claim !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+){2,}$/.test(claim))) throw new SourceError(`"${claim}" is not a template id.`, 'bad-option');
+    if (tagPrefix !== undefined && (typeof tagPrefix !== 'string' || !TAG.test(tagPrefix))) throw new SourceError('tagPrefix is the start of a release tag, like "overlay-v".', 'bad-option');
     const source = parseSource(input);
     const label = describeSource(source);
     if (find(label)) throw new SourceError(`${label} is already followed.`, 'exists');
-    return store.put(COLLECTION, newId('src'), { label, ...source, autoUpgrade, ...(claim ? { claim } : {}), addedAt: new Date().toISOString(), actor });
+    const { asset, ...where } = source;
+    const known = {};
+    if (source.kind === 'github') {
+      if (asset !== undefined) known.assetPattern = assetPattern(asset);
+      const before = templates.list().filter((t) => t.receipt?.source?.kind === 'github' && t.receipt.source.repo === source.repo)
+        .sort((a, b) => compareVersions(b.version, a.version))[0]?.receipt.source;
+      if (source.tag === undefined) {
+        const prefix = tagPrefix || tagPrefixOf(before?.tag);
+        if (prefix) known.tagPrefix = prefix;
+      }
+      if (!known.assetPattern && before?.asset && before.asset !== 'source zip') known.assetPattern = assetPattern(before.asset);
+    }
+    return store.put(COLLECTION, newId('src'), { label, ...where, ...(asset !== undefined ? { asset } : {}), ...known, autoUpgrade, ...(claim ? { claim } : {}), addedAt: new Date().toISOString(), actor });
   }
 
   function remove(ref) {
@@ -422,15 +575,20 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       let origin;
       let label;
       if (d.kind === 'github') {
-        const rel = await githubRelease(fetchFn, d, { token, etag: known.etag, signal: stopping.signal, max, net });
+        const auth = authOf({ github, token });
+        const rel = await githubRelease(fetchFn, d, { auth, etag: known.etag, pattern: d.assetPattern, tagPrefix: d.tagPrefix, signal: stopping.signal, max, net });
         if (rel.unchanged || (!force && rel.tag === known.release && (d.version || d.failed))) {
           if (rel.etag && !d.failed) update(doc, { etag: rel.etag });
           return await unchanged();
         }
-        seen = { release: rel.tag, etag: rel.etag }; // `tag` is the one a source may pin
+        // `tag` is the one a source may pin; the tag prefix and the file's name, learnt from the
+        // first release, pick the releases and files after it.
+        seen = { release: rel.tag, etag: rel.etag };
+        if (d.tag === undefined && !d.tagPrefix && tagPrefixOf(rel.tag)) seen.tagPrefix = tagPrefixOf(rel.tag);
+        if (!d.assetPattern && rel.download.name !== 'source zip') seen.assetPattern = assetPattern(rel.download.name);
         result.tag = rel.tag;
         tooLarge(rel, max);
-        ({ file } = await download(fetchFn, rel.download.url, dir, { token, accept: rel.download.accept, signal: stopping.signal, max, net }));
+        ({ file } = await download(fetchFn, rel.download.url, dir, { token: auth.token, accept: rel.download.accept, signal: stopping.signal, max, net }));
         origin = { kind: 'github', repo: d.repo, tag: rel.tag, asset: rel.download.name };
         label = `${d.repo}@${rel.tag}`;
       } else {
@@ -474,11 +632,11 @@ export function createTemplateSources({ store, templates, overlays, log, token, 
       Object.assign(result, await upgradeOverlays(saved, { pendingOnly: !fresh, announce: fresh }));
     } catch (err) {
       if (!(err instanceof SourceError || err instanceof TemplateError)) log.error('checking a template source failed', { source: d.label, err });
-      const error = { code: err.code || 'failed', message: err.message };
+      const error = { code: err.code || 'failed', message: err.message, ...(err.fix ? { fix: err.fix } : {}) };
       result.error = error;
       if (error.code !== 'stopped') {
         log.warn('a template source could not be checked', { source: d.label, code: error.code, err: error.message });
-        const failed = LASTING.has(error.code) && (seen.etag || seen.lastModified || seen.release) ? { ...seen } : undefined;
+        const failed = LASTING.has(error.code) && (seen.etag || seen.lastModified || seen.release) ? { release: seen.release, etag: seen.etag, lastModified: seen.lastModified } : undefined;
         update(doc, { checkedAt, error: { ...error, at: checkedAt }, ...(failed ? { failed } : {}) });
       }
     } finally {

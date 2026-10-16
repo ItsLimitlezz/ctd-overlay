@@ -21,7 +21,9 @@ import { bufferSource } from './zip.js';
 
 const PACKAGE_LIMIT = 100 * 1024 * 1024; // 07 §7.11
 
-export function templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup }) {
+// github: who GitHub is asked as (templates/github.js auth: the token saved in Settings →
+// Integrations, else SKP_GITHUB_TOKEN).
+export function templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup, github }) {
   const tag = 'Templates';
   const r = (def) => api.route({ tag, ...def });
   const versionView = (t) => ({ version: t.version, build: t.build, source: templates.fromPlatform(t) ? 'bundled' : t.receipt?.source?.kind || 'installed', overlays: overlays.pinnedBy(t.id, t.version) });
@@ -58,7 +60,7 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
         let input;
         try { input = JSON.parse(body.toString('utf8')); } catch { throw new ApiError(400, 'bad-request', 'The body is not valid JSON.'); }
         if (!input || typeof input !== 'object' || typeof input.url !== 'string' || Object.keys(input).some((k) => k !== 'url')) throw new ApiError(422, 'invalid', 'Send { "url": "https://…" or "owner/name[@tag]" }, or the package itself as the body.');
-        fetched = await fetchPackage(parseSource(input.url), { dir: templates.downloadDir, token: config.githubToken, fetch, lookup, allowPrivate: config.allowPrivateDownloads });
+        fetched = await fetchPackage(parseSource(input.url), { dir: templates.downloadDir, github, token: config.githubToken, fetch, lookup, allowPrivate: config.allowPrivateDownloads });
         result = templates.install(fetched.file, { actor: who.label, name: fetched.label, origin: fetched.origin });
       } else {
         if (!body.length) throw new ApiError(400, 'bad-request', 'Send the package (.skp or .zip) as the body, or JSON { "url" }.');
@@ -75,9 +77,9 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
   // The sources first: /templates/sources would otherwise be read as a template id.
   return [
     r({ method: 'GET', path: '/api/v1/templates/sources', scope: 'templates:read', summary: 'Followed template sources', paged: true, run: ({ url }) => api.paginate(sources.list().map(sourceView), url, (s) => s.id) }),
-    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL', body: { fields: ['source', 'autoUpgrade', 'template'] }, status: 201, run: async ({ body, req, who }) => {
+    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL (tagPrefix: only releases whose tag starts with it)', body: { fields: ['source', 'autoUpgrade', 'template', 'tagPrefix'] }, status: 201, run: async ({ body, req, who }) => {
       if (typeof body.source !== 'string') throw new ApiError(422, 'invalid', '"source" is owner/name or an https URL.');
-      const s = sources.add(body.source, { autoUpgrade: body.autoUpgrade, actor: who.label, claim: body.template });
+      const s = sources.add(body.source, { autoUpgrade: body.autoUpgrade, actor: who.label, claim: body.template, tagPrefix: body.tagPrefix ?? undefined });
       record(who, req, 'template.follow', { target: s.data.label });
       const [check] = await sources.check(s.id).catch((err) => [{ error: err.message }]);
       return { status: 201, body: { ...sourceView(s), check } };

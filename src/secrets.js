@@ -98,14 +98,16 @@ export function loadMasterKey(config, { log, create = true } = {}) {
 export const isEncrypted = (value) => typeof value === 'string' && value.startsWith(PREFIX);
 
 // Every encrypted value in the store, with its associated data: overlay keys, TOTP secrets, the
-// Twitch and Kick credentials the v0 importer keeps for connections (import/v0.js), and each
-// connection's secrets and account tokens (connectors/records.js).
+// Twitch and Kick credentials the v0 importer keeps for connections (import/v0.js), each
+// connection's secrets and account tokens (connectors/records.js), and the GitHub token template
+// sources read private repositories with (templates/github.js: integrations/github, "github:token").
 export const ENCRYPTED = Object.freeze([
   ['overlays', [['key', (id) => id]]],
   ['users', [['totp.secret', (id) => `totp:${id}`], ['totpPending.secret', (id) => `totp:${id}`]]],
   ['pending_connections', [['clientSecret', (id) => id]]],
   ['connections', [['secrets', (id) => `connection:${id}`]]],
   ['connection_tokens', [['user', (id) => `tokens:${id}`]]],
+  ['integrations', [['token', (id) => `${id}:token`]]],
 ]);
 function* encryptedFields(store) {
   for (const [collection, fields] of ENCRYPTED) {

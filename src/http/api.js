@@ -88,10 +88,13 @@ function problemOf(err) {
     const headers = err.retryAfterS ? { 'retry-after': String(err.retryAfterS) } : undefined;
     // findings: what a package's lint found; problems: what doesn't fit in settings ({ path,
     // message }), on their own or in an upgrade's plan.
-    const extra = err.findings ? { findings: err.findings }
+    let extra = err.findings ? { findings: err.findings }
       : Array.isArray(err.detail) ? { problems: err.detail }
       : err.detail && typeof err.detail === 'object' ? { plan: err.detail, ...(Array.isArray(err.detail.problems) ? { problems: err.detail.problems } : {}) }
       : undefined;
+    // fix: what the operator can do, for a client to offer ("connect-github": Settings →
+    // Integrations → GitHub).
+    if (typeof err.fix === 'string') extra = { ...extra, fix: err.fix };
     return { status, code: err.code || 'refused', detail: err.message, headers, extra };
   }
   return undefined;
@@ -367,6 +370,7 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
               problems: { type: 'array', description: 'What doesn\'t fit in settings', items: { type: 'object', properties: { path: { type: 'string' }, message: { type: 'string' } } } },
               findings: { type: 'array', description: 'What a package\'s lint found' },
               plan: { type: 'object', description: 'An upgrade\'s plan, to review before confirming' },
+              fix: { type: 'string', description: 'What the operator can do about it: "connect-github" (Settings → Integrations → GitHub)' },
             },
           },
         },

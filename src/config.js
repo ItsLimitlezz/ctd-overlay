@@ -28,6 +28,7 @@ const SETTINGS = {
   store: ['SKP_STORE', 'store', true],
   timezone: ['TZ', 'timezone', true],
   githubToken: ['SKP_GITHUB_TOKEN', null, false], // a secret: for template sources in private repos
+  githubClientId: ['SKP_GITHUB_CLIENT_ID', null, true], // an OAuth app's id (no secret): "Sign in with GitHub"
   templateCheckMinutes: ['SKP_TEMPLATE_CHECK_MINUTES', 'template-check-minutes', true],
   allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
   auditDays: ['SKP_AUDIT_DAYS', 'audit-days', true], // how long the audit log keeps entries (07 §7.12)
@@ -108,6 +109,8 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
   const ffmpeg = str(get('ffmpeg')) ?? 'ffmpeg';
   const timezone = parseTimezone(get('timezone'), warnings);
   const githubToken = str(get('githubToken'));
+  const githubClientId = str(get('githubClientId'));
+  if (githubClientId && !/^[A-Za-z0-9._-]{1,100}$/.test(githubClientId)) throw new ConfigError(`${get('githubClientId').source} must be a GitHub OAuth app's client ID, like Ov23liAbCdEf0123 (got "${githubClientId}").`);
   const templateCheckMinutes = parseMinutes(get('templateCheckMinutes'), 60);
   const allowPrivateDownloads = parseBool(get('allowPrivateDownloads'), false);
   const auditDays = parseDays(get('auditDays'), 90);
@@ -116,7 +119,7 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
     port, host, exposure, dataDir, configDir,
     tlsCert: tlsCert ? p.resolve(tlsCert) : undefined, tlsKey: tlsKey ? p.resolve(tlsKey) : undefined, hosts,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
-    ffmpeg, logLevel, store, timezone, githubToken, templateCheckMinutes, allowPrivateDownloads, auditDays, warnings: Object.freeze(warnings),
+    ffmpeg, logLevel, store, timezone, githubToken, githubClientId, templateCheckMinutes, allowPrivateDownloads, auditDays, warnings: Object.freeze(warnings),
   });
 }
 

@@ -47,7 +47,9 @@ Statuses, besides those of sign-in (`401`, `403`), `If-Match` (`412`, `428`) and
   rate-limiting it.
 
 Settings that don't fit carry `problems: [{ path, message }]`; an upgrade refusal carries
-`plan`; a package lint carries `findings`.
+`plan`; a package lint carries `findings`. A problem the operator fixes somewhere else carries
+`fix`: `"connect-github"` (a private GitHub repository, or a token that can't read it: Settings →
+Integrations → GitHub, 04 §4.13).
 
 ## 3.3 Authentication modes
 
@@ -91,13 +93,22 @@ It acts as the owner and is accepted only from a loopback address, never through
 | Method · Path | Purpose |
 |---|---|
 | `GET /templates` | Installed templates (filter `?category=`) |
-| `POST /templates` | Install: the `.skp` package as the raw body (`application/octet-stream`, its file name in `X-Skp-Filename` if you like), or JSON `{ "url": "…" }` |
+| `POST /templates` | Install: the `.skp` package as the raw body (`application/octet-stream`, its file name in `X-Skp-Filename` if you like), or JSON `{ "url": "…" }`: an https URL, `owner/name[@tag]`, or a GitHub release file's download link (read through the API with the GitHub token, so a private repository's too) |
 | `GET /templates/{id}` | Manifest, versions, preview images |
 | `GET /templates/{id}/versions` | Installed versions, newest first (a list: `{ items, next }`) |
 | `DELETE /templates/{id}` | Uninstall every installed version, or one with `?version=` (refused while an overlay pins it; templates that ship with the platform can't be uninstalled) |
 | `POST /templates/validate` | Lint a package without installing (04 §4.11) |
 | `GET /templates/{id}/versions/{version}/previews/{path}` | A preview image: its path inside `previews/` (subfolders allowed), each part URL-encoded, as `GET /templates/{id}` lists it |
-| `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13) |
+| `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13); following takes `{ source, autoUpgrade?, template?, tagPrefix? }` |
+
+### Integrations: GitHub (04 §4.13, 07 §7.7)
+| Method · Path | Purpose |
+|---|---|
+| `GET /integrations/github` | Which token GitHub requests use (`using`: `saved`, `env` or `none`), whose (`saved: { login, method, scopes?, savedAt, savedBy }`), the device flow's client id and its state; never the token (`templates:write`) |
+| `PUT /integrations/github/token` · `DELETE /integrations/github/token` | `{ token }`: checked with GitHub (`422 bad-token` if refused), then saved encrypted; or forgotten (Disconnect) (`system:admin`) |
+| `PUT /integrations/github/app` | `{ clientId }` (or `null`): the OAuth app for signing in with GitHub (`system:admin`) |
+| `POST /integrations/github/device` · `GET` · `DELETE` | Sign in with GitHub (the device flow): `{ status, userCode, verificationUri, expiresAt, intervalS }`, then `connected` (with `login`), `denied`, `expired` or `failed`; `DELETE` cancels (`system:admin`) |
+| `GET /integrations/github/repos/{owner}/{name}/releases` | Whether the platform can read a repository (`private`, `using`, `login`) and its newest releases, newest first, with their `.skp`/`.zip` files (`templates:write`) |
 
 ### Overlays
 | Method · Path | Purpose |

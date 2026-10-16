@@ -20,7 +20,9 @@ import { simulateRoutes } from '../src/overlays/simulate.js';
 import { alertRoutes } from '../src/alerts/routes.js';
 import { showRoutes } from '../src/shows/routes.js';
 import { templateRoutes } from '../src/templates/api.js';
+import { githubRoutes } from '../src/templates/github.js';
 import { fakeConnector } from './fixtures/connectors/fake.js';
+import { startFakeGithub } from './fixtures/fake-github.mjs';
 import { defer, DIAG_DIR, FIXTURE_TEMPLATES, memoryLogger, packTemplate, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -28,13 +30,20 @@ const NEW_PASSWORD = 'staple battery horse correct';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const sample = (version, id = 'dev.skp.sample') => packTemplate(DIAG_DIR, { manifest: { id, version } });
 const FETCHED = sample('1.0.0', 'dev.skp.fetched');
+const TOUR_TOKEN = 'ghp_tourtourtourtour0123456789abcdefghijkl';
 
 async function start(t) {
   const clock = { t: Date.UTC(2026, 9, 17, 18), now: () => clock.t };
-  // A package to install from a URL; GitHub (a followed source) has no release.
-  const download = async (url) => (String(url).startsWith('https://packages.example/')
+  // A package to install from a URL; GitHub (a fake: a followed source has no release, a token
+  // that reads a/tour, the device sign-in).
+  const gh = await startFakeGithub();
+  defer(t, () => gh.close());
+  gh.token(TOUR_TOKEN, { login: 'tour', repos: ['a/tour'] });
+  gh.repo('a/tour', { private: true });
+  gh.script.device = ['pending'];
+  const download = async (url, init) => (String(url).startsWith('https://packages.example/')
     ? new Response(FETCHED, { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(FETCHED.length) } })
-    : new Response(JSON.stringify({ message: 'Not Found' }), { status: 404, headers: { 'content-type': 'application/json' } }));
+    : gh.fetch(url, init));
   const lookup = async () => [{ address: '140.82.112.6', family: 4 }];
   // A connector signing in by redirect, and its service: a token for any code, an account.
   const service = async (url, init = {}) => {
@@ -51,7 +60,7 @@ async function start(t) {
   const platform = await startPlatform(config, { log: memoryLogger().log, templateDirs: [FIXTURE_TEMPLATES], scrypt: { N: 1024 }, clock: { now: clock.now }, fetch: download, lookup, connectors: { defs: [fakeConnector({ auth: 'oauth-pkce' }).def], fetch: service } });
   defer(t, () => platform.stop());
   const doc = await (await fetch(`${platform.url}/api/v1/openapi.json`)).json();
-  return { platform, clock, doc };
+  return { platform, clock, doc, gh };
 }
 
 // A route's path as the document writes it.
@@ -73,6 +82,7 @@ function declarations() {
   alertRoutes({ api, alerts: {}, overlays: {}, shows: {} });
   overlayApiRoutes({ api, overlays: {}, templates: {}, shows: {}, audit: {}, base: () => '' });
   templateRoutes({ api, templates: {}, overlays: {}, sources: {}, audit: {}, config: {} });
+  githubRoutes({ api, github: {} });
   mediaApiRoutes({ api, media: {}, overlays: {}, audit: {} });
   connectorRoutes({ api, host: {}, auth: {}, hosts: () => [], log: {} });
   systemRoutes({ api, bus: {}, store: {}, media: {}, templates: {}, overlays: {}, shows: {}, config: {}, version: '0' });
@@ -146,7 +156,7 @@ function recordReads(t) {
 }
 
 test('a tour of every route: each success it answers, the type it answers in, the query it reads and the body it takes are what the document says', async (t) => {
-  const { platform, clock, doc } = await start(t);
+  const { platform, clock, doc, gh } = await start(t);
   const reads = recordReads(t);
   const router = createRouter(platform.server.routes.filter((r) => r.path.startsWith('/api/v1/')));
   const calls = [];
@@ -229,6 +239,15 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('GET', '/templates/sources');
   await call('POST', '/templates/sources/check?source=a/missing', { body: {} });
   await call('DELETE', '/templates/sources/a%2Fmissing');
+  // GitHub for private template repositories: a token, a repository's releases, the device sign-in.
+  await call('GET', '/integrations/github');
+  await call('PUT', '/integrations/github/token', { body: { token: TOUR_TOKEN } });
+  await call('GET', '/integrations/github/repos/a/tour/releases');
+  await call('PUT', '/integrations/github/app', { body: { clientId: gh.clientId } });
+  await call('POST', '/integrations/github/device', { body: {} });
+  await call('GET', '/integrations/github/device');
+  await call('DELETE', '/integrations/github/device');
+  await call('DELETE', '/integrations/github/token');
 
   // Overlays: one for a show, one on its own, one to upgrade and revert.
   await call('POST', '/overlays', { body: { slug: 'main', template: TESTBED } });
