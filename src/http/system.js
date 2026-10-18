@@ -27,6 +27,7 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
       version,
       standard: 'skp/1',
       exposure: config.exposure,
+      ...(config.allowPlainInternet ? { plainInternet: true } : {}),
       ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
       store: { kind: store.kind, schemaVersion: store.schemaVersion },
       capabilities: { ffmpeg: Boolean(ffmpeg?.available), ...(ffmpeg?.version ? { ffmpegVersion: ffmpeg.version } : {}), tls: Boolean(config.tlsCert) },

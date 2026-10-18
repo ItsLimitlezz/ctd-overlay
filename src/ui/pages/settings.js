@@ -1123,12 +1123,13 @@ async function securityTab(panel, ctx, life) {
   const me = ctx.session?.user || {};
   const tls = Boolean(info?.capabilities?.tls);
   const https = location.protocol === 'https:';
-  const needsTwoFactor = mode === 'public' && !me.totp && (me.role === 'owner' || me.role === 'admin');
+  const needsTwoFactor = (mode === 'public' || info?.plainInternet) && !me.totp && (me.role === 'owner' || me.role === 'admin');
 
   mount(panel, h('div.stack',
     card('Who can reach this platform',
       h('p.row', badge(mode || 'unknown', mode === 'public' ? 'warn' : 'ok'), h('strong', about.title)),
       about.text ? h('p', about.text) : null,
+      info?.plainInternet ? notice('Also open to the internet without encryption (SKP_ALLOW_PLAIN_INTERNET, for a port forward): from outside your network, passwords and overlay links cross the internet unencrypted. Turn on two-factor, and move to HTTPS (a tunnel and SKP_EXPOSURE=public) when you can.', 'warn') : null,
       needsTwoFactor ? notice(h('span', 'You don\'t have two-factor on yet. ', h('a', { href: '#/settings/account' }, 'Turn it on in Account'), '.'), 'warn') : null,
       kv([
         ['Exposure', h('code', mode || 'unknown')],

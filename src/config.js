@@ -33,6 +33,7 @@ const SETTINGS = {
   allowPrivateDownloads: ['SKP_ALLOW_PRIVATE_DOWNLOADS', null, true], // the owner's choice (07 §7.11)
   auditDays: ['SKP_AUDIT_DAYS', 'audit-days', true], // how long the audit log keeps entries (07 §7.12)
   hosts: ['SKP_HOSTS', 'hosts', true], // more names the platform answers to in lan and public modes
+  allowPlainInternet: ['SKP_ALLOW_PLAIN_INTERNET', null, true], // the owner's choice: lan mode also serves the internet, unencrypted
 };
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -114,12 +115,20 @@ export function loadConfig({ argv = process.argv.slice(2), env = process.env, pl
   const templateCheckMinutes = parseMinutes(get('templateCheckMinutes'), 60);
   const allowPrivateDownloads = parseBool(get('allowPrivateDownloads'), false);
   const auditDays = parseDays(get('auditDays'), 90);
+  // A router's port forward to a lan-mode platform, without TLS: requests from the internet are
+  // served over plain HTTP, so passwords, sessions and overlay keys cross it unencrypted. Only in
+  // lan mode (public mode has TLS, local mode listens on this machine only), and said at startup.
+  const allowPlainInternet = parseBool(get('allowPlainInternet'), false);
+  if (allowPlainInternet) {
+    if (exposure !== 'lan') throw new ConfigError(`${get('allowPlainInternet').source} is only for SKP_EXPOSURE=lan (a port forward without HTTPS); public mode has its own TLS.`);
+    warnings.push('SKP_ALLOW_PLAIN_INTERNET is on: requests from the internet are served over plain HTTP, so passwords, sessions and overlay keys cross it unencrypted. For HTTPS, put the platform behind a tunnel or proxy and use SKP_EXPOSURE=public.');
+  }
 
   return Object.freeze({
     port, host, exposure, dataDir, configDir,
     tlsCert: tlsCert ? p.resolve(tlsCert) : undefined, tlsKey: tlsKey ? p.resolve(tlsKey) : undefined, hosts,
     publicUrl, trustProxy, masterKey, masterKeyFile: masterKeyFile ? p.resolve(masterKeyFile) : undefined,
-    ffmpeg, logLevel, store, timezone, githubToken, githubClientId, templateCheckMinutes, allowPrivateDownloads, auditDays, warnings: Object.freeze(warnings),
+    ffmpeg, logLevel, store, timezone, githubToken, githubClientId, templateCheckMinutes, allowPrivateDownloads, auditDays, allowPlainInternet, warnings: Object.freeze(warnings),
   });
 }
 

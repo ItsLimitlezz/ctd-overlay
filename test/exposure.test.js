@@ -133,6 +133,12 @@ test('lan mode serves the local network only; public mode answers outsiders over
   assert.equal((await via(lan.platform, '8.8.8.8')).status, 403);
   assert.equal((await via(lan.platform, '192.168.1.5')).status, 200);
   assert.equal((await via(lan.platform, '100.101.102.103')).status, 200, 'a VPN such as Tailscale counts as local');
+  // A port forward without TLS, opened on purpose: the internet gets in too, and it is said.
+  const open = await start(t, { env: { SKP_EXPOSURE: 'lan', SKP_HOST: '127.0.0.1', SKP_TRUST_PROXY: '127.0.0.1', SKP_ALLOW_PLAIN_INTERNET: 'true' } });
+  assert.equal((await via(open.platform, '8.8.8.8')).status, 200);
+  assert.match(open.platform.config.warnings.join(' '), /SKP_ALLOW_PLAIN_INTERNET is on/);
+  assert.throws(() => loadConfig({ argv: [], env: { SKP_EXPOSURE: 'public', SKP_TRUST_PROXY: '127.0.0.1', SKP_PUBLIC_URL: 'https://o.example.com', SKP_ALLOW_PLAIN_INTERNET: 'true' } }), /only for SKP_EXPOSURE=lan/);
+  assert.throws(() => loadConfig({ argv: [], env: { SKP_ALLOW_PLAIN_INTERNET: 'true' } }), /only for SKP_EXPOSURE=lan/);
   const pub = await start(t, { env: { SKP_EXPOSURE: 'public', SKP_HOST: '127.0.0.1', SKP_TRUST_PROXY: '127.0.0.1', SKP_PUBLIC_URL: 'https://overlays.example.com' } });
   const plain = await via(pub.platform, '8.8.8.8', { 'x-forwarded-proto': 'http' });
   assert.equal(plain.status, 403);
