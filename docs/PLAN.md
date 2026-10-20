@@ -252,7 +252,7 @@ option that keeps a live show running with nobody touching it.
     Use template, and the Live console's connection strip (step 17, with the first counts);
     cross-connection chat dedupe (a relay and a direct connector both sending one platform's chat,
     step 19); outbound webhooks' own delivery schedule (step 21).
-16b. **CTD Multi-Stream** (added 2026-10-13 at the operator's request). The operator's
+16b. **CTD Relay** (added 2026-10-13 at the operator's request). The operator's
     multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream))
     merges chat from every destination it relays to (Twitch, YouTube, Kick, Facebook, X,
     Instagram, TikTok) and publishes it in this standard's envelope over SSE (its
@@ -260,7 +260,7 @@ option that keeps a live show running with nobody touching it.
     (subscriptions, gifts, cheers, raids, memberships, Super Chats, from its v1.1; their chat
     lines are not shown twice), viewer counts and live status per platform, `Last-Event-ID`
     resume with a backfill when the cursor is too old. It is the only chat source for the browser-read platforms; direct
-    connectors stay for Twitch, Kick and YouTube (alerts, and chat when Multi-Stream isn't
+    connectors stay for Twitch, Kick and YouTube (alerts, and chat when Relay isn't
     relaying).
     Done in `src/connectors/defs/ctd-multistream.js`, the first built-in connector: an API token
     (a secret setting) and the LAN address; `/status`, then the event stream from its cursor
@@ -271,9 +271,9 @@ option that keeps a live show running with nobody touching it.
     alert's chat line hidden while alerts are on. `viewers.<platform>` and `stream.<platform>.*`
     from its status, unknown counts absent. Degraded with the reason while a destination is down;
     its notices are the connection's warnings; a revoked token is needs-reauth saying where to make
-    a new one; quiet for 45 s, it reconnects. Tested against a pretend Multi-Stream. Its chat
+    a new one; quiet for 45 s, it reconnects. Tested against a pretend Relay. Its chat
     reaches only templates that consume chat (no bundled one does yet: step 19).
-16c. **CTD Multi-Stream v1.2: profiles, pairing, the hub** (added 2026-10-15). Done in
+16c. **CTD Relay v1.2: profiles, pairing, the hub** (added 2026-10-15). Done in
     `ctd-multistream.js` and `ctd-multistream-hub.js` (06 §6.11): Connect is pairing (a new auth
     kind in the host: the code and its approve link with a countdown, polled by the platform, the
     token saved as the connection's secret; a pasted token still works); one connection per
@@ -283,7 +283,7 @@ option that keeps a live show running with nobody touching it.
     `SKP_HOSTS`'s address, canvas and slot (an overlay's new **Role in OBS**), every 30 s and on
     every change, unregistered when it is deleted or turned off; `overlay.create` from the OBS
     plugin makes an overlay fed by that connection only ("Let other apps create overlays"), always
-    answered. Tested against a pretend Multi-Stream v1.2 and in a browser. Then, after the live
+    answered. Tested against a pretend Relay v1.2 and in a browser. Then, after the live
     test on the NAS (a pairing approved for every profile followed only the default one): **one
     connection follows every profile**, each profile a feed of the connection (`src.profile`,
     owner `<connection>/<profile>`, bus/owners.js) that overlays are bound to on its own

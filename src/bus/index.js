@@ -4,9 +4,9 @@
 // API-level subscribers (the /api/v1/events stream, the overlays' bound settings, later webhooks).
 //
 // State is kept per owner: the core ('') and each connection (src.connection) have their own value
-// for a key, so two accounts on one platform, or a relay (CTD Multi-Stream) beside a direct
+// for a key, so two accounts on one platform, or a relay (CTD Relay) beside a direct
 // connector, never overwrite each other. A connection that follows several streams at its service
-// (CTD Multi-Stream's profiles) sets each one's values as a feed of its own, "<connection>/<profile>"
+// (CTD Relay's profiles) sets each one's values as a feed of its own, "<connection>/<profile>"
 // (src.profile; owners.js): what is done to a connection (cleared, ranked) is done to its feeds. Each overlay sees the one value its bindings allow
 // (01 §1.3), chosen by one rule everywhere (resolve()):
 //   1. the core's own value, if it set one (the demo, a test, PUT /state from an app);
@@ -54,7 +54,7 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
   let lastId = idgen(now());
 
   // ---- choosing the value a set of owners shows ----------------------------------------------
-  // A feed ranks as its connection does (a CTD Multi-Stream profile is a relay like it).
+  // A feed ranks as its connection does (a CTD Relay profile is a relay like it).
   const rank = (owner) => ranks.get(owner) ?? ranks.get(connectionOf(owner)) ?? 0;
   // The owners of a connection's values: itself and its feeds ('' only for the core).
   const ownersUnder = (owners, owner) => [...owners.keys()].filter((o) => (owner ? isOfConnection(o, owner) : o === ''));
@@ -286,7 +286,7 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       return top && { value: structuredClone(top.e.value), owner: top.owner, ...(top.e.stale ? { stale: true } : {}) };
     },
 
-    // 1 for a relay (CTD Multi-Stream): a direct connection's value wins a tie with it. A
+    // 1 for a relay (CTD Relay): a direct connection's value wins a tie with it. A
     // connection's rank is its feeds' too.
     setRank(owner, r = 0) {
       const next = r ? 1 : 0;

@@ -46,7 +46,7 @@ export const newOverlayKey = () => `skp_ovl_${base62(randomBytes(24), 33)}`;
 // Bindings (01 §1.3): which connections feed an overlay. 'all' (every connection, including ones
 // made later: the default, so an overlay shows the Twitch count as soon as Twitch is connected), or
 // a list of connection ids, each the whole connection (every profile it follows at its service,
-// new ones too) or "<connection id>/<profile id>": one CTD Multi-Stream profile of a connection
+// new ones too) or "<connection id>/<profile id>": one CTD Relay profile of a connection
 // that follows them all (bus/owners.js). A stored overlay without one (made before migration 2) is
 // 'all'.
 export const MAX_BINDINGS = 50;

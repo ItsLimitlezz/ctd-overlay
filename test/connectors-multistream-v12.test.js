@@ -1,4 +1,4 @@
-// CTD Multi-Stream v1.2 (PLAN step 16c), against a pretend Multi-Stream on 127.0.0.1: Connect is
+// CTD Relay v1.2 (PLAN step 16c), against a pretend Relay on 127.0.0.1: Connect is
 // pairing (the code shown, the token handed over once, kept encrypted, never logged or answered;
 // denied, expired, too many waiting); a token limited to a profile names the connection and keeps
 // its live status; a token for every profile follows every profile, or the profile picked, with
@@ -20,7 +20,7 @@ const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
 const CHAT = { id: 'com.dprtmnt.chat', version: '1.0.0' };
 const SHARED = 'http://192.168.1.50:4850';
 
-// A platform on the LAN (SKP_HOSTS names the NAS's address), and a pretend Multi-Stream.
+// A platform on the LAN (SKP_HOSTS names the NAS's address), and a pretend Relay.
 async function start(t, { clock, env = {}, ms: msOptions } = {}) {
   const ms = await startFakeMultistream(msOptions);
   defer(t, () => ms.close());
@@ -72,7 +72,7 @@ test('Connect is pairing: the code to approve, then the token kept encrypted, ne
   const token = ms.approve({ profileId: 'p-dprtmnt' });
   await until(() => running(get().health.status) && get().info?.profile?.name === 'DPRTMNT', 10000, 'connected to DPRTMNT');
   const c = (await api('GET', `/connections/${conn.id}`)).body;
-  assert.equal(c.name, 'Multi-Stream · DPRTMNT', 'named after its profile');
+  assert.equal(c.name, 'Relay · DPRTMNT', 'named after its profile');
   assert.deepEqual(c.secretFields, ['token']);
   assert.equal(c.authorization.status, 'done');
   assert.deepEqual(c.info.profile, { id: 'p-dprtmnt', name: 'DPRTMNT', slug: 'dprtmnt', color: '#E11D48', status: 'offline', live: 0, down: 0 });
@@ -97,7 +97,7 @@ test('Connect is pairing: the code to approve, then the token kept encrypted, ne
   assert.equal((await api('GET', '/system/health')).body.connections.find((x) => x.id === conn.id).profile.status, 'live');
   // Renamed there: the name follows while nobody named it here; then it stays.
   ms.renameProfile('p-dprtmnt', 'DPRTMNT Club');
-  await until(() => get().name === 'Multi-Stream · DPRTMNT Club', 5000, 'the new name');
+  await until(() => get().name === 'Relay · DPRTMNT Club', 5000, 'the new name');
   assert.equal((await api('PATCH', `/connections/${conn.id}`, { name: 'Club night' })).status, 200);
   ms.renameProfile('p-dprtmnt', 'DPRTMNT');
   await until(() => get().info.profile.name === 'DPRTMNT', 5000, 'the profile renamed back');
@@ -105,7 +105,7 @@ test('Connect is pairing: the code to approve, then the token kept encrypted, ne
   // Deleted there: an error saying so, not retried.
   ms.deleteProfile('p-dprtmnt');
   await until(() => get().health.status === 'error', 5000, 'the profile gone');
-  assert.match(get().health.detail, /"DPRTMNT" was deleted in CTD Multi-Stream.*Connect again/);
+  assert.match(get().health.detail, /"DPRTMNT" was deleted in CTD Relay.*Connect again/);
 });
 
 test('pairing that is denied, expires, or finds too many requests waiting says so; Connect again works for a revoked token', { timeout: 60000 }, async (t) => {
@@ -116,7 +116,7 @@ test('pairing that is denied, expires, or finds too many requests waiting says s
   assert.equal((await api('POST', `/connections/${conn.id}/authorize`, {})).status, 200);
   ms.deny();
   await until(() => auth()?.status === 'denied', 5000, 'denied');
-  assert.match(auth().detail, /denied in CTD Multi-Stream/);
+  assert.match(auth().detail, /denied in CTD Relay/);
   assert.equal((await api('POST', `/connections/${conn.id}/authorize`, {})).status, 200);
   ms.expire();
   await until(() => auth()?.status === 'expired', 5000, 'expired');
@@ -157,7 +157,7 @@ test('a token for every profile follows every one until one is picked in its set
   assert.equal(get().info.profile, undefined);
   assert.deepEqual(get().info.profiles.map((p) => p.id), ['default', 'p-dprtmnt']);
   assert.deepEqual(get().info.choices, { profile: [{ value: '*', label: 'Every profile' }, { value: 'default', label: 'Miami or Bust' }, { value: 'p-dprtmnt', label: 'DPRTMNT' }] });
-  assert.equal(get().name, 'Multi-Stream');
+  assert.equal(get().name, 'Relay');
   assert.equal(get().info.hub.status, 'off', 'no apps:write: nothing shared');
   const mine = (p) => ms.requests.filter((r) => r.path === p && r.headers.authorization === `Bearer ${token}`);
   for (const p of ['/api/v1/status', '/api/v1/chat']) assert.deepEqual(new Set(mine(p).map((r) => r.query.profile)), new Set(['default', 'p-dprtmnt']), p);
@@ -173,7 +173,7 @@ test('a token for every profile follows every one until one is picked in its set
   await until(() => running(get().health.status) && get().info?.profile?.id === 'p-dprtmnt' && mine('/api/v1/events').length > n && ms.openStreams === 1, 8000, 'following DPRTMNT');
   assert.equal(mine('/api/v1/events').at(-1).query.profile, 'p-dprtmnt');
   assert.equal(get().info.everyProfile, undefined, 'one profile now');
-  assert.equal(get().name, 'Multi-Stream · DPRTMNT');
+  assert.equal(get().name, 'Relay · DPRTMNT');
   ms.emit('chat.message', msg('other'), { platform: 'kick', destination: 'd2-kk', profile: 'default' });
   ms.emit('chat.message', msg('ours'), { platform: 'kick', destination: 'd2-kk', profile: 'p-dprtmnt' });
   await until(() => live.some((e) => e.type === 'chat.message' && e.data.id === 'kick:ours'), 5000, 'its own chat');
@@ -182,7 +182,7 @@ test('a token for every profile follows every one until one is picked in its set
   // Picking a profile that isn't there any more: an error saying so.
   assert.equal((await api('PATCH', `/connections/${conn.id}`, { config: { baseUrl: `${ms.url}/api/v1`, profile: 'p-gone' } })).status, 200);
   await until(() => get().health.status === 'error', 5000, 'the profile missing');
-  assert.match(get().health.detail, /isn't in CTD Multi-Stream any more/);
+  assert.match(get().health.detail, /isn't in CTD Relay any more/);
 });
 
 test('the overlays it feeds are registered in the hub: a resource per canvas, keyed URLs at SKP_HOSTS\'s address, canvas and slot; again on a change; gone with the connection', { timeout: 60000 }, async (t) => {
@@ -258,7 +258,7 @@ test('the hub hears from it every 30 s; an app id another token owns is a warnin
   const puts = (id) => ms.requests.filter((r) => r.method === 'PUT' && r.path === `/api/v1/apps/${id}`).length;
   await until(() => puts('ctd-overlay-main') === 1, 8000, 'the first registration');
   const ow = () => platform.connectors.get(owned.id);
-  await until(() => ow().health.warnings.some((w) => /Another CTD Multi-Stream token already registered the app "ctd-overlay-dprtmnt".*delete the old/.test(w)), 8000, 'the app_owned warning');
+  await until(() => ow().health.warnings.some((w) => /Another CTD Relay token already registered the app "ctd-overlay-dprtmnt".*delete the old/.test(w)), 8000, 'the app_owned warning');
   assert.equal(ow().info.hub.status, 'failed');
   assert.ok(running(ow().health.status), 'chat and status still work');
   await step(29000);
@@ -297,7 +297,7 @@ test('overlay.create from another app makes one, bound to this connection only a
   assert.ok(ms.registrations.some((r) => r.at <= a.at && r.body.resources.some((x) => x.id === `${made.id}:v`)), 'in the hub when answered');
   assert.ok(at >= 0);
   const entry = platform.audit.list({ action: 'overlay.create' }).items[0];
-  assert.deepEqual([entry.actor, entry.target, entry.details.connection, entry.details.via], ['app:ctd-obs-plugin-studio', 'takeover-dprtmnt', conn.id, 'Multi-Stream · DPRTMNT']);
+  assert.deepEqual([entry.actor, entry.target, entry.details.connection, entry.details.via], ['app:ctd-obs-plugin-studio', 'takeover-dprtmnt', conn.id, 'Relay · DPRTMNT']);
   // By its id, every canvas, a second one: its own slug.
   const b = await ask({ template: 'com.dprtmnt.takeover' });
   assert.equal(b.data.ok, true);

@@ -137,7 +137,7 @@ OBS browser sources can't log in, so overlays use capability URLs.
   other roles may require the key again or rotate it, never drop it). Rotating the key, or
   requiring it again, ends the overlay's open streams; a page reconnects only with the key that
   works now.
-- **Shared with CTD Multi-Stream's hub** (06 §6.11): a CTD Multi-Stream connection whose token
+- **Shared with CTD Relay's hub** (06 §6.11): a CTD Relay connection whose token
   has `apps:write` sends the keyed URLs of the overlays it feeds to that server (and nowhere
   else), so the CTD OBS plugin connected to it can add them as browser sources. The hub is LAN
   infrastructure the owner set up and paired with, and it lists them only to tokens with
@@ -263,7 +263,7 @@ requests carry none, so it works beside a proxy.
   checked, the size and time limits of a download, and a `POST` never redirected.
 - Connections reach three kinds of destination (06 §6.1.1): **service** (the connector's own
   API, HTTPS only); **lan** (an address the operator typed in a connection's settings, such as OBS
-  or CTD Multi-Stream: resolved once and connected to that address, plain HTTP only to private and
+  or CTD Relay: resolved once and connected to that address, plain HTTP only to private and
   loopback addresses, never link-local, unspecified or multicast; a self-signed certificate is
   trusted by its SHA-256 fingerprint, checked before any request is sent); **public** (the
   internet, as above). An address with a user name or password in it is refused: those go in the

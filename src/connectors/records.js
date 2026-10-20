@@ -171,7 +171,7 @@ export function createRecords({ store, secrets, now = Date.now }) {
       return { doc: saved, changed, reauth };
     },
 
-    // A name the connector suggests (what its service calls what it follows: "Multi-Stream ·
+    // A name the connector suggests (what its service calls what it follows: "Relay ·
     // DPRTMNT"), taken while nobody has named the connection: it still has the definition's name,
     // or the last name suggested (autoName). Returns the saved doc, or undefined when it kept its name.
     suggestName(def, id, name) {

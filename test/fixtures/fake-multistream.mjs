@@ -1,4 +1,4 @@
-// A pretend CTD Multi-Stream (its docs/API.md, v1.2) on 127.0.0.1, for the ctd-multistream
+// A pretend CTD Relay (its docs/API.md, v1.2) on 127.0.0.1, for the ctd-multistream
 // connector's tests: Bearer tokens, GET /api/v1/, /status, /chat, and /events as Server-Sent Events
 // with ids, resume from Last-Event-ID (a cursor no longer buffered gets system.reset first), the
 // current state on a fresh connect, heartbeats, 401 for a revoked token and 429 for too many

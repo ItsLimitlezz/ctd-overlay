@@ -59,7 +59,7 @@ describe('one value per overlay, from the connections it is bound to', () => {
     assert.equal(bus.getState('viewers.twitch'), 101);
   });
 
-  test('a direct connection wins a tie with a relay (CTD Multi-Stream), whatever their age', () => {
+  test('a direct connection wins a tie with a relay (CTD Relay), whatever their age', () => {
     const { bus } = fixture();
     bus.setRank('con_A', 1); // the older one relays
     bus.setState('stream.twitch.live', false, { src: A });

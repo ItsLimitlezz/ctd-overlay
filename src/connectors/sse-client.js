@@ -1,5 +1,5 @@
 // Reads Server-Sent Events (the WHATWG event-stream format) from a response body, for connectors
-// that follow another service's live feed (CTD Multi-Stream, step 16b). Frames are separated by a
+// that follow another service's live feed (CTD Relay, step 16b). Frames are separated by a
 // blank line; `id:`, `event:`, `data:` (several lines join with "\n") and `retry:` are kept, a line
 // starting with ":" is a comment (a heartbeat). A frame larger than maxFrameBytes is refused (the
 // stream is broken or hostile), never buffered without bound.

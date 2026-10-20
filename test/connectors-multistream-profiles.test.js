@@ -1,6 +1,6 @@
-// One CTD Multi-Stream connection follows every profile (PLAN step 16c): a token for every profile
+// One CTD Relay connection follows every profile (PLAN step 16c): a token for every profile
 // reads them all over one stream (?profile=*), each profile a feed of the connection
-// ("<connection>/<profile>", bus/owners.js). Against a pretend Multi-Stream with two profiles,
+// ("<connection>/<profile>", bus/owners.js). Against a pretend Relay with two profiles,
 // "Miami or Bust" (default, live on Twitch and YouTube) and "DPRTMNT" (Kick, offline): each
 // profile's chat, alerts and viewers reach only the overlays bound to it, to the whole connection
 // or to "all"; each show's stream status is its profile's; a new profile shows up by itself and can
@@ -68,7 +68,7 @@ test('each profile\'s chat, alerts and viewers reach only the overlays bound to 
   const ctx = await start(t);
   const { ms, platform, api } = ctx;
   const { conn, get } = await everyProfile(ctx);
-  assert.equal(get().name, 'Multi-Stream');
+  assert.equal(get().name, 'Relay');
   assert.deepEqual(get().info.profiles.map((p) => [p.id, p.name, p.status]), [['default', 'Miami or Bust', 'live'], ['p-dprtmnt', 'DPRTMNT', 'offline']]);
   const events = ms.requests.filter((r) => r.path === '/api/v1/events');
   assert.ok(events.length && events.every((r) => r.query.profile === '*'), 'one stream for every profile');
@@ -135,7 +135,7 @@ test('each profile\'s chat, alerts and viewers reach only the overlays bound to 
   assert.deepEqual(w.profiles.map((p) => [p.profile, p.name, p.status]), [['default', 'Miami or Bust', 'live'], ['p-dprtmnt', 'DPRTMNT', 'live']]);
   // What feeds it, by name: the connection and the profile.
   const dp = (await api('GET', '/overlays/dprtmnt')).body;
-  assert.deepEqual(dp.bound, [{ id: `${conn.id}/p-dprtmnt`, connection: conn.id, profile: 'p-dprtmnt', name: 'Multi-Stream · DPRTMNT', connector: 'ctd-multistream', status: get().health.status }]);
+  assert.deepEqual(dp.bound, [{ id: `${conn.id}/p-dprtmnt`, connection: conn.id, profile: 'p-dprtmnt', name: 'Relay · DPRTMNT', connector: 'ctd-multistream', status: get().health.status }]);
   // GET /system/health (operators read it): each profile with its status.
   const health = (await api('GET', '/system/health')).body.connections.find((c) => c.id === conn.id);
   assert.deepEqual([health.everyProfile, health.profiles.map((p) => [p.id, p.name, p.color, p.status])], [true, [['default', 'Miami or Bust', '#3B82F6', 'live'], ['p-dprtmnt', 'DPRTMNT', '#E11D48', 'live']]]);
@@ -152,10 +152,10 @@ test('a new profile shows up by itself and can be bound; a deleted one is report
   let o = await read();
   const refused = await api('PATCH', '/overlays/tk', { connections: [`${conn.id}/p-club`] }, { 'if-match': o.etag });
   assert.equal(refused.status, 422, refused.text);
-  assert.match(refused.body.detail, /Multi-Stream doesn't follow a profile "p-club": it follows "default", "p-dprtmnt"/);
+  assert.match(refused.body.detail, /Relay doesn't follow a profile "p-club": it follows "default", "p-dprtmnt"/);
   assert.equal((await api('PATCH', '/overlays/tk', { connections: ['con_00000000000000000000000000/default'] }, { 'if-match': o.etag })).status, 422);
 
-  // Made in CTD Multi-Stream: followed at once (its status read), in health, and bindable.
+  // Made in CTD Relay: followed at once (its status read), in health, and bindable.
   const n = ms.requests.length;
   ms.addProfile({ id: 'p-club', name: 'Club', slug: 'club', color: '#22C55E' }, {
     session: { status: 'live', startedAt: '2026-10-17T03:00:00Z', title: 'Club night' }, feeds: [],
@@ -182,7 +182,7 @@ test('a new profile shows up by itself and can be bound; a deleted one is report
   assert.ok(!get().feeds.some((f) => f.profile === 'p-club'), 'its values gone');
   assert.equal(platform.overlays.resolve('tk').channel.snapshot().state['viewers.total'], undefined, 'nothing feeds it now');
   o = await read();
-  assert.deepEqual(o.body.bound.map((b) => [b.name, b.missing]), [[`Multi-Stream · p-club`, true]]);
+  assert.deepEqual(o.body.bound.map((b) => [b.name, b.missing]), [[`Relay · p-club`, true]]);
   assert.deepEqual(o.body.stream.profiles, [{ connection: conn.id, profile: 'p-club', name: 'p-club', status: 'missing' }]);
   const same = await api('PATCH', '/overlays/tk', { connections: [`${conn.id}/p-club`, `${conn.id}/default`] }, { 'if-match': o.etag });
   assert.equal(same.status, 200, 'a binding it had stays, though its profile is gone');
@@ -283,7 +283,7 @@ test('the hub gets each overlay once per profile it feeds (every profile when bo
   assert.deepEqual([...new Set(b.data.resources.map((r) => r.profileId))], ['default', 'p-dprtmnt'], 'every profile');
   const c = await ask({ template: 'takeover' }, 'p-nobody');
   assert.equal(c.data.ok, false);
-  assert.match(c.data.reason, /doesn't follow a CTD Multi-Stream profile "p-nobody"/);
+  assert.match(c.data.reason, /doesn't follow a CTD Relay profile "p-nobody"/);
 });
 
 test('feeds on the bus: owned by "<connection>/<profile>", bound whole or one by one, cleared, ranked and purged with their connection', () => {

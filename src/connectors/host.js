@@ -12,12 +12,12 @@
 //   use, 10 minutes, bound to whoever started it; and when the browser that lands there isn't that
 //   person's (another device, or a redirect URI on 127.0.0.1 opened from a phone), they paste the
 //   address they landed on (POST …/authorize/complete). Client credentials and passwords need no
-//   sign-in. Pairing (an app's own way, CTD Multi-Stream's): the service shows a code an admin
+//   sign-in. Pairing (an app's own way, CTD Relay's): the service shows a code an admin
 //   approves there; the platform polls at the interval it gives, and the secret it hands over
 //   (once) is saved into the connection's secret field as if typed.
-// - Connections that share overlays with their service (CTD Multi-Stream's hub) get them through
+// - Connections that share overlays with their service (CTD Relay's hub) get them through
 //   share.js; deleting or turning one off lets its definition undo what it registered (retire).
-// - A connection that follows several streams at its service (every CTD Multi-Stream profile)
+// - A connection that follows several streams at its service (every CTD Relay profile)
 //   publishes each one's data as a feed of its own ("<connection>/<profile>", bus/owners.js):
 //   what is done to the connection's values (cleared, held, ranked as a relay, its chat purged)
 //   is done to its feeds' through the bus; the resource shows them as `feeds`, and the summary
@@ -295,7 +295,7 @@ export function createConnectorHost({
         const h = r ? r.health.view() : { status: doc.data.enabled ? 'connecting' : 'disabled' };
         const mine = bus.connectionState(doc.id);
         const counts = mine.filter((e) => /^viewers\.[a-z0-9-]+$/.test(e.key) && typeof e.value === 'number');
-        // The stream it follows at its service (a CTD Multi-Stream profile: name, colour, live or
+        // The stream it follows at its service (a CTD Relay profile: name, colour, live or
         // not), or the streams: every profile, each a feed overlays can be bound to on its own.
         const { profile, profiles, every } = profilesInfo(r);
         return {
@@ -310,7 +310,7 @@ export function createConnectorHost({
       });
     },
 
-    // The profiles a connection follows as feeds of its own (every profile of a CTD Multi-Stream
+    // The profiles a connection follows as feeds of its own (every profile of a CTD Relay
     // token that reads them all), by id: what "<connection>/<profile>" bindings may name. Empty for
     // a connection that follows one stream, or that isn't running.
     feedsOf(id) {
@@ -682,7 +682,7 @@ export function createConnectorHost({
 
   // ---- what a connection leaves at its service --------------------------------------------------
   // Deleted or turned off: its definition undoes what it registered there (an app in CTD
-  // Multi-Stream's hub), best effort, with the secrets and memory it had. Not awaited: a service
+  // Relay's hub), best effort, with the secrets and memory it had. Not awaited: a service
   // that doesn't answer mustn't hold up a delete.
   function retire(doc, def) {
     if (typeof def.retire !== 'function') return;

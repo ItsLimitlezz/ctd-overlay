@@ -9,7 +9,7 @@
 // - Order: by priority (raid, superchat/tip, gift, subscription, membership, cheer/kicks, follow),
 //   then by arrival. Past maxQueue, the oldest of the lowest priority is dropped.
 // - Coalescing: a gift burst is one alert. Twitch sends a gift of 25 subs as one gift of 25 and
-//   then 25 gifts of one (CTD Multi-Stream maps both to alert.gift): gifts from one person on one
+//   then 25 gifts of one (CTD Relay maps both to alert.gift): gifts from one person on one
 //   platform waiting in the queue merge (the count is the larger of the bulk gift and the singles),
 //   and singles arriving just after their bulk gift went on screen are part of it, not 25 more
 //   alerts.

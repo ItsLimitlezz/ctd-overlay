@@ -29,14 +29,14 @@ export const migrations = [
     },
   },
   {
-    // A CTD Multi-Stream connection with a token for every profile followed one profile, the
+    // A CTD Relay connection with a token for every profile followed one profile, the
     // default one unless another was picked: one connection now follows every profile, each a
     // stream of its own (06 §6.11), when its Profile setting is empty. One set to the default
     // profile was set so before "Every profile" existed (the only way to name what it followed):
     // it follows every profile too. Another profile picked stays picked; a token limited to one
     // profile never reads this setting.
     version: 3,
-    name: 'CTD Multi-Stream: every profile',
+    name: 'CTD Relay: every profile',
     up(tx) {
       for (let after = ''; ;) {
         const page = tx.list('connections', { after, limit: 1000 });

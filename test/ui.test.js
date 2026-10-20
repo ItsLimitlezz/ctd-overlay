@@ -79,7 +79,7 @@ test('the admin UI is served from src/ui: no-store, the admin CSP, and nothing o
     const res = await fetch(`${platform.url}/ui/${rel}`);
     assert.equal(res.status, 200, rel);
     assert.equal(res.headers.get('cache-control'), 'no-store', rel);
-    const type = { js: /^text\/javascript/, css: /^text\/css/, html: /^text\/html/, svg: /^image\/svg\+xml/ }[rel.split('.').pop()];
+    const type = { js: /^text\/javascript/, css: /^text\/css/, html: /^text\/html/, svg: /^image\/svg\+xml/, png: /^image\/png$/ }[rel.split('.').pop()];
     assert.match(res.headers.get('content-type'), type, rel);
     await res.arrayBuffer();
   }
@@ -203,7 +203,7 @@ test('the admin UI in a browser: sign in, every section, desktop and phone, with
 
   // A connection (its sign-in still to do) and one turned off, for the Connections pages.
   const fake = platform.connectors.create({ connector: 'fake', name: 'Test service', config: { behaviour: 'push', clientId: 'cid' }, secrets: { clientSecret: 'a-secret-never-shown' } });
-  platform.connectors.create({ connector: 'ctd-multistream', name: 'Multi-Stream', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: `ctd_pat_${'x'.repeat(43)}` } });
+  platform.connectors.create({ connector: 'ctd-multistream', name: 'Relay', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: `ctd_pat_${'x'.repeat(43)}` } });
   const sections = ['/live', '/overlays', '/overlays/diag', '/templates', `/templates/${DIAG.id}`, '/shows', '/shows/Night', '/connections', '/connections/new/ctd-multistream', `/connections/${fake.id}`, '/media', '/settings', '/settings/account', '/settings/tokens', '/settings/about'];
   for (const [width, height] of [[1280, 900], [390, 844]]) {
     await page.resize(width, height);

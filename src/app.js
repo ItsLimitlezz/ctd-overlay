@@ -272,7 +272,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   // (127.0.0.1, never "localhost": services compare redirect URIs as text), unless SKP_PUBLIC_URL.
   connectors.setOrigin(`${scheme}://${host}:${address.port}`);
   // Where OBS reaches this platform from another machine, for the overlays connections share
-  // with CTD Multi-Stream's hub (06 §6.11).
+  // with CTD Relay's hub (06 §6.11).
   const shared = shareBase(config, { scheme, port: address.port });
   connectors.setShareBase(() => shared);
   connectors.start().catch((err) => log.error('connections could not start', { err }));

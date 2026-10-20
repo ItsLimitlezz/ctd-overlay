@@ -75,7 +75,7 @@ function readableOn(hex) {
 // The installation's name and logo (08 §8.6), in the header and the tab title.
 export function applySystem(system = {}) {
   state.system = system;
-  const name = system.name || 'Stream Kit';
+  const name = system.name || 'CTD Overlay';
   const nameEl = q('[data-brand-name]');
   if (nameEl) nameEl.textContent = name;
   const brand = q('[data-brand]');
@@ -116,7 +116,7 @@ function context(route, params, seq) {
     can: (scope) => scopes.has(scope),
     alive,
     navigate: (hash, opts) => { if (alive()) navigate(hash, opts); },
-    setTitle: (t) => { if (alive()) document.title = `${t} · ${state.system.name || 'Stream Kit'}`; },
+    setTitle: (t) => { if (alive()) document.title = `${t} · ${state.system.name || 'CTD Overlay'}`; },
     applyPreferences,
     applySystem,
     // After a sign-in, a sign-out or a preference change: read the session again and redraw.

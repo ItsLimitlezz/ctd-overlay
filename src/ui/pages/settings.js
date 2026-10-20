@@ -344,7 +344,7 @@ function installationCard(ctx, life) {
       ? (mediaR.value || []).filter((m) => m?.url && (m.kind === 'image' || String(m.type || '').startsWith('image/')))
       : [];
 
-    const name = h('input', { type: 'text', maxlength: 60, value: current.name || '', placeholder: 'Stream Kit', autocomplete: 'off' });
+    const name = h('input', { type: 'text', maxlength: 60, value: current.name || '', placeholder: 'CTD Overlay', autocomplete: 'off' });
     const logo = h('select',
       h('option', { value: '' }, 'No logo'),
       images.map((m) => h('option', { value: m.url }, m.name || m.url)),
@@ -364,7 +364,7 @@ function installationCard(ctx, life) {
 
     const submit = h('button.btn.primary', { type: 'submit' }, 'Save name and logo');
     const form = h('form', { novalidate: true },
-      field('Name', name, { hint: 'Up to 60 characters. Empty: "Stream Kit".' }),
+      field('Name', name, { hint: 'Up to 60 characters. Empty: "CTD Overlay".' }),
       field('Logo', logo, { hint: images.length ? 'One of the images uploaded in Media.' : 'Upload an image in Media first, then choose it here.' }),
       mediaR.status === 'rejected' ? notice(`Your images could not be listed: ${mediaR.reason?.message || 'try again later'}`, 'warn') : null,
       preview,
@@ -983,7 +983,7 @@ async function integrationsTab(panel, ctx, life) {
         h('summary', 'How to make a token'),
         h('ol',
           h('li', 'On GitHub, open ', h('a', { href: TOKEN_PAGE, target: '_blank', rel: 'noopener noreferrer' }, 'Fine-grained personal access tokens → Generate new token'), '.'),
-          h('li', 'Give it a name ("Stream Kit templates") and an expiry.'),
+          h('li', 'Give it a name ("CTD Overlay templates") and an expiry.'),
           h('li', 'Repository access: Only select repositories, and choose the template\'s repository (for a repository of an organisation, choose the organisation as Resource owner first).'),
           h('li', 'Repository permissions: Contents: Read-only. Metadata: Read-only is added by itself.'),
           h('li', 'Generate it, copy it, and paste it above.')),

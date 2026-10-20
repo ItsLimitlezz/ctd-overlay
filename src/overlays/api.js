@@ -19,7 +19,7 @@
 //
 // Bindings (01 §1.3): `connections` is "all" (every connection, including ones made later: the
 // default) or a list of connection ids, each of which must exist: a whole connection (every
-// profile it follows, new ones too), or "<connection id>/<profile id>", one CTD Multi-Stream
+// profile it follows, new ones too), or "<connection id>/<profile id>", one CTD Relay
 // profile of a connection that follows every profile (it must follow it now, 422 otherwise; one
 // the overlay is bound to already is kept). `bound` lists what feeds the overlay now (connections,
 // and profiles of one), by name and status, for whoever edits overlays (operators don't hold
@@ -28,7 +28,7 @@
 // worked out on each read, so it never moves the ETag.
 //
 // `role` ("Role in OBS", 06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
-// overlay of every stream ("chat-main"); CTD Multi-Stream's OBS plugin uses it to re-point its
+// overlay of every stream ("chat-main"); CTD Relay's OBS plugin uses it to re-point its
 // browser sources when it switches stream. Absent: the template's short name ("takeover").
 import { connectionOf, profileOf } from '../bus/owners.js';
 import { ApiError } from '../http/api.js';
@@ -65,7 +65,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
   }
   // What feeds an overlay with these bindings: [{ id, name, connector, status }] per connection,
   // and per profile of one (a "<connection>/<profile>" binding): { id, connection, profile, name
-  // ("Multi-Stream · DPRTMNT"), connector, status, missing? } (missing: the connection doesn't
+  // ("Relay · DPRTMNT"), connector, status, missing? } (missing: the connection doesn't
   // follow that profile now, say it was deleted at its service).
   function boundTo(binding) {
     const list = connections?.summary() || [];
@@ -109,7 +109,7 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
   const recordKey = (who, req, action, slug, extra) => audit.record({ action, actor: who.label, ip: req.client?.ip, target: slug, ...extra });
   return [
     r({ method: 'GET', path: '/api/v1/overlays', scope: 'overlays:read', summary: 'List overlays, each with what feeds it and its stream status', paged: true, run: ({ url }) => api.paginate(overlays.list().map((d) => resource(docOf(d.data.slug))).sort((a, b) => (a.slug < b.slug ? -1 : 1)), url, (o) => o.slug) }),
-    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids, or "<connection id>/<profile id>" for one CTD Multi-Stream profile)', body: { fields: ['slug', 'template', 'settings', 'connections', 'role'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
+    r({ method: 'POST', path: '/api/v1/overlays', scope: 'overlays:write', summary: 'Create an overlay from an installed template (connections: "all", the default, or connection ids, or "<connection id>/<profile id>" for one CTD Relay profile)', body: { fields: ['slug', 'template', 'settings', 'connections', 'role'], nested: { template: ['id', 'version'] } }, status: 201, run: ({ body, who, req }) => {
       checkConnections(body.connections);
       const doc = overlays.create({ slug: body.slug, template: body.template, settings: body.settings ?? {}, connections: body.connections ?? 'all', role: body.role });
       audit.record({ action: 'overlay.create', actor: who.label, ip: req.client?.ip, target: doc.data.slug, template: `${doc.data.template.id}@${doc.data.template.version}` });

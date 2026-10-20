@@ -1,8 +1,8 @@
 // The admin UI in a real browser, quickly: node scripts/ui-smoke.js [routes…] [--phone] [--shots <dir>]
 //
 // Starts a throwaway platform (its own temporary data directory, in lan mode) with the TAKEOVER
-// overlays, a show (and an overlay outside it, fed by one CTD Multi-Stream profile), a pretend CTD
-// Multi-Stream connected by pairing twice (for one profile, and for every profile) and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
+// overlays, a show (and an overlay outside it, fed by one CTD Relay profile), a pretend CTD
+// Relay connected by pairing twice (for one profile, and for every profile) and an owner, signs in in headless Chrome or Edge (test/cdp.js), and opens each route
 // (default: every section), printing per route the page's text and every console error,
 // uncaught exception and CSP violation. --phone uses a 390 × 844 viewport; --shots saves a PNG
 // per route there. Exits 1 if any route had a problem.
@@ -51,8 +51,8 @@ const show = platform.shows.create({
 platform.shows.take(show.id, 'auto', { transition: 'cut', actor: 'smoke' });
 platform.bus.setState('viewers.total', 1159);
 const fake = platform.connectors.create({ connector: 'fake', name: 'Test service', config: { behaviour: 'push', clientId: 'smoke-client' }, secrets: { clientSecret: 'smoke-secret-value' } });
-platform.connectors.create({ connector: 'ctd-multistream', name: 'Multi-Stream (NAS)', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: 'ctd_pat_0123456789abcdefghijklmnop' } });
-// A pretend CTD Multi-Stream, connected by pairing (approved for its DPRTMNT profile, live), so a
+platform.connectors.create({ connector: 'ctd-multistream', name: 'Relay (NAS)', enabled: false, config: { baseUrl: 'http://192.168.1.50:30080/api/v1' }, secrets: { token: 'ctd_pat_0123456789abcdefghijklmnop' } });
+// A pretend CTD Relay, connected by pairing (approved for its DPRTMNT profile, live), so a
 // stream shows its profile and the connection what it shares with the OBS plugin.
 const ms = await startFakeMultistream();
 ms.statuses['p-dprtmnt'].session.status = 'live';
