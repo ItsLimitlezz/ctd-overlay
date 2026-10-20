@@ -9,11 +9,11 @@ Needs Node.js 24 or newer (nodejs.org). No `npm install` is needed: the platform
 dependencies.
 
 ```bash
-git clone https://github.com/ItsLimitlezz/CTD---Overlay.git
+git clone https://github.com/ItsLimitlezz/ctd-overlay.git
 ```
 
 ```bash
-cd CTD---Overlay
+cd ctd-overlay
 ```
 
 ```bash
@@ -38,20 +38,14 @@ something OBS can play.
 
 ## B. On the NAS (TrueNAS SCALE, or any Docker host)
 
-The image is built by GitHub Actions: `ghcr.io/itslimitlezz/ctd---overlay`. Pushes to `main` make
-`:latest`, and a `release/<name>` branch makes `:release-<name>`. The build for the 17 October
-test is `ghcr.io/itslimitlezz/ctd---overlay:release-2026-10-17`: put that tag in the YAML's
-`image:` line until this work is merged into `main`.
+The image is built by GitHub Actions from this public repository: `ghcr.io/itslimitlezz/ctd-overlay`.
+Pushes to `main` make `:latest`, and a `release/<name>` branch makes `:release-<name>`. The image is
+public: TrueNAS pulls it with no credentials.
 
 1. **Create two datasets**, owned by the `apps` user (568): one for data and one for config. The
    config dataset holds the master key, and keeping it separate means a backup of the data never
    contains the key.
-2. **Allow TrueNAS to pull the image.** The repository is private, so its image is private too.
-   On GitHub, make a classic token with `read:packages`. In TrueNAS, open **Apps → Configuration →
-   Manage Container Images (or Docker Registries) → Add**, with registry `ghcr.io`, your GitHub
-   user name, and that token. Alternatively, make the package public on GitHub (Packages →
-   ctd---overlay → Package settings).
-3. **Install the app.** In **Apps → Discover Apps → ⋮ → Install via YAML**, paste
+2. **Install the app.** In **Apps → Discover Apps → ⋮ → Install via YAML**, paste
    [`deploy/truenas.yml`](../deploy/truenas.yml). Change the two dataset paths and `SKP_HOSTS`
    (the NAS's LAN address, `192.168.1.50`). If the outside port isn't `4848`, write it in
    `SKP_HOSTS` too, as `192.168.1.50:30848`. The platform only answers requests addressed to its
@@ -60,7 +54,7 @@ test is `ghcr.io/itslimitlezz/ctd---overlay:release-2026-10-17`: put that tag in
 Plain Docker on any host:
 
 ```bash
-docker run -d --name ctd-overlay -p 4848:4848 -e SKP_HOSTS=192.168.1.50 -v ctd-data:/data -v ctd-config:/config ghcr.io/itslimitlezz/ctd---overlay:latest
+docker run -d --name ctd-overlay -p 4848:4848 -e SKP_HOSTS=192.168.1.50 -v ctd-data:/data -v ctd-config:/config ghcr.io/itslimitlezz/ctd-overlay:latest
 ```
 
 ## First start: create the owner
