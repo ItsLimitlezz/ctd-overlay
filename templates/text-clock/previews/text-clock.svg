@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <rect width="1920" height="1080" fill="#14181c"/>
+  <circle cx="1500" cy="260" r="520" fill="#16e0ff" opacity=".07"/>
+  <g font-family="Arial, sans-serif">
+    <rect x="72" y="566" width="760" height="454" fill="#08090c" fill-opacity=".7"/>
+    <rect x="72" y="566" width="6" height="454" fill="#16e0ff"/>
+    <text x="106" y="652" font-size="62" font-weight="800" fill="#ffffff">MIAMI OR BUST</text>
+    <text x="106" y="708" font-size="34" font-weight="600" fill="#16e0ff">Road to Miami · Day 3</text>
+    <text x="106" y="800" font-size="25" font-weight="700" letter-spacing="6" fill="#16e0ff">STARTING IN</text>
+    <text x="106" y="950" font-family="Courier New, monospace" font-size="132" font-weight="700" fill="#ffffff">09:58</text>
+  </g>
+</svg>

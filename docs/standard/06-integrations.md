@@ -105,7 +105,7 @@ A connector **MUST**:
 | `chat.read` | `chat.*` events |
 | `alerts` | `alert.*` events |
 | `viewers` | `viewers.<platform>` state |
-| `stream.status` | `stream.<platform>.*` state |
+| `stream.status` | `stream.<platform>.*` state, and `stream.clock` (02 §2.5.2) |
 | `music` | `music.nowPlaying` state |
 | `obs` | `obs.*` state; scene/source actions |
 | `chat.write`, `moderation` | reserved for v2 |
@@ -520,6 +520,25 @@ has said anything about its outputs (02 §2.5).
   error holds them like any value (02 §2.8).
 - What OBS shows is on each stream (`stream.obs`, 03 §3.4: the Live strip "OBS · landscape: Live ·
   vertical: BRB · Streaming"), and drives the shows and overlays that follow OBS (09 §9.7).
+**Stream clock** (its §4, `GET /clock`, v1.3), with `status:read`: the connection measures CTD
+Relay's clock against its own, NTP-style, and publishes each profile's `stream.clock` (02 §2.5.2)
+as that profile's state (or the connection's, following one profile), so a template counts the
+stream's run time and timecode from `SK.clock` with no request per frame. A **sync** asks
+`GET /clock?t0=<this server's time>` (with `?profile=` as `/status`) 6 times, a second apart
+(following every profile: at least once per profile, the profiles in turn); for each answer, with
+`t3` its arrival, `offset = ((receivedAt − t0) + (sentAt − t3)) / 2` and
+`delay = (t3 − t0) − (sentAt − receivedAt)`; the **lowest delay's offset** is kept (one server
+answers for every profile, so one offset serves them all). Each profile's last answer gives its
+`session.startedAt` (CTD's clock) and `fps`: `stream.clock` is `{ startedAt: session.startedAt −
+offset` (absent while no session runs)`, fps, offsetMs: offset, at }` (`at`: when the kept sample
+was taken). It syncs on every start (so after every reconnect), after `system.reset`, and every
+5 minutes (30 s after one that failed); a session that starts or stops in between
+(`stream.status`, `profile.status`) is read again at once, one answer, with the last offset; a
+profile new here is read at once. Times come from the connector's `ctx.now()` and waits from
+`ctx.schedule` (a test's fake clock in tests). A Relay older than v1.3 answers `404`: asked once a
+start, no clock state, one warning ("older than v1.3: overlays get no stream clock"); a `403` stops
+it quietly; anything else tries again later, never failing the connection. A deleted profile's
+clock goes with its other values.
 
 **Health:** `connected` while the stream is open; `degraded` while a destination is down, saying
 which and why (`Instagram: ended the live (copyright)…`); its `system.notice`s are the
