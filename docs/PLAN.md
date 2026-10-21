@@ -297,7 +297,11 @@ option that keeps a live show running with nobody touching it.
 17. **Twitch and Kick viewers and live status**, ported from v0. **This reaches v0 parity:** run
     a Saturday next to v0, then cut over.
 18. **OBS.** obs-websocket v5 handshake, state, actions, OBS→overlay scene mapping, Add to OBS
-    (06 §6.9).
+    (06 §6.9). First through CTD Relay (v1.5, its §10): the CTD OBS plugin's scene changes and
+    outputs become each profile's `obs.scene.landscape|vertical`, `obs.streaming`, `obs.recording`
+    (06 §6.11), shown on Live; shows and overlays outside a show **follow OBS** (09 §9.7: one canvas
+    drives a show, OBS scene by uuid or name → scene, a real change only, audited as `obs`). A
+    direct obs-websocket connection and "Add to OBS" come later.
 19. **Twitch chat and alerts** over EventSub, the server-side alert queue and its controls, and
     chat and alert templates (05 §5.5, 06 §6.5).
 20. **Kick chat and alerts** by webhook in `public` mode: signature checks, re-subscribe, the

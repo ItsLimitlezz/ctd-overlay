@@ -322,7 +322,7 @@ test('the pages use each overlay\'s own template version and the gallery\'s summ
 
   // The gallery: one request for every card (author, tags, canvases and pictures come with it).
   await page.eval('performance.clearResourceTimings()');
-  text = await visit('/templates', 'document.querySelectorAll("[data-view] .grid > .card").length === 6'); // the 5 bundled and the sample
+  text = await visit('/templates', 'document.querySelectorAll("[data-view] .grid > .card").length === 7'); // the 6 bundled and the sample
   assert.deepEqual((await asked()).filter((p) => p.split('/').length === 5 && !p.endsWith('/sources')), [], 'no request per template');
   assert.match(text, /By CTD Overlay/);
   assert.match(text, /16:9 · 9:16/);

@@ -151,15 +151,19 @@ without `display`.
 | `stream.<platform>.live` | boolean | connector |
 | `stream.<platform>.title` | string | connector |
 | `stream.<platform>.startedAt` | epoch ms | connector |
+| `stream.clock` | object — the stream's start and frame rate on this server's clock, for run times and timecodes (§2.5.2) | connector (CTD Relay, 06 §6.11) |
 | `music.nowPlaying` | Track object (§2.5.1) | music connector |
-| `obs.scene` | string — current program scene | OBS |
-| `obs.streaming` | boolean | OBS |
+| `obs.scene` | string — current program scene (the main, landscape canvas's) | OBS |
+| `obs.scene.landscape` | `{ scene, sceneUuid?, appId?, since }` — the landscape (main) canvas's program scene; `appId`: the OBS machine that reported it (CTD Relay), `since`: epoch ms it became the program scene | OBS |
+| `obs.scene.vertical` | the same, for the vertical canvas (Aitum Vertical) | OBS |
+| `obs.streaming` | boolean — any output but the recording runs | OBS |
 | `obs.recording` | boolean | OBS |
 | `show.scene` | string — the overlay's active scene | core |
 | `show.lineup` | array of slots (see 09) | core |
 | `show.headliner` | string — the name on the lineup slot flagged `headliner` (09 §9.1), for settings bound to it (04 §4.3) | core |
 | `show.currentSlot` | integer index | core |
 | `show.date` | string — the show's date, `YYYY-MM-DD` (09 §9.1) | core |
+| `show.timezone` | string — the show's IANA time zone (09 §9.1), for clocks and settings bound to it | core |
 | `show.goLiveAt` | epoch ms — the instant the show's `goLive` resolves to (09 §9.2) | core |
 | `show.recStartedAt` | epoch ms | core |
 | `overlay.settings` | the overlay's resolved settings | core |
@@ -184,6 +188,10 @@ a held value counts until it is removed. `GET /api/v1/state` and the `/events` s
 same choice made with every connection. A change reaches an overlay only when the value it shows
 changes.
 
+A connection that relays OBS for several streams (CTD Relay's profiles, 06 §6.11) sets the `obs.*`
+keys per feed like any other value: an overlay fed by one profile sees that profile's OBS. Shows
+follow `obs.scene.<canvas>` (09 §9.7).
+
 ### 2.5.1 Track
 ```json
 {
@@ -195,6 +203,23 @@ changes.
 ```
 `progressAt` is the server time at which `progressMs` was true. The runtime interpolates
 progress locally between updates; templates read `SK.music.progress()` and never poll.
+
+### 2.5.2 Stream clock
+```json
+{ "startedAt": 1791831604000, "fps": 30, "offsetMs": -38, "at": 1791839012250 }
+```
+A shared reference for run times and timecodes, so overlays on several machines show the same
+second and frame. All times are **this server's** (`SK.clock.now()`'s clock):
+- `startedAt` — when the stream's session started; **absent** while no session runs (§2.8).
+- `fps` — the integer frame rate timecodes count in (the feed's, else 30).
+- `offsetMs` — the source's clock minus this server's (its own timecodes, such as a UTC time of
+  day, are on `SK.clock.now() + offsetMs`).
+- `at` — when that offset was measured.
+
+It is state, never an event per frame or second: a template computes run time as
+`SK.clock.now() − startedAt` and a non-drop-frame timecode `HH:MM:SS:FF` with
+`FF = floor((ms mod 1000) × fps / 1000)` itself, as often as it paints. CTD Relay's connector sets
+it per profile (06 §6.11): an overlay fed by one profile gets that profile's.
 
 ## 2.6 Registered event types
 

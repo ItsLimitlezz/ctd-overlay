@@ -21,6 +21,7 @@ import { systemRoutes } from './http/system.js';
 import { uiRoutes } from './http/ui.js';
 import { lockDataDir, LockError, REFRESH_MS } from './lock.js';
 import { createMediaLibrary } from './media/library.js';
+import { createObsFollow } from './obs/follow.js';
 import { mediaApiRoutes } from './media/api.js';
 import { mediaRoutes } from './media/routes.js';
 import { isPrivateAddress, liveMachineNames, machineNames } from './net.js';
@@ -109,6 +110,9 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure, readOnly });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg, readOnly });
     const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly });
+    // Shows and overlays that follow the OBS program scene (09 §9.7), from the state connections set.
+    const obs = createObsFollow({ bus, store, shows, overlays, log: log.child('obs'), passive: readOnly, record: (action, details) => audit.record({ action, ...details }) });
+    shows.useObsSources((ids) => obs.candidates(obs.bindingOfShow(ids)));
     // Alerts reach overlays through the queue (05 §5.5): one per show, or per overlay outside one.
     const alerts = createAlertQueue({
       groupOf: (id) => shows.list().find((s) => s.overlays.includes(id))?.id,
@@ -148,9 +152,10 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
     return {
-      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts, github,
+      lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts, github, obs,
       close() {
         clearInterval(freshen);
+        obs.stop();
         alerts.close();
         github.stop();
         sources.stop();
@@ -208,7 +213,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   const guard = createGuard({ auth, hosts });
   const api = createApi({ guard, hosts, store, log: log.child('api'), now: clock.now, ...(rateLimit ? { perMinute: rateLimit } : {}) });
   // Each show's and overlay's stream status (what feeds it, whether it is on air), worked out on read.
-  const streams = createStreams({ bus, connections: connectors, store });
+  const streams = createStreams({ bus, connections: connectors, store, obs: data.obs });
   const server = createHttpServer({
     log: log.child('http'),
     crash,
@@ -226,7 +231,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...alertRoutes({ api, alerts: data.alerts, overlays, shows }),
       // An overlay's URL is the public URL's, else the one the request came to (the guard checked
       // it is one of the platform's own names).
-      ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, streams, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
+      ...overlayApiRoutes({ api, overlays, templates, shows, audit, connections: connectors, streams, obs: data.obs, base: (req) => config.publicUrl || `${req.client.https ? 'https' : 'http'}://${req.headers.host}` }),
       ...templateRoutes({ api, templates, overlays, sources, audit, config, fetch, lookup, github: github.auth }),
       // The GitHub token template installs use (Settings → Integrations → GitHub).
       ...githubRoutes({ api, github }),

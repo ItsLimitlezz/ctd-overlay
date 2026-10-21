@@ -56,7 +56,7 @@ test('the OpenAPI document describes every API route, with its scope', async (t)
   }
   assert.equal(doc.paths['/api/v1/shows/{ref}'].patch['x-skp-scope'], 'timeline:write');
   assert.deepEqual(doc.paths['/api/v1/auth/login'].post.security, []);
-  assert.deepEqual(Object.keys(doc.paths['/api/v1/shows'].post.requestBody.content['application/json'].schema.properties), ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup']);
+  assert.deepEqual(Object.keys(doc.paths['/api/v1/shows'].post.requestBody.content['application/json'].schema.properties), ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup', 'followObs']);
   // Uploads are bytes, streamed or not (a media file as anything: its type is read from its bytes);
   // a write without a list of fields still takes a JSON object.
   assert.deepEqual(Object.keys(doc.paths['/api/v1/media'].post.requestBody.content), ['*/*']);
