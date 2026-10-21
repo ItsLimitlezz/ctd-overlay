@@ -101,8 +101,17 @@ export function createStreams({ bus, connections, store }) {
       if (c.everyProfile && s) for (const id of s.filter((x) => !known.some((p) => p.id === x))) profiles.push({ connection: c.id, profile: id, name: id, status: 'missing' });
     }
     const live = said.some((p) => p.live) || profiles.some((p) => p.status === 'live');
+    // A connection's health as this stream sees it: fed by only some of an every-profile
+    // connection's profiles, only their trouble counts (Miami or Bust's Instagram going down isn't
+    // DPRTMNT's problem).
+    const healthOf = (c) => {
+      const s = scopes.get(c.id);
+      if (!c.everyProfile || s === null || !['connected', 'degraded'].includes(c.status)) return { status: c.status, ...(c.detail ? { detail: c.detail } : {}) };
+      const mine = (Array.isArray(c.profiles) ? c.profiles : []).filter((p) => s.includes(p.id) && p.detail).map((p) => p.detail);
+      return mine.length ? { status: 'degraded', detail: mine.join(' · ') } : { status: 'connected' };
+    };
     return {
-      connections: feeding.map((c) => ({ id: c.id, name: c.name, connector: c.connector, status: c.status, ...(c.detail ? { detail: c.detail } : {}) })),
+      connections: feeding.map((c) => ({ id: c.id, name: c.name, connector: c.connector, ...healthOf(c) })),
       ...(said.length || profiles.length ? { onAir: live } : {}),
       platforms,
       ...(profiles.length ? { profiles } : {}),

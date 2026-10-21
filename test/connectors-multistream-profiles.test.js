@@ -127,6 +127,10 @@ test('each profile\'s chat, alerts and viewers reach only the overlays bound to 
   assert.deepEqual([a.onAir, a.viewers, a.platforms.map((p) => p.platform), a.profiles.map((p) => [p.name, p.status])], [true, 244, ['twitch', 'youtube', 'instagram'], [['Miami or Bust', 'live']]]);
   assert.deepEqual([b.onAir, 'viewers' in b, b.platforms.map((p) => p.platform), b.profiles.map((p) => [p.name, p.status, p.color])], [false, false, ['kick'], [['DPRTMNT', 'offline', '#E11D48']]]);
   assert.deepEqual(b.connections.map((c) => c.id), [conn.id]);
+  // Miami or Bust's Instagram is down: its stream says so; DPRTMNT's doesn't carry it.
+  assert.equal(get().health.status, 'degraded');
+  assert.deepEqual([a.connections[0].status, /Instagram \(Miami or Bust\)/.test(a.connections[0].detail)], ['degraded', true]);
+  assert.deepEqual(b.connections[0], { id: conn.id, name: b.connections[0].name, connector: 'ctd-multistream', status: 'connected' });
   // DPRTMNT goes live: its show is on air.
   ms.setProfileStatus('p-dprtmnt', 'live');
   await until(async () => (await streamOf(`/shows/${showB.id}`)).onAir === true, 5000, 'DPRTMNT live');
