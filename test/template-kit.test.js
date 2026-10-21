@@ -14,8 +14,8 @@ import { defer, memoryLogger, tempDir } from './helpers.js';
 const KIT = fileURLToPath(new URL('../docs/template-kit/', import.meta.url));
 const TEMPLATES = fileURLToPath(new URL('../templates/', import.meta.url));
 
-test('the reference template and the bundled Chat and Alerts templates validate with no findings', () => {
-  for (const dir of [path.join(KIT, 'mega'), path.join(TEMPLATES, 'chat'), path.join(TEMPLATES, 'alerts')]) {
+test('the reference template and the bundled Chat, Alerts and Text & Clock templates validate with no findings', () => {
+  for (const dir of [path.join(KIT, 'mega'), path.join(TEMPLATES, 'chat'), path.join(TEMPLATES, 'alerts'), path.join(TEMPLATES, 'text-clock')]) {
     const result = validatePackage(packageFromDir(dir));
     assert.deepEqual([result.errors, result.warnings], [[], []], dir);
   }

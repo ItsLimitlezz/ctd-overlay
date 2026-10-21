@@ -177,3 +177,47 @@ the plan was saved. A plan never changes a show that is live: it waits until REC
 that was down at the boundary activates it at startup, if that show day (23 or 25 hours on a
 clock-change night) isn't over; of several plans whose days have begun, only the latest is the
 show. Activation resets REC and who's on to before the show.
+
+## 9.7 Follow OBS
+
+A show **MAY** follow the OBS program scene: the operator switches once, in OBS, and the
+graphics follow (06 §6.9). It reads what OBS shows from the state its connections report per feed
+(`obs.scene.landscape`, `obs.scene.vertical`, 02 §2.5; CTD Relay's OBS events, 06 §6.11). An
+overlay outside a show **MAY** do the same with its own scenes.
+
+```json
+"followObs": {
+  "enabled": true,
+  "canvas": "landscape",
+  "source": "con_01J…/p-dprtmnt",
+  "map": [
+    { "obsScene": "Live", "obsSceneUuid": "9b1c…", "scene": "program" },
+    { "obsScene": "BRB", "scene": "brb" }
+  ],
+  "otherwise": "program"
+}
+```
+
+- **One canvas drives a show.** A show's members share one scene: its landscape and vertical
+  overlays take every scene together. So one OBS canvas drives it, `landscape` (the main canvas)
+  by default; a vertical-only show, or a vertical overlay outside a show, follows `vertical`.
+  The vertical canvas of Aitum Vertical changes scene on its own: following it is a choice.
+- **Whose OBS.** `source` is a feed as bindings name it (`"<connection>"`, or
+  `"<connection>/<profile>"` for one CTD Relay profile). Absent, it is the one feed of the show's
+  members' connections (the overlay's) that reports OBS scenes; with none, or several, nothing
+  is followed. Turning it on without a `source` while several feeds report OBS is refused
+  (`422 pick-obs`).
+- **Mapping.** An OBS scene is matched by its `sceneUuid` first, then by its name (a scene
+  renamed in OBS keeps its uuid; one made again keeps its name). `scene` is one of the members'
+  scenes, by id or core (§9.1); an OBS scene in no row takes `otherwise`, or, without it, changes
+  nothing. At most 50 rows; an OBS scene's name is at most 200 characters; each OBS scene once.
+- **Only a real change acts:** the scene the followed feed shows for the canvas became another
+  one. The first scene seen after a start, CTD Relay's resend of an unchanged scene every 60 s
+  and a scene the show is on already (a timed scene isn't restarted) take nothing.
+- **The operator stays in charge.** A scene taken by hand (or by a cue) stays until OBS changes
+  scene again, which then applies. Turning `enabled` off keeps the mapping and takes nothing.
+- Each take OBS makes is logged and recorded in the audit log (`obs.follow`, actor `obs`, with
+  the OBS scene, canvas and feed), and the show (the overlay) carries `sceneByObs: { at,
+  obsScene, canvas, source }` until another take, so Live can say "Set by OBS".
+- `followObs` is part of the show's edit (its ETag moves; `If-Match`); `null` removes it.
+

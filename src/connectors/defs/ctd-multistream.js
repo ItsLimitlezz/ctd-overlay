@@ -55,10 +55,29 @@
 //   profiles); its notices are the connection's warnings, for the
 //   operator, never for overlays. A refused token (401) needs a new one; a missing permission
 //   (403) waits for the token to be fixed; a 429 waits as long as the server asks.
+// - The stream clock (its §4, GET /clock, v1.3), with status:read: each profile's session start and
+//   frame rate become stream.clock, { startedAt?, fps, offsetMs, at } (02 §2.5.2), its start moved
+//   onto this server's clock, so templates count the run time and its timecode from SK.clock. One
+//   server answers for every profile, so one offset serves them all: NTP-style, CLOCK_SAMPLES
+//   answers a second apart (the profiles' in turn, each one's last answer its session), the one
+//   with the lowest round trip kept; again every 5 min, on every start (a reconnect) and after
+//   system.reset; a session that starts or stops in between is read again at once (one answer).
+//   No per-frame anything: templates run the clock themselves. A Relay older than v1.3 (404) is
+//   asked once a start and says so in one warning; no clock state then.
 // - Replayed after a restart of this platform: chat older than a minute goes to the buffer quietly,
 //   an alert older than two minutes is dropped (its moment has passed). Only the replay (what
 //   arrives before the stream's first heartbeat) is judged, and on CTD's clock (the Date its
 //   answers carry), so a server whose clock is off never makes live chat look old.
+//
+// - OBS (its §10, v1.4; scene events v1.5): what the CTD OBS plugin says about OBS, per profile, as
+//   that profile's state (feed-owned like the rest): obs.scene.landscape and obs.scene.vertical,
+//   each canvas's program scene { scene, sceneUuid?, appId, since }, obs.scene (the landscape
+//   scene's name, the standard's key) and obs.streaming / obs.recording from its outputs. Read from
+//   GET /profiles/<id>/obs on every connect and reset, then kept by obs.scene and obs.output
+//   events. Several OBS machines (appId) can send for one profile: each one's scene changes are
+//   ordered by atMs (its own clock: an older one is ignored), an event seen before (eventId) is
+//   dropped, and the canvas shows the most recent of them by atMs (two machines' clocks may
+//   disagree). Relay's 60 s resend of an unchanged scene (no `previous`) changes nothing.
 //
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
@@ -77,7 +96,16 @@ const OLD_CHAT_MS = 60 * 1000;
 const OLD_ALERT_MS = 2 * 60 * 1000;
 const HOLD_MS = 300; // how long an event line waits for its alert (sent right after it)
 const NOTICE_MS = 10 * 60 * 1000;
+const CLOCK_SAMPLES = 6; // answers per sync, a second apart (its §4: 4–8); more when more profiles
+const CLOCK_GAP_MS = 1000;
+const CLOCK_RESYNC_MS = 5 * 60 * 1000;
+const CLOCK_RETRY_MS = 30 * 1000; // a sync that failed (unreachable a moment) tries again this soon
+const CLOCK_SETTLE_MS = 300; // a session change waits this long for the rest of its events
+const CLOCK_OLD = 'This CTD Relay is older than v1.3: overlays get no stream clock (run time, timecode). Update CTD Relay to use them.';
 const SCOPES = ['status:read', 'chat:read', 'apps:read', 'apps:write']; // what pairing asks for
+const OBS_CANVASES = ['landscape', 'vertical'];
+const OBS_SCENE_CHARS = 200;
+const OBS_IDS = 500; // OBS event ids remembered per profile, to drop one seen twice
 const TOKEN = /^ctd_pat_[A-Za-z0-9_-]{16,200}$/;
 const EVERY = '*'; // the Profile setting's "Every profile" (empty means it too)
 const NOT_CONNECTED = 'Not connected yet: press Connect, then approve the code in CTD Relay → Settings → API (or paste a token into this connection\'s settings).';
@@ -117,9 +145,9 @@ export const ctdMultistream = {
   id: 'ctd-multistream',
   name: 'CTD Relay',
   platform: 'custom',
-  platforms: PLATFORMS,
+  platforms: [...PLATFORMS, 'obs'],
   relay: true,
-  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status'],
+  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status', 'obs'],
   auth: 'pairing',
   sharesOverlays: true,
   fields: {
@@ -225,7 +253,9 @@ export const ctdMultistream = {
     // profile (or a server without profiles), or one per profile following every profile, whose
     // values and events carry the profile (src.profile: overlays are bound to "<connection>/<id>").
     const feeds = new Map();
-    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set() });
+    // clock: its last /clock answer ({ startedAt on CTD's clock, or null; fps }); clockKey: the
+    // session (status and start) that answer was for. obs: what its OBS machines say (step 18).
+    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), clock: null, clockKey: undefined, obs: { apps: new Map(), ids: new Set(), shown: {}, keys: new Set(), seq: 0 } });
     const one = () => feeds.get('');
     const feedName = (f) => f.view?.name || f.id || '';
     // ?profile= on /status and /chat: following every profile, the feed's; following one with a
@@ -246,6 +276,15 @@ export const ctdMultistream = {
     let stopping = false;
     let rereading = null; // a profiles re-read asked for (a profile it hadn't heard of)
     const streamStop = new AbortController();
+    // The stream clock: the best sample of the last sync ({ offset: CTD's clock minus this
+    // server's, delay: its round trip, at: when it was taken }), whether CTD has no /clock (older
+    // than v1.3), the next sync's timer, and a sync under way (and one more wanted after it: a
+    // profile new here while the first one ran).
+    let clock = null;
+    let clockOld = false; // 'old' (no /clock: said in a warning) or 'denied' (403: quietly)
+    let clockNext = null;
+    let clockBusy = false;
+    let clockAgain = false;
 
     // ---- state -----------------------------------------------------------------------------
     function applyStatus(feed, s) {
@@ -317,7 +356,7 @@ export const ctdMultistream = {
       ctx.setHealth({
         status: down.length ? 'degraded' : 'connected',
         detail: down.length ? `${said(down[0])}${down.length > 1 ? ` (and ${down.length - 1} more down)` : ''}` : `Receiving ${[...kinds, 'live status'].join(', ')} from ${all.length} destination${all.length === 1 ? '' : 's'}${of}.`,
-        warnings: [...(hub?.warning ? [hub.warning] : []), ...notices.map((n) => n.text)],
+        warnings: [...(hub?.warning ? [hub.warning] : []), ...(clockOld === 'old' ? [CLOCK_OLD] : []), ...notices.map((n) => n.text)],
       });
     }
 
@@ -346,6 +385,8 @@ export const ctdMultistream = {
     // A profile that is gone: its values go, and what is bound to it alone gets nothing more.
     function dropFeed(feed) {
       for (const p of feed.shown) for (const k of KEYS(p)) ctx.setState(k, undefined, as(feed));
+      for (const k of feed.obs.keys) ctx.setState(k, undefined, { platform: 'obs', ...as(feed) });
+      if (feed.clock) ctx.setState('stream.clock', undefined, as(feed));
       feeds.delete(feed.id);
       if (held?.feed === feed) { held.cancel(); held = null; }
     }
@@ -416,7 +457,10 @@ export const ctdMultistream = {
         const { added } = await readProfiles();
         for (const f of new Set([...added, ...[...feeds.values()].filter((x) => x.unread)])) {
           f.unread = false;
-          if (feeds.get(f.id) === f) await refreshFeed(f, true);
+          if (feeds.get(f.id) === f) {
+            await refreshFeed(f, true);
+            readClockSoon(f);
+          }
         }
         health();
         return;
@@ -448,6 +492,231 @@ export const ctdMultistream = {
       n.cancel = ctx.schedule(NOTICE_MS, () => { notices = notices.filter((x) => x !== n); health(); });
       notices = [...notices.slice(-2), n];
       health();
+    }
+
+    // ---- OBS (its §10) ------------------------------------------------------------------------
+    // Per feed: each OBS app's (appId's) scene per canvas and its outputs, and what is shown. The
+    // scene shown for a canvas is the most recent of the apps' by atMs (ties: the last to arrive).
+    const appOf = (feed, appId) => {
+      let a = feed.obs.apps.get(appId);
+      if (!a) {
+        a = { scenes: {}, outputs: new Map() };
+        feed.obs.apps.set(appId, a);
+      }
+      return a;
+    };
+    const appIdOf = (d) => (str(d.appId) ? d.appId.slice(0, 100) : 'obs');
+    // An OBS event seen before (its eventId, the last OBS_IDS of the feed's): true.
+    function obsSeen(feed, id) {
+      if (!str(id)) return false;
+      if (feed.obs.ids.has(id)) return true;
+      feed.obs.ids.add(id);
+      if (feed.obs.ids.size > OBS_IDS) feed.obs.ids.delete(feed.obs.ids.values().next().value);
+      return false;
+    }
+    function obsSet(feed, key, value) {
+      ctx.setState(key, value, { platform: 'obs', ...as(feed) });
+      if (value === undefined) feed.obs.keys.delete(key);
+      else feed.obs.keys.add(key);
+    }
+
+    // One canvas's program scene from one app (an obs.scene event, or GET …/obs): taken unless
+    // that app said something newer already (atMs), or it is the scene it has (Relay's resend
+    // every 60 s, without `previous`, or an event GET …/obs already gave). at: when it changed, on
+    // CTD's clock.
+    function obsScene(feed, d, at) {
+      const canvas = d.canvas;
+      if (!OBS_CANVASES.includes(canvas) || !str(d.scene)) return;
+      const app = appOf(feed, appIdOf(d));
+      const was = app.scenes[canvas];
+      const atMs = Number.isFinite(d.atMs) ? d.atMs : undefined;
+      if (was && atMs !== undefined && was.atMs !== undefined && atMs < was.atMs) return;
+      const scene = d.scene.slice(0, OBS_SCENE_CHARS);
+      const sceneUuid = str(d.sceneUuid) ? d.sceneUuid.slice(0, 100) : undefined;
+      if (was && was.scene === scene && was.sceneUuid === sceneUuid) {
+        if (atMs !== undefined) was.atMs = atMs;
+        return;
+      }
+      app.scenes[canvas] = { scene, sceneUuid, atMs, since: Number.isFinite(at) ? at - skew : ctx.now(), seq: ++feed.obs.seq };
+      showObsScene(feed, canvas);
+    }
+    function showObsScene(feed, canvas) {
+      let best;
+      const order = (x) => x.atMs ?? -Infinity;
+      for (const [appId, a] of feed.obs.apps) {
+        const s = a.scenes[canvas];
+        if (!s) continue;
+        if (!best || order(s) > order(best) || (order(s) === order(best) && s.seq > best.seq)) best = { appId, ...s };
+      }
+      const value = best && { scene: best.scene, ...(best.sceneUuid ? { sceneUuid: best.sceneUuid } : {}), appId: best.appId, since: best.since };
+      const key = value && JSON.stringify([value.scene, value.sceneUuid, value.appId]);
+      if (feed.obs.shown[canvas] === key) return;
+      feed.obs.shown[canvas] = key;
+      obsSet(feed, `obs.scene.${canvas}`, value);
+      if (canvas === 'landscape') obsSet(feed, 'obs.scene', value?.scene);
+    }
+
+    // An output's state (obs.output, or GET …/obs): streaming while any output but "record" runs,
+    // recording while "record" does; absent until an app has said anything about its outputs.
+    function obsOutput(feed, d) {
+      if (!str(d.output) || !str(d.state)) return;
+      const app = appOf(feed, appIdOf(d));
+      const name = d.output.slice(0, 200);
+      app.outputs.delete(name);
+      app.outputs.set(name, d.state);
+      if (app.outputs.size > 50) app.outputs.delete(app.outputs.keys().next().value);
+      const outs = [...feed.obs.apps.values()].flatMap((a) => [...a.outputs]);
+      const on = (s) => ['starting', 'live', 'reconnecting'].includes(s);
+      obsSet(feed, 'obs.streaming', outs.length ? outs.some(([n, s]) => n !== 'record' && on(s)) : undefined);
+      obsSet(feed, 'obs.recording', outs.length ? outs.some(([n, s]) => n === 'record' && on(s)) : undefined);
+    }
+
+    // What OBS says now (GET /profiles/<id>/obs), on connecting and after a reset: apps that are
+    // offline are stale, and left out. An older CTD Relay (no such route) has nothing to say.
+    async function readObs(feed) {
+      const id = every ? feed.id : profile?.id;
+      if (!v12 || !str(id)) return;
+      let r;
+      try {
+        r = await get(`/profiles/${encodeURIComponent(id)}/obs`, { retries: 0 });
+      } catch (err) {
+        if (err.status === 401) throw err;
+        ctx.log.debug('OBS state could not be read', { profile: id, status: err.status, err: err.message });
+        return;
+      }
+      for (const app of Array.isArray(r.data?.apps) ? r.data.apps : []) {
+        if (!app || !str(app.appId) || app.online === false) continue;
+        for (const s of Array.isArray(app.scenes) ? app.scenes : []) if (s && typeof s === 'object') obsScene(feed, { ...s, appId: app.appId }, s.updatedAt);
+        for (const o of Array.isArray(app.outputs) ? app.outputs : []) if (o && typeof o === 'object') obsOutput(feed, { ...o, appId: app.appId });
+      }
+    }
+
+    // ---- the stream clock (its §4, v1.3) -------------------------------------------------------
+    // GET /clock?t0=<this server's time> answers when CTD received and sent it (its clock), each
+    // profile's session start (its clock) and the feed's frame rate. Times are ctx.now() (the
+    // platform's clock, a test's in tests) and waits ctx.schedule, so tests run it on a fake clock.
+    const alive = (feed) => [...feeds.values()].includes(feed);
+    const pause = (ms) => new Promise((resolve) => { ctx.schedule(ms, resolve); });
+    const clockAllowed = () => !clockOld && !stopping && scopes.includes('status:read');
+    // A session as a key (running or not, and since which second), whatever told it: /clock
+    // (epoch ms), stream.status or profile.status (ISO); a change between syncs is read again.
+    function sessionKey(status, startedAt) {
+      const t = typeof startedAt === 'number' ? startedAt : Date.parse(typeof startedAt === 'string' ? startedAt : '');
+      const running = ['live', 'starting', 'stopping'].includes(status) || Number.isFinite(t);
+      return running ? `on:${Number.isFinite(t) ? Math.floor(t / 1000) : ''}` : 'off';
+    }
+
+    // One answer for a feed: { offset, delay, at, data }, offset = CTD's clock minus this server's
+    // and delay = the round trip without CTD's own time (its §4); undefined when there is nothing
+    // to read: no /clock (older than v1.3, said once) or a profile deleted meanwhile.
+    async function clockSample(feed) {
+      const t0 = ctx.now();
+      const r = await get(pathFor(`/clock?t0=${t0}`, feed), { retries: 0, timeoutMs: 5000, acceptStatus: (s) => s === 404 || s === 403 });
+      const t3 = ctx.now();
+      if (r.status === 404 && r.data?.code === 'unknown_profile') return undefined;
+      if (r.status === 404 || r.status === 403) {
+        // 403: the token can't read it after all; nothing to say about the server.
+        clockOld = r.status === 404 ? 'old' : 'denied';
+        if (r.status === 404) {
+          ctx.log.info('CTD Relay has no stream clock (older than v1.3)');
+          health();
+        }
+        return undefined;
+      }
+      const d = r.data && typeof r.data === 'object' ? r.data : {};
+      if (!Number.isFinite(d.receivedAt) || !Number.isFinite(d.sentAt)) throw new Error('CTD Relay answered GET /clock with something this version doesn\'t understand.');
+      return { offset: ((d.receivedAt - t0) + (d.sentAt - t3)) / 2, delay: (t3 - t0) - (d.sentAt - d.receivedAt), at: t3, data: d };
+    }
+
+    function takeAnswer(feed, d) {
+      const s = d.session && typeof d.session === 'object' ? d.session : {};
+      const startedAt = Number.isFinite(s.startedAt) && s.startedAt > 0 ? s.startedAt : null;
+      feed.clock = { startedAt, fps: Number.isFinite(d.fps) && d.fps >= 1 && d.fps <= 240 ? Math.round(d.fps) : 30 };
+      feed.clockKey = sessionKey(s.status, startedAt);
+    }
+
+    // stream.clock (02 §2.5.2): the session's start on this server's clock (absent while it isn't
+    // running), the frame rate, the offset to CTD's clock, and when that was measured.
+    function publishClock(feed) {
+      if (!clock || !feed.clock || !alive(feed)) return;
+      const start = feed.clock.startedAt;
+      ctx.setState('stream.clock', {
+        ...(Number.isFinite(start) ? { startedAt: Math.round(start - clock.offset) } : {}),
+        fps: feed.clock.fps,
+        offsetMs: Math.round(clock.offset),
+        at: Math.round(clock.at),
+      }, as(feed));
+    }
+
+    // A sync: CLOCK_SAMPLES answers a second apart (at least one per profile, in turn), the lowest
+    // round trip's offset kept; each profile's session from its last answer. Then again in 5 min.
+    // A sync already under way is fresh enough (system.reset right after a start).
+    async function syncClock() {
+      if (!clockAllowed() || clockBusy) return;
+      clockBusy = true;
+      clockNext?.();
+      clockNext = null;
+      let wait = CLOCK_RESYNC_MS;
+      try {
+        const list = [...feeds.values()];
+        let best = null;
+        const answers = new Map();
+        for (let i = 0; list.length && i < Math.max(CLOCK_SAMPLES, list.length) && !clockOld; i++) {
+          if (i) await pause(CLOCK_GAP_MS);
+          if (stopping) return;
+          const feed = list[i % list.length];
+          if (!alive(feed)) continue;
+          const s = await clockSample(feed);
+          if (!s) continue;
+          if (!best || s.delay < best.delay) best = s;
+          answers.set(feed, s.data);
+        }
+        if (!best) return;
+        clock = { offset: best.offset, delay: best.delay, at: best.at };
+        for (const [feed, d] of answers) {
+          takeAnswer(feed, d);
+          publishClock(feed);
+        }
+      } catch (err) {
+        wait = CLOCK_RETRY_MS;
+        ctx.log.debug('the stream clock could not be read; trying again soon', { err: err.message });
+      } finally {
+        clockBusy = false;
+        if (clockAllowed()) {
+          clockNext = ctx.schedule(clockAgain ? 0 : wait, syncClock);
+          clockAgain = false;
+        }
+      }
+    }
+
+    // A sync now (a start, system.reset): never a failure of the connection.
+    function startClock() {
+      syncClock().catch((err) => ctx.log.debug('the stream clock sync stopped', { err: err.message }));
+    }
+
+    // One feed read again (a session started or stopped, a profile new here), with the offset of
+    // the last sync.
+    function readClockSoon(feed) {
+      if (!feed || !clockAllowed()) return;
+      if (!clock) { // the first sync is still under way: one more after it, with this feed in it
+        if (clockBusy) clockAgain = true;
+        return;
+      }
+      feed.clockSoon?.();
+      feed.clockSoon = ctx.schedule(CLOCK_SETTLE_MS, async () => {
+        feed.clockSoon = null;
+        try {
+          const s = await clockSample(feed);
+          if (!s || !alive(feed)) return;
+          takeAnswer(feed, s.data);
+          publishClock(feed);
+        } catch (err) {
+          ctx.log.debug('the stream clock could not be read for a session change', { err: err.message });
+        }
+      });
+    }
+    function sessionSeen(feed, status, startedAt) {
+      if (feed && feed.clockKey !== undefined && sessionKey(status, startedAt) !== feed.clockKey) readClockSoon(feed);
     }
 
     // ---- chat and alerts -------------------------------------------------------------------
@@ -515,9 +784,14 @@ export const ctdMultistream = {
         if (every && str(d.id) && /^[^\s/]{1,100}$/.test(d.id)) {
           const f = feedFor(d.id);
           f.view = profileView(d);
+          sessionSeen(f, d.status, d.startedAt);
           showProfiles();
           health();
-        } else if (profile && d.id === profile.id) { setProfile(d); health(); }
+        } else if (profile && d.id === profile.id) {
+          setProfile(d);
+          sessionSeen(one(), d.status, d.startedAt);
+          health();
+        }
         return undefined;
       }
       const feed = feedOfEnv(env);
@@ -559,7 +833,17 @@ export const ctdMultistream = {
         if (!a) return false;
         return ctx.publish(type, a, opts({ dedupeKey: key })) !== undefined || ctx.seen(key);
       }
-      if (type === 'stream.status') { feed.session = d; return publishState(feed); }
+      if (type === 'obs.scene' || type === 'obs.output') {
+        if (obsSeen(feed, d.eventId)) return undefined;
+        if (type === 'obs.scene') obsScene(feed, d, Number.isFinite(d.at) ? d.at : env.ts);
+        else obsOutput(feed, d);
+        return undefined;
+      }
+      if (type === 'stream.status') {
+        feed.session = d;
+        sessionSeen(feed, d.status, d.startedAt);
+        return publishState(feed);
+      }
       if (type === 'destination.status') {
         if (str(d.id)) feed.dests.set(d.id, d);
         return publishState(feed);
@@ -585,6 +869,7 @@ export const ctdMultistream = {
         const status = await get(pathFor('/status', feed));
         clockFrom(status);
         applyStatus(feed, status.data);
+        await readObs(feed);
         if (withChat && cfg.chat) {
           const r = await get(pathFor('/chat?limit=200', feed));
           for (const env of Array.isArray(r.data?.items) ? r.data.items : []) if (env && env.type === 'chat.message') chat(env, { backfill: true, feed });
@@ -615,6 +900,7 @@ export const ctdMultistream = {
         if (every) await readProfiles();
         await refresh(true);
         cursor(frame.id);
+        startClock();
         return;
       }
       let env;
@@ -644,7 +930,7 @@ export const ctdMultistream = {
     async function follow() {
       const types = [
         ...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice',
-        ...(v12 ? ['profile.status', 'profiles.changed'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
+        ...(v12 ? ['profile.status', 'profiles.changed', 'obs.scene', 'obs.output'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
       ];
       const from = ctx.memory.get('cursor');
       // Every profile in one stream (?profile=*, its §4): each envelope says whose (src.profile).
@@ -724,6 +1010,7 @@ export const ctdMultistream = {
           throw err;
         }
         hub?.start();
+        startClock();
         // Nothing for 45 s (it sends a heartbeat every 15): the stream is dead without saying so.
         ctx.every(15000, () => {
           if (active) { active = false; quiet = 0; return; }

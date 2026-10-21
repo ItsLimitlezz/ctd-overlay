@@ -17,6 +17,7 @@
 // second in server time.
 import * as api from '../api.js';
 import { badge, clock, confirm, countdown, empty, every, field, h, isPhone, menu, mount, notice, pageHead, preview, run, toast } from '../dom.js';
+import { byObsWords } from '../obs.js';
 import { isRunning, streamStatus } from '../streams.js';
 import { overlayPanel } from './live-overlay.js';
 
@@ -535,7 +536,9 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
   // ---- scenes ----------------------------------------------------------------------------------
   const scenesBody = h('div.stack');
   const returnNote = h('div.small.muted', { hidden: true });
-  const scenesCard = h('div.card', h('div.card-head', h('h2', 'Scenes')), h('div.stack', scenesBody, returnNote));
+  // The scene OBS took last (Follow OBS, 09 §9.7), until another take.
+  const obsNote = h('div.small.obs-note', { hidden: true });
+  const scenesCard = h('div.card', h('div.card-head', h('h2', 'Scenes')), h('div.stack', scenesBody, obsNote, returnNote));
   let sceneButtons = new Map();
   function sceneButton(s) {
     const b = h('button.btn', { type: 'button', 'aria-pressed': 'false', disabled: !canControl, onclick: async () => {
@@ -562,6 +565,9 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
   function renderScenes() {
     const active = cat.sceneKey(show.scene);
     for (const [key, b] of sceneButtons) b.setAttribute('aria-pressed', String(key === active));
+    const byObs = byObsWords(show.sceneByObs, tz());
+    obsNote.hidden = !byObs;
+    set(obsNote, byObs ? `${cat.sceneLabel(show.scene)}: ${byObs}` : '');
   }
 
   // ---- actions ---------------------------------------------------------------------------------

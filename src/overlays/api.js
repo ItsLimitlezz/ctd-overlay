@@ -3,7 +3,7 @@
 //   GET    /api/v1/overlays                    every overlay, paged
 //   POST   /api/v1/overlays                    { slug, template: { id, version }, settings?, connections?, role? }
 //   GET    /api/v1/overlays/:ref               by slug or id
-//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections?, role? } (If-Match)
+//   PATCH  /api/v1/overlays/:ref               { settings?, slug?, keyRequired?, connections?, role?, followObs? } (If-Match)
 //   DELETE /api/v1/overlays/:ref
 //   POST   /api/v1/overlays/:ref/upgrade       { version, dryRun?, confirm?, runMigrate? } (04 §4.10)
 //   POST   /api/v1/overlays/:ref/revert        back to the version and settings before the last upgrade
@@ -30,10 +30,14 @@
 // `role` ("Role in OBS", 06 §6.11): the overlay's role in an OBS scene, the same for the equivalent
 // overlay of every stream ("chat-main"); CTD Relay's OBS plugin uses it to re-point its
 // browser sources when it switches stream. Absent: the template's short name ("takeover").
+//
+// `followObs` (09 §9.7): outside a show, the OBS canvas it follows, whose OBS, and OBS scene →
+// scene (src/obs/mapping.js); `sceneByObs`: its scene was last taken by OBS (src/obs/follow.js).
 import { connectionOf, profileOf } from '../bus/owners.js';
 import { ApiError } from '../http/api.js';
+import { FOLLOW_OBS_FIELDS } from '../obs/mapping.js';
 
-export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections, streams }) {
+export function overlayApiRoutes({ api, overlays, templates, shows, audit, base, connections, streams, obs }) {
   const tag = 'Overlays';
   const r = (def) => api.route({ tag, ...def });
   const docOf = (ref) => {
@@ -46,6 +50,8 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
     const { doc } = found;
     const d = doc.data;
     const installed = templates.get(d.template.id, d.template.version);
+    // Its scene outside a show, when OBS took it last (Follow OBS).
+    const byObs = shows?.overlayScene?.(doc.id)?.sceneByObs;
     return {
       id: doc.id,
       rev: doc.rev,
@@ -58,6 +64,8 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
       connections: overlays.bindingOf(doc),
       bound: boundTo(overlays.bindingOf(doc)),
       ...(d.role ? { role: d.role } : {}),
+      ...(d.followObs ? { followObs: d.followObs } : {}),
+      ...(byObs ? { sceneByObs: { ...byObs, at: new Date(byObs.at).toISOString() } } : {}),
       ...(streams ? { stream: streams.ofOverlay(doc) } : {}),
       ...(d.previous ? { previous: { template: d.previous.template, at: d.previous.at } } : {}),
       ...(shows ? { show: shows.list().find((s) => s.overlays.includes(doc.id))?.name } : {}),
@@ -116,11 +124,17 @@ export function overlayApiRoutes({ api, overlays, templates, shows, audit, base,
       return { status: 201, body: resource(docOf(doc.data.slug)) };
     } }),
     r({ method: 'GET', path: '/api/v1/overlays/:ref', scope: 'overlays:read', summary: 'An overlay, by slug or id', run: ({ params }) => resource(docOf(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, role in OBS, or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections', 'role'] }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
+    r({ method: 'PATCH', path: '/api/v1/overlays/:ref', scope: 'overlays:write', summary: 'Change an overlay\'s settings, slug, connections, role in OBS, what it follows in OBS (followObs), or whether its URL needs its key ("no key required" is the owner\'s: system:admin)', body: { fields: ['settings', 'slug', 'keyRequired', 'connections', 'role', 'followObs'], nested: { followObs: FOLLOW_OBS_FIELDS } }, resource: rev, run: ({ params, body, ifRev, who, req }) => {
       const { doc } = docOf(params.ref);
       if (body.keyRequired !== undefined && typeof body.keyRequired !== 'boolean') throw new ApiError(422, 'invalid', '"keyRequired" is true or false.');
       const had = overlays.bindingOf(doc);
       checkConnections(body.connections, had === 'all' ? [] : had);
+      // Following OBS with none picked while several feed it: which one is the operator's choice.
+      const f = body.followObs;
+      if (obs && f && typeof f === 'object' && f.enabled === true && !f.source) {
+        const several = obs.candidates(body.connections === undefined ? had : body.connections === 'all' ? 'all' : Array.isArray(body.connections) ? body.connections : []);
+        if (several.length > 1) throw new ApiError(422, 'pick-obs', `Several OBS feed this overlay (${several.join(', ')}): pick the one it follows ("followObs.source").`);
+      }
       // Opening an overlay's page and data to anyone on the network is the owner's choice (07 §7.6),
       // not every editor's. Asking for the key again only makes it safer, so that stays theirs.
       if (body.keyRequired === false && overlays.keyRequired(doc) && !who.scopes.has('system:admin')) {

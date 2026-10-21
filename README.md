@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="docs/GUIDE.md">The guide</a> ·
   <a href="docs/RUNNING.md">Running it</a> ·
   <a href="docs/template-kit/TEMPLATE-GUIDE.md">Make a template</a> ·
   <a href="docs/standard/README.md">The standard</a> ·
@@ -30,8 +31,9 @@
 - **The show runs itself.** Scenes, timed returns, lineups and cues fire on the server's clock,
   so every overlay changes on the same frame, horizontal and vertical.
 - **Templates.** Install from a file, a link or a (private) GitHub release, preview them with
-  sample data, and they update themselves. Make your own with the
-  [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
+  sample data, and they update themselves. Built in: Chat, Alerts, the TAKEOVER show package and
+  [Text & Clock](docs/RUNNING.md#text--clock) (lines of text with a clock, countdown, stream run
+  time or timecode). Make your own with the [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
 - **Built for the night.** A phone-first Live console, Simulate buttons, alert Skip / Replay /
   Pause, previews of every overlay, and roles for your crew.
 - **Yours.** One small Node server with no dependencies, on your NAS or PC. Overlay links carry
@@ -85,7 +87,8 @@ npm start
 
 Open the address it prints, enter the **setup code** from its log, and create the owner. Then
 **Connections → CTD Relay → Set up → Connect**, and add your overlays to OBS from their pages.
-The full walkthrough is in [docs/RUNNING.md](docs/RUNNING.md).
+New here? [The guide](docs/GUIDE.md) explains how it all fits together, from first start to show
+night. The full set-up walkthrough is in [docs/RUNNING.md](docs/RUNNING.md).
 
 ## The CTD family
 

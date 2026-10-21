@@ -277,6 +277,14 @@ export function createBus({ now = Date.now, idgen = defaultIdgen, timers = { set
       return out;
     },
 
+    // Every owner's own value for key (not worked out): [{ owner, value, stale? }]. What follows a
+    // value per connection or feed (OBS scenes, src/obs/follow.js) reads them one by one.
+    entriesOf(key) {
+      const owners = state.get(key);
+      if (!owners) return [];
+      return [...owners].map(([owner, e]) => ({ owner, value: structuredClone(e.value), ...(e.stale ? { stale: true } : {}) }));
+    },
+
     // What the connections passing allow(owner) say for key, by rules 2–4 (the core's own value
     // left out: a stream's status is what its connections report, not what a demo set):
     // { value, owner, stale? }, or undefined.
