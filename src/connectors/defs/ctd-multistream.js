@@ -60,6 +60,16 @@
 //   arrives before the stream's first heartbeat) is judged, and on CTD's clock (the Date its
 //   answers carry), so a server whose clock is off never makes live chat look old.
 //
+// - OBS (its §10, v1.4; scene events v1.5): what the CTD OBS plugin says about OBS, per profile, as
+//   that profile's state (feed-owned like the rest): obs.scene.landscape and obs.scene.vertical,
+//   each canvas's program scene { scene, sceneUuid?, appId, since }, obs.scene (the landscape
+//   scene's name, the standard's key) and obs.streaming / obs.recording from its outputs. Read from
+//   GET /profiles/<id>/obs on every connect and reset, then kept by obs.scene and obs.output
+//   events. Several OBS machines (appId) can send for one profile: each one's scene changes are
+//   ordered by atMs (its own clock: an older one is ignored), an event seen before (eventId) is
+//   dropped, and the canvas shows the most recent of them by atMs (two machines' clocks may
+//   disagree). Relay's 60 s resend of an unchanged scene (no `previous`) changes nothing.
+//
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
 import { readSse } from '../sse-client.js';
@@ -78,6 +88,9 @@ const OLD_ALERT_MS = 2 * 60 * 1000;
 const HOLD_MS = 300; // how long an event line waits for its alert (sent right after it)
 const NOTICE_MS = 10 * 60 * 1000;
 const SCOPES = ['status:read', 'chat:read', 'apps:read', 'apps:write']; // what pairing asks for
+const OBS_CANVASES = ['landscape', 'vertical'];
+const OBS_SCENE_CHARS = 200;
+const OBS_IDS = 500; // OBS event ids remembered per profile, to drop one seen twice
 const TOKEN = /^ctd_pat_[A-Za-z0-9_-]{16,200}$/;
 const EVERY = '*'; // the Profile setting's "Every profile" (empty means it too)
 const NOT_CONNECTED = 'Not connected yet: press Connect, then approve the code in CTD Relay → Settings → API (or paste a token into this connection\'s settings).';
@@ -117,9 +130,9 @@ export const ctdMultistream = {
   id: 'ctd-multistream',
   name: 'CTD Relay',
   platform: 'custom',
-  platforms: PLATFORMS,
+  platforms: [...PLATFORMS, 'obs'],
   relay: true,
-  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status'],
+  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status', 'obs'],
   auth: 'pairing',
   sharesOverlays: true,
   fields: {
@@ -225,7 +238,7 @@ export const ctdMultistream = {
     // profile (or a server without profiles), or one per profile following every profile, whose
     // values and events carry the profile (src.profile: overlays are bound to "<connection>/<id>").
     const feeds = new Map();
-    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set() });
+    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), obs: { apps: new Map(), ids: new Set(), shown: {}, keys: new Set(), seq: 0 } });
     const one = () => feeds.get('');
     const feedName = (f) => f.view?.name || f.id || '';
     // ?profile= on /status and /chat: following every profile, the feed's; following one with a
@@ -346,6 +359,7 @@ export const ctdMultistream = {
     // A profile that is gone: its values go, and what is bound to it alone gets nothing more.
     function dropFeed(feed) {
       for (const p of feed.shown) for (const k of KEYS(p)) ctx.setState(k, undefined, as(feed));
+      for (const k of feed.obs.keys) ctx.setState(k, undefined, { platform: 'obs', ...as(feed) });
       feeds.delete(feed.id);
       if (held?.feed === feed) { held.cancel(); held = null; }
     }
@@ -448,6 +462,103 @@ export const ctdMultistream = {
       n.cancel = ctx.schedule(NOTICE_MS, () => { notices = notices.filter((x) => x !== n); health(); });
       notices = [...notices.slice(-2), n];
       health();
+    }
+
+    // ---- OBS (its §10) ------------------------------------------------------------------------
+    // Per feed: each OBS app's (appId's) scene per canvas and its outputs, and what is shown. The
+    // scene shown for a canvas is the most recent of the apps' by atMs (ties: the last to arrive).
+    const appOf = (feed, appId) => {
+      let a = feed.obs.apps.get(appId);
+      if (!a) {
+        a = { scenes: {}, outputs: new Map() };
+        feed.obs.apps.set(appId, a);
+      }
+      return a;
+    };
+    const appIdOf = (d) => (str(d.appId) ? d.appId.slice(0, 100) : 'obs');
+    // An OBS event seen before (its eventId, the last OBS_IDS of the feed's): true.
+    function obsSeen(feed, id) {
+      if (!str(id)) return false;
+      if (feed.obs.ids.has(id)) return true;
+      feed.obs.ids.add(id);
+      if (feed.obs.ids.size > OBS_IDS) feed.obs.ids.delete(feed.obs.ids.values().next().value);
+      return false;
+    }
+    function obsSet(feed, key, value) {
+      ctx.setState(key, value, { platform: 'obs', ...as(feed) });
+      if (value === undefined) feed.obs.keys.delete(key);
+      else feed.obs.keys.add(key);
+    }
+
+    // One canvas's program scene from one app (an obs.scene event, or GET …/obs): taken unless
+    // that app said something newer already (atMs), or it is the scene it has (Relay's resend
+    // every 60 s, without `previous`, or an event GET …/obs already gave). at: when it changed, on
+    // CTD's clock.
+    function obsScene(feed, d, at) {
+      const canvas = d.canvas;
+      if (!OBS_CANVASES.includes(canvas) || !str(d.scene)) return;
+      const app = appOf(feed, appIdOf(d));
+      const was = app.scenes[canvas];
+      const atMs = Number.isFinite(d.atMs) ? d.atMs : undefined;
+      if (was && atMs !== undefined && was.atMs !== undefined && atMs < was.atMs) return;
+      const scene = d.scene.slice(0, OBS_SCENE_CHARS);
+      const sceneUuid = str(d.sceneUuid) ? d.sceneUuid.slice(0, 100) : undefined;
+      if (was && was.scene === scene && was.sceneUuid === sceneUuid) {
+        if (atMs !== undefined) was.atMs = atMs;
+        return;
+      }
+      app.scenes[canvas] = { scene, sceneUuid, atMs, since: Number.isFinite(at) ? at - skew : ctx.now(), seq: ++feed.obs.seq };
+      showObsScene(feed, canvas);
+    }
+    function showObsScene(feed, canvas) {
+      let best;
+      const order = (x) => x.atMs ?? -Infinity;
+      for (const [appId, a] of feed.obs.apps) {
+        const s = a.scenes[canvas];
+        if (!s) continue;
+        if (!best || order(s) > order(best) || (order(s) === order(best) && s.seq > best.seq)) best = { appId, ...s };
+      }
+      const value = best && { scene: best.scene, ...(best.sceneUuid ? { sceneUuid: best.sceneUuid } : {}), appId: best.appId, since: best.since };
+      const key = value && JSON.stringify([value.scene, value.sceneUuid, value.appId]);
+      if (feed.obs.shown[canvas] === key) return;
+      feed.obs.shown[canvas] = key;
+      obsSet(feed, `obs.scene.${canvas}`, value);
+      if (canvas === 'landscape') obsSet(feed, 'obs.scene', value?.scene);
+    }
+
+    // An output's state (obs.output, or GET …/obs): streaming while any output but "record" runs,
+    // recording while "record" does; absent until an app has said anything about its outputs.
+    function obsOutput(feed, d) {
+      if (!str(d.output) || !str(d.state)) return;
+      const app = appOf(feed, appIdOf(d));
+      const name = d.output.slice(0, 200);
+      app.outputs.delete(name);
+      app.outputs.set(name, d.state);
+      if (app.outputs.size > 50) app.outputs.delete(app.outputs.keys().next().value);
+      const outs = [...feed.obs.apps.values()].flatMap((a) => [...a.outputs]);
+      const on = (s) => ['starting', 'live', 'reconnecting'].includes(s);
+      obsSet(feed, 'obs.streaming', outs.length ? outs.some(([n, s]) => n !== 'record' && on(s)) : undefined);
+      obsSet(feed, 'obs.recording', outs.length ? outs.some(([n, s]) => n === 'record' && on(s)) : undefined);
+    }
+
+    // What OBS says now (GET /profiles/<id>/obs), on connecting and after a reset: apps that are
+    // offline are stale, and left out. An older CTD Relay (no such route) has nothing to say.
+    async function readObs(feed) {
+      const id = every ? feed.id : profile?.id;
+      if (!v12 || !str(id)) return;
+      let r;
+      try {
+        r = await get(`/profiles/${encodeURIComponent(id)}/obs`, { retries: 0 });
+      } catch (err) {
+        if (err.status === 401) throw err;
+        ctx.log.debug('OBS state could not be read', { profile: id, status: err.status, err: err.message });
+        return;
+      }
+      for (const app of Array.isArray(r.data?.apps) ? r.data.apps : []) {
+        if (!app || !str(app.appId) || app.online === false) continue;
+        for (const s of Array.isArray(app.scenes) ? app.scenes : []) if (s && typeof s === 'object') obsScene(feed, { ...s, appId: app.appId }, s.updatedAt);
+        for (const o of Array.isArray(app.outputs) ? app.outputs : []) if (o && typeof o === 'object') obsOutput(feed, { ...o, appId: app.appId });
+      }
     }
 
     // ---- chat and alerts -------------------------------------------------------------------
@@ -559,6 +670,12 @@ export const ctdMultistream = {
         if (!a) return false;
         return ctx.publish(type, a, opts({ dedupeKey: key })) !== undefined || ctx.seen(key);
       }
+      if (type === 'obs.scene' || type === 'obs.output') {
+        if (obsSeen(feed, d.eventId)) return undefined;
+        if (type === 'obs.scene') obsScene(feed, d, Number.isFinite(d.at) ? d.at : env.ts);
+        else obsOutput(feed, d);
+        return undefined;
+      }
       if (type === 'stream.status') { feed.session = d; return publishState(feed); }
       if (type === 'destination.status') {
         if (str(d.id)) feed.dests.set(d.id, d);
@@ -585,6 +702,7 @@ export const ctdMultistream = {
         const status = await get(pathFor('/status', feed));
         clockFrom(status);
         applyStatus(feed, status.data);
+        await readObs(feed);
         if (withChat && cfg.chat) {
           const r = await get(pathFor('/chat?limit=200', feed));
           for (const env of Array.isArray(r.data?.items) ? r.data.items : []) if (env && env.type === 'chat.message') chat(env, { backfill: true, feed });
@@ -644,7 +762,7 @@ export const ctdMultistream = {
     async function follow() {
       const types = [
         ...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice',
-        ...(v12 ? ['profile.status', 'profiles.changed'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
+        ...(v12 ? ['profile.status', 'profiles.changed', 'obs.scene', 'obs.output'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
       ];
       const from = ctx.memory.get('cursor');
       // Every profile in one stream (?profile=*, its §4): each envelope says whose (src.profile).

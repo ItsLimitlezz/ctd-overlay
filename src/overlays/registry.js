@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isOfConnection, profileOf } from '../bus/owners.js';
 import { newId } from '../ids.js';
+import { cleanFollowObs } from '../obs/mapping.js';
 import { runMigrate } from '../templates/migrate.js';
 import { compareVersions } from '../templates/registry.js';
 import { boundKeys, diffSettings, jsonBytes, migrateSettings, RESOLVED_BYTES, resolveSettings, SAVED_BYTES, validateSettings } from '../templates/settings.js';
@@ -219,8 +220,8 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     return doc;
   }
 
-  // Changes an overlay's settings, slug, bindings and whether its URL needs its key, any of them
-  // (those `changes` has). Every one is checked before anything is saved, then all are saved at
+  // Changes an overlay's settings, slug, bindings, whether its URL needs its key, its role and
+  // what it follows in OBS (followObs, src/obs/mapping.js), any of them (those `changes` has). Every one is checked before anything is saved, then all are saved at
   // once, so a refused one leaves the overlay as it was (a PATCH, 03 §3.1). ifRev: the revision the
   // caller last saw; a newer one is a ConflictError (03 §3.1, H16). A new slug changes the
   // overlay's URL (01 §1.4), so OBS sources must be updated; its key, settings and channel stay.
@@ -251,13 +252,22 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       else delete next.keyRequired;
     }
     if (has('connections')) next.connections = checkBinding(changes.connections);
+    // Follow OBS outside a show (09 §9.7): its scenes are its template's (by id or core).
+    if (has('followObs')) {
+      const scenes = templates.get(doc.data.template.id, doc.data.template.version)?.manifest.scenes || [];
+      const f = cleanFollowObs(changes.followObs, { sceneOk: (s) => scenes.some((x) => x.id === s || x.core === s), bad: (msg, code = 'bad-follow-obs') => { throw new OverlayError(msg, code); } });
+      if (f) next.followObs = f;
+      else delete next.followObs;
+    }
     if (has('role')) {
       const role = checkRole(changes.role);
       if (role) next.role = role;
       else delete next.role;
     }
     const rebound = JSON.stringify(bindingOf({ data: next })) !== JSON.stringify(bindingOf(doc));
-    if (!has('settings') && !rebound && next.slug === doc.data.slug && next.keyRequired === doc.data.keyRequired && next.role === doc.data.role) return doc;
+    const followChanged = JSON.stringify(next.followObs) !== JSON.stringify(doc.data.followObs);
+    const shared = rebound || next.slug !== doc.data.slug || next.keyRequired !== doc.data.keyRequired || next.role !== doc.data.role;
+    if (!has('settings') && !shared && !followChanged) return doc;
     const saved = store.put('overlays', doc.id, next, { ifRev: ifRev ?? doc.rev });
     if (saved.data.slug !== doc.data.slug) {
       bySlug.delete(doc.data.slug);
@@ -266,7 +276,8 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
     if (has('settings') || rebound) open(saved);
     // Streams opened without the key end once it is needed: they come back with it, or not at all.
     if (secrets && !keyRequired(doc) && keyRequired(saved)) bus.channel(doc.id).reset();
-    changed();
+    // What other apps are told (its URL, key, bindings, role) moved; following OBS alone isn't that.
+    if (has('settings') || shared) changed();
     return saved;
   }
 

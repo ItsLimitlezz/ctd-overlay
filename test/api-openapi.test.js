@@ -264,6 +264,8 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('POST', '/alerts/resume', { body: {} });
   await call('POST', '/alerts/skip', { body: {} });
   await call('POST', '/alerts/replay', { body: {} });
+  // Follow OBS outside a show (09 §9.7).
+  await call('PATCH', '/overlays/solo', { body: { followObs: { enabled: true, canvas: 'vertical', map: [{ obsScene: 'BRB V', scene: 'brb' }] } } });
   await call('PUT', '/overlays/solo/scene', { body: { scene: 'brb' } });
   await call('POST', '/overlays/solo/actions/titleCard', { body: {} });
   await call('POST', '/overlays', { body: { slug: 'up', template: { id: 'dev.skp.sample', version: '1.0.0' } } });
@@ -278,6 +280,7 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('GET', '/shows');
   await call('GET', '/shows/Night');
   await call('PATCH', '/shows/Night', { body: { goLive: '21:30' } });
+  await call('PATCH', '/shows/Night', { body: { followObs: { enabled: true, map: [{ obsScene: 'BRB', obsSceneUuid: 'u-brb', scene: 'brb' }], otherwise: 'program' } } });
   await call('PUT', '/shows/Night/scene', { body: { scene: 'brb' } });
   await call('POST', '/shows/Night/triggers/titleCard', { body: {} });
   await call('PUT', '/shows/Night/slot', { body: { slot: 0 } });

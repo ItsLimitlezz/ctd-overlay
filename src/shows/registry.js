@@ -19,7 +19,11 @@
 //
 // A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
 // button work across templates: each member gets the name its own template knows.
+//
+// Follow OBS (09 §9.7, src/obs/follow.js): a show's `followObs` maps the OBS program scene to one of
+// its scenes; a take OBS made says so on the show (sceneByObs) until the next take.
 import { newId } from '../ids.js';
+import { cleanFollowObs } from '../obs/mapping.js';
 import { ConflictError } from '../store/index.js';
 import { isDate, isTime, isTimezone, resolveTime } from './time.js';
 
@@ -73,6 +77,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   const returns = new Map(); // show id or overlay id → timer for a timed scene's return
   const goLives = new Map(); // show id → timer for REC at go-live
   let stopped = false;
+  let obsSources; // (overlay ids) → the feeds with OBS scenes that feed them (src/obs/follow.js)
 
   function* all() {
     for (let after = ''; ;) {
@@ -227,6 +232,16 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     if (!partial && out.dayBoundary === undefined) out.dayBoundary = '12:00';
     if (input.lineup !== undefined) out.lineup = cleanLineup(input.lineup, bad);
     else if (!partial) out.lineup = [];
+    // Follow OBS: its scenes are the members' (those of this change, else the show's).
+    if (input.followObs !== undefined) {
+      const ids = out.overlays ?? (id && store.get('shows', id)?.data.overlays) ?? [];
+      const list = members({ overlays: ids });
+      const f = cleanFollowObs(input.followObs, { sceneOk: (s) => !!sceneDef(list, s), bad: (msg, code = 'invalid') => { throw new ShowError(msg, code); } });
+      // On, with no OBS picked while several feed the show: which one is the operator's choice.
+      const several = f?.enabled && !f.source ? obsSources?.(ids) || [] : [];
+      if (several.length > 1) throw new ShowError(`Several OBS feed this show (${several.join(', ')}): pick the one it follows ("followObs.source").`, 'pick-obs');
+      out.followObs = f;
+    }
     return out;
   }
 
@@ -271,6 +286,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
+    if (data.followObs === null) delete data.followObs;
     const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
     publish(doc);
     arm(doc);
@@ -286,6 +302,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const data = clean(patch || {}, { partial: true, id: doc.id });
     const next = { ...doc.data, ...data, editRev: editRev(doc.data) + 1 };
     if (next.goLive === null) delete next.goLive;
+    if (next.followObs === null) delete next.followObs;
     // Who's on follows the act through a lineup edit (an act added above it moves its position),
     // and is cleared if the act is gone.
     if (data.lineup && Number.isInteger(doc.data.currentSlot)) {
@@ -406,7 +423,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return def;
   }
 
-  function take(ref, scene, { transition = 'fade', actor = 'operator', returning = false } = {}) {
+  // obs: the OBS scene change that made this take ({ obsScene, canvas, source }, src/obs/follow.js).
+  function take(ref, scene, { transition = 'fade', actor = 'operator', returning = false, obs } = {}) {
     const doc = get(ref);
     const list = members(doc.data);
     const def = checkScene(list, scene, transition);
@@ -414,6 +432,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     const core = coreOf(def);
     const next = { ...doc.data, scene, sceneTakenAt: t };
     delete next.sceneReturn;
+    delete next.sceneByObs;
+    if (obs) next.sceneByObs = { at: t, ...obs };
     if (def.durationMs && def.then) next.sceneReturn = { at: t + def.durationMs, then: def.then, from: scene };
     // REC (v0's rule): on air from the first program take; back to before the show on starting;
     // under "auto", from go-live once it has come (and not more than LIVE_MS ago).
@@ -487,14 +507,14 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return { id: r.doc.id, slug: r.doc.data.slug, channel: r.channel, manifest: r.template?.manifest };
   }
 
-  function takeOverlay(ref, scene, { transition = 'fade', actor = 'operator', returning = false } = {}) {
+  function takeOverlay(ref, scene, { transition = 'fade', actor = 'operator', returning = false, obs } = {}) {
     const m = standalone(ref);
     const show = showOf(m.id);
     if (show) throw new ShowError(`"${m.slug}" is in the show "${show.data.name}": take the scene on the show, so its members stay together.`, 'in-show', 409);
     const def = checkScene([m], scene, transition);
     const t = now();
     const prev = store.get('overlay_scenes', m.id)?.data.scene;
-    const record = { scene, takenAt: t };
+    const record = { scene, takenAt: t, ...(obs ? { sceneByObs: { at: t, ...obs } } : {}) };
     if (def.durationMs && def.then) record.sceneReturn = { at: t + def.durationMs, then: def.then, from: scene };
     store.put('overlay_scenes', m.id, record);
     takeOn([m], scene, transition, prev, def);
@@ -627,6 +647,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     rec,
     takeOverlay,
     fireOverlay,
+    // An overlay's own scene outside a show: { scene, takenAt, sceneByObs? }, or undefined.
+    overlayScene: (id) => (showOf(id) ? undefined : store.get('overlay_scenes', id)?.data),
     validate,
     check,
     setRecipe,
@@ -636,6 +658,8 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
+    // Follow OBS: fn(overlayIds) → the feeds with OBS scenes that feed those overlays.
+    useObsSources(fn) { obsSources = fn; },
     // Whether the overlay is in a show that is live now: automatic template upgrades wait.
     onAir(overlayId) {
       const show = showOf(overlayId);

@@ -15,7 +15,8 @@ session cookie like any other client.
 | `api.js` | The API client: CSRF, If-Match, problems, paging, server time, live events. |
 | `dom.js` | Building blocks: `h()`, dialogs, menus, toasts, previews, time, polling. |
 | `schema-form.js` | The settings form generated from a template's schema (04 §4.3). |
-| `streams.js` | A stream's status in words (On air / Offline / Unknown, CTD Relay profiles, platforms, viewers, connections) and the "Fed by" form. |
+| `streams.js` | A stream's status in words (On air / Offline / Unknown, CTD Relay profiles, platforms, viewers, what OBS shows, connections) and the "Fed by" form. |
+| `obs.js` | Follow OBS (09 §9.7): what OBS shows in words (`obsStrip(stream)`, `byObsWords(sceneByObs)`) and the "Follow OBS" card (`followObsCard`) of a show's Details and of an overlay outside a show (its Scenes tab). |
 | `github.js` | GitHub for templates: which token is used (`usingText`), **Test** for a repository with its releases to pick from (`repoTest`), and `problemNotice(err)`, which links a problem whose `fix` is `"connect-github"` to Settings → Integrations. |
 | `pages/<section>.js` | One file per section; one exported function per route. `pages/live-overlay.js` is Live's overlay panel. |
 
@@ -181,6 +182,16 @@ A CTD Relay connection that follows every profile (`everyProfile` and `profiles`
 profile ("Relay · DPRTMNT (Live)"), saved as `"<connection id>/<profile id>"`; while the
 whole connection is ticked its profiles show ticked and "included", not changeable; a profile
 saved that it doesn't follow any more is kept and says so. `bindingName()` names an entry.
+
+A stream whose connections report OBS (`stream.obs`, CTD Relay's OBS events) shows a line per
+feed: "OBS · landscape: Live · vertical: BRB V · Streaming · Recording". A show's console (and an
+overlay's panel outside a show) says "Set by OBS (BRB, landscape) at 9:41 PM" while the scene on
+now is one OBS took (`sceneByObs`). **Follow OBS** (`followObsCard()` from `obs.js`, on the show's
+Details and an overlay's Scenes tab): on or off, whose OBS (the one that feeds it, or one picked
+when several do), the canvas that drives it, and per OBS scene a select of the templates' scenes
+("Leave the scene as it is" for none). The OBS scenes listed are those OBS has shown
+(`stream.obs[].seen`), the one on now marked, plus the mapped ones and any typed in with **Add**;
+"Any other OBS scene" is `otherwise`. Saved with If-Match; a 412 says so and shows it as it is now.
 
 ## Integrations: GitHub (pages/settings.js, github.js)
 

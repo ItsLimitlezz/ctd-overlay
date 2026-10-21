@@ -32,12 +32,17 @@
 //        ms.messages (POST /messages bodies), ms.ownApp(id) (registered by another token),
 //        ms.injectMessage({ from, to, type, profileId, data }) → the message id (an app.message)
 //   ms.legacy = true     answers as before v1.2: no profiles, pairing or hub
+//   OBS (its §10, v1.4/v1.5): ms.obsScene({ profile, appId, canvas, scene, sceneUuid, previous,
+//        atMs, eventId, emit }) keeps a canvas's program scene for GET /profiles/<id>/obs and (emit,
+//        the default) sends obs.scene with appId, eventId and at; ms.obsOutput({ profile, appId,
+//        output, canvas, state, emit }) the same for an output; ms.obsOffline(appId, profile) marks
+//        an app offline; ms.noObsRoute = true answers 404 there (a Relay older than v1.4)
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import { createUlid } from '../../src/ids.js';
 
 const NO_PROFILE = new Set(['profiles.changed', 'apps.changed', 'system.reset']);
-const SCOPE_OF = [[/^(chat|alert)\./, 'chat:read'], [/^(stream|feed|destination|profile|profiles)\.|^system\.notice$/, 'status:read'], [/^apps?\./, 'apps:read']];
+const SCOPE_OF = [[/^(chat|alert)\./, 'chat:read'], [/^(stream|feed|destination|profile|profiles|obs)\.|^system\.notice$/, 'status:read'], [/^apps?\./, 'apps:read']];
 const CODE_CHARS = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval = 1 } = {}) {
@@ -127,6 +132,31 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     return env;
   };
   ms.dropStreams = () => { for (const s of streams) s.res.destroy(); streams.clear(); };
+
+  // ---- OBS (its §10) ------------------------------------------------------------------------------
+  ms.obs = {}; // profile → Map(appId → { appId, online, updatedAt, scenes: [], outputs: [] })
+  ms.noObsRoute = false;
+  const obsApp = (profile, appId) => {
+    const apps = (ms.obs[profile] ??= new Map());
+    if (!apps.has(appId)) apps.set(appId, { appId, online: true, updatedAt: Date.now(), feeds: [], outputs: [], scenes: [], issues: [] });
+    return apps.get(appId);
+  };
+  let obsSeq = 0;
+  const obsEmit = (type, data, profile, appId, eventId) => ms.emit(type, { ...data, appId, eventId: eventId ?? `e${++obsSeq}`, at: Date.now() + ms.skewMs }, { platform: 'obs', destination: appId, profile });
+  ms.obsScene = ({ profile = 'default', appId = 'ctd-obs-plugin-studio', canvas = 'landscape', scene, sceneUuid, previous, atMs = Date.now(), eventId, emit = true } = {}) => {
+    const app = obsApp(profile, appId);
+    app.scenes = [...app.scenes.filter((s) => s.canvas !== canvas), { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), atMs, updatedAt: Date.now() }];
+    app.updatedAt = Date.now();
+    if (!emit) return undefined;
+    return obsEmit('obs.scene', { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), ...(previous !== undefined ? { previous } : {}), atMs }, profile, appId, eventId);
+  };
+  ms.obsOutput = ({ profile = 'default', appId = 'ctd-obs-plugin-studio', output = 'main', canvas, state = 'live', eventId, emit = true } = {}) => {
+    const app = obsApp(profile, appId);
+    app.outputs = [...app.outputs.filter((o) => o.output !== output), { output, ...(canvas ? { canvas } : {}), state, updatedAt: Date.now() }];
+    if (!emit) return undefined;
+    return obsEmit('obs.output', { output, ...(canvas ? { canvas } : {}), state }, profile, appId, eventId);
+  };
+  ms.obsOffline = (appId = 'ctd-obs-plugin-studio', profile = 'default') => { obsApp(profile, appId).online = false; };
   ms.forget = () => { ms.buffer = []; };
   Object.defineProperty(ms, 'openStreams', { get: () => streams.size });
 
@@ -302,6 +332,15 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     if (path === '/api/v1/profiles') {
       if (needs('status:read')) return undefined;
       return json200({ items: ms.profiles.filter((p) => !tok.profileId || p.id === tok.profileId).map(view) });
+    }
+    const obsOf = /^\/api\/v1\/profiles\/([^/]+)\/obs$/.exec(path);
+    if (obsOf) {
+      if (ms.noObsRoute) return problem(res, 404, 'not_found', 'Unknown path');
+      if (needs('status:read')) return undefined;
+      const id = decodeURIComponent(obsOf[1]);
+      if (tok.profileId && id !== tok.profileId) return problem(res, 403, 'profile_forbidden', 'Another profile');
+      if (!profileOf(id)) return problem(res, 404, 'unknown_profile', `No profile ${id}`);
+      return json200({ apps: [...(ms.obs[id]?.values() || [])].map((a) => structuredClone(a)) });
     }
     const one = /^\/api\/v1\/profiles\/([^/]+)$/.exec(path);
     if (one) {

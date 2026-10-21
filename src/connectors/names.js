@@ -7,7 +7,7 @@
 //   viewers         viewers.<platform> (viewers.total and viewers.stale are worked out by the bus)
 //   stream.status   stream.<platform>.live | title | startedAt
 //   music           music.nowPlaying
-//   obs             obs.<key> state
+//   obs             obs.<key> state (and obs.<key>.<part>: obs.scene.landscape, 02 §2.5)
 //   every connector system.notice (operator-facing), and x-<vendor>.* if it names a vendor
 // <key>.stale is never a connector's: the host marks values held through an error (02 §2.8).
 import { CHAT_TYPES } from '../bus/names.js';
@@ -42,7 +42,7 @@ export function namesOf(def) {
       if (caps.has('viewers') && (m = /^viewers\.([a-z0-9-]+)$/.exec(key)) && platforms.has(m[1])) return;
       if (caps.has('stream.status') && (m = /^stream\.([a-z0-9-]+)\.(live|title|startedAt)$/.exec(key)) && platforms.has(m[1])) return;
       if (caps.has('music') && key === 'music.nowPlaying') return;
-      if (caps.has('obs') && /^obs\.[A-Za-z][A-Za-z0-9]*$/.test(key)) return;
+      if (caps.has('obs') && /^obs\.[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)?$/.test(key)) return;
       if (vendor && key.startsWith(vendor)) return;
       throw new TypeError(`"${key}" isn't state a ${def.name} connection may set (${what()}).`);
     },

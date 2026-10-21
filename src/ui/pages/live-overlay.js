@@ -9,6 +9,7 @@
 // overlay's settings, where it is edited.
 import * as api from '../api.js';
 import { badge, copyField, empty, every, field, h, mount, notice, preview, run, toast } from '../dom.js';
+import { byObsWords } from '../obs.js';
 import { connectionChip, fedByWords } from '../streams.js';
 import { SIMULATIONS } from './overlays.js';
 
@@ -46,6 +47,14 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
     box?.unload();
     stopPoll?.();
     mount(el, h('div.card', empty(`There is no overlay "${ref}"`, 'It was renamed or deleted meanwhile.', h('a.btn.primary', { href: '#/live' }, 'All streams'))));
+  }
+
+  // ---- the scene OBS took last, outside a show (Follow OBS, 09 §9.7) --------------------------
+  const obsNote = h('p.small.obs-note', { hidden: true });
+  function drawObsNote() {
+    const words = byObsWords(overlay?.sceneByObs);
+    obsNote.hidden = !words;
+    if (obsNote.textContent !== (words || '')) obsNote.textContent = words || '';
   }
 
   // ---- what feeds it (edited in its settings) ------------------------------------------------
@@ -108,7 +117,7 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
 
     // ---- scenes: its own, or the show's ------------------------------------------------------
     const scenes = list(manifest?.scenes).filter((s) => s && typeof s.id === 'string');
-    const scenesCard = h('section.card.stack', h('h2', 'Scenes'),
+    const scenesCard = h('section.card.stack', h('h2', 'Scenes'), show ? null : obsNote,
       show
         ? [h('p', `Scenes belong to the show: taking one changes every overlay in "${show}" together.`),
           onWholeShow ? h('div.row', h('button.btn', { type: 'button', onclick: () => onWholeShow() }, 'Take scenes on the whole show')) : null]
@@ -145,6 +154,7 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
       h('div.row', reset, h('span.small.muted', 'A viewer count or track you send lasts a minute, or until Reset.')));
 
     drawFed();
+    drawObsNote();
     mount(el,
       head,
       h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', simCard, h('section.card', h('h2', 'Fed by'), fedBody))),
@@ -162,6 +172,7 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
     }
     if (stopped) return;
     drawFed();
+    drawObsNote();
     onOverlay?.(overlay);
   }
 

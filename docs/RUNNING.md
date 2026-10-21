@@ -123,6 +123,24 @@ overlays of different profiles the same **Role in OBS** (overlay page → Settin
 has two overlays from the same template; the plugin uses it to switch its sources between
 profiles.
 
+### Follow OBS scenes
+
+The show's graphics can follow OBS: switch to **BRB** in OBS and the overlays take Be Right Back.
+It needs **CTD Relay v1.5** or newer and the **CTD OBS plugin with scene publishing** on the OBS
+machine, sending for the show's profile. Then:
+
+1. Switch scenes in OBS once or twice: Live shows **OBS · landscape: Live · vertical: …** on the
+   show's card, and the scenes OBS has shown appear on the show's page.
+2. **Shows → the show → Details → Follow OBS**: tick **Follow OBS scenes**, pick the canvas that
+   drives the show (Landscape, the main one, unless the show is vertical only), and for each OBS
+   scene the show's scene to take ("Leave the scene as it is" ignores it). A scene OBS hasn't
+   shown yet can be added by its name. **Save**.
+3. If several CTD Relay profiles with OBS feed the show, pick the one under **Whose OBS**.
+
+Your own scene buttons still work: a scene you take stays until OBS changes scene again. The
+show's console says **Set by OBS (BRB, landscape)** when OBS took the scene. An overlay outside a
+show has the same card on its **Scenes** tab.
+
 ## Put chat and alerts in OBS
 
 Make an overlay from each template (**Templates → the template → Make an overlay**). The

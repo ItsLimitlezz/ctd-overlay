@@ -122,6 +122,9 @@ function valueRows(state = {}, stale = []) {
     else if ((m = /^stream\.([a-z0-9-]+)\.title$/.exec(key))) { label = `${platformName(m[1])} title`; text = String(value); }
     else if ((m = /^stream\.([a-z0-9-]+)\.startedAt$/.exec(key))) { label = `${platformName(m[1])} live since`; text = Number.isFinite(value) ? clock(new Date(value).toISOString()) : String(value); }
     else if (key === 'music.nowPlaying') { label = 'Now playing'; text = [value?.title, Array.isArray(value?.artists) ? value.artists.join(', ') : ''].filter(Boolean).join(' · '); }
+    else if (key === 'obs.scene') continue; // the landscape scene's name, said by the row below
+    else if ((m = /^obs\.scene\.(landscape|vertical)$/.exec(key))) { label = `OBS scene (${m[1]})`; text = typeof value?.scene === 'string' ? value.scene : JSON.stringify(value); }
+    else if ((m = /^obs\.(streaming|recording)$/.exec(key))) { label = `OBS ${m[1]}`; text = value ? 'Yes' : 'No'; }
     else if ((m = /^obs\.(.+)$/.exec(key))) { label = `OBS ${m[1]}`; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     else { label = key; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     rows.push([label, stale.includes(key) ? `${text} (held: the service isn't answering)` : text]);

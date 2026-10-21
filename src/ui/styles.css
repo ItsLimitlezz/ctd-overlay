@@ -387,6 +387,11 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
 .fed-by-group { margin: 4px 0 8px; }
 .fed-by-group .fed-by-list { padding-left: 24px; }
 .fed-by-name { margin: 8px 0 0; overflow-wrap: anywhere; }
+/* Follow OBS: what OBS shows, packed tight; its scenes' choices in columns where they fit. */
+.obs-strip.stack > * + * { margin-top: 2px; }
+.obs-strip p, .obs-note { margin: 0; overflow-wrap: anywhere; }
+.obs-map { display: grid; gap: 0 var(--gap); grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.obs-map label { overflow-wrap: anywhere; }
 .stream-card { display: flex; flex-direction: column; }
 .stream-card > .open { margin-top: auto; padding-top: var(--gap); }
 .overlay-preview { max-width: 720px; }
