@@ -192,6 +192,8 @@ export function createConnectorHost({
       ...(typeof p.color === 'string' ? { color: p.color } : {}),
       status: typeof p.status === 'string' ? p.status : 'offline',
       ...(typeof p.startedAt === 'string' ? { startedAt: p.startedAt } : {}),
+      // What is wrong with this profile alone (a destination down), for streams fed by it.
+      ...(typeof p.detail === 'string' && p.detail ? { detail: p.detail.slice(0, 300) } : {}),
     } : undefined);
     if (info.everyProfile === true) return { every: true, profiles: (Array.isArray(info.profiles) ? info.profiles : []).map(view).filter(Boolean) };
     const one = info.profile && typeof info.profile === 'object' ? info.profile : undefined;

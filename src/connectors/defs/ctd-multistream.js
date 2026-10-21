@@ -301,6 +301,17 @@ export const ctdMultistream = {
         const name = str(d.name) ? d.name : platformOf(d.platform);
         return `${name}${several ? ` (${feedName(f)})` : ''}: ${msg.startsWith(`${name} `) ? msg.slice(name.length + 1) : msg}`;
       };
+      // Each profile's own trouble, on that profile (info.profiles[].detail): a stream fed by one
+      // profile shows its own, never another profile's destination down.
+      if (every) {
+        let moved = false;
+        for (const f of feeds.values()) {
+          const mine = [...f.dests.values()].filter((d) => d.down === true).map((d) => said({ d, f }));
+          const text = mine.length ? `${mine[0]}${mine.length > 1 ? ` (and ${mine.length - 1} more down)` : ''}` : undefined;
+          if (text !== f.downDetail) { f.downDetail = text; moved = true; }
+        }
+        if (moved) showProfiles();
+      }
       const kinds = [cfg.chat && 'chat', cfg.alerts && 'alerts'].filter(Boolean);
       const of = every ? ` of ${feeds.size === 1 ? feedName([...feeds.values()][0]) : `${feeds.size} profiles (${[...feeds.values()].map(feedName).join(', ')})`}` : profile ? ` of ${profile.name}` : '';
       ctx.setHealth({
@@ -327,7 +338,7 @@ export const ctdMultistream = {
     // A profile made or deleted: the hub gets the overlays again (each one per profile it feeds).
     let followed = '';
     function showProfiles() {
-      ctx.setInfo('profiles', [...feeds.values()].map((f) => f.view || profileView({ id: f.id })));
+      ctx.setInfo('profiles', [...feeds.values()].map((f) => ({ ...(f.view || profileView({ id: f.id })), ...(f.downDetail ? { detail: f.downDetail } : {}) })));
       const ids = [...feeds.keys()].join('\n');
       if (ids !== followed) { followed = ids; hub?.soon(); }
     }
