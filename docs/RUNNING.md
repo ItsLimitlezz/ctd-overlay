@@ -1,6 +1,6 @@
 # Running CTD Overlay
 
-How to start the platform, connect CTD Multi-Stream, and put chat and alerts on stream in OBS.
+How to start the platform, connect CTD Relay, and put chat and alerts on stream in OBS.
 There are two ways to run it: on the PC that runs OBS (quickest), or on the NAS as a container.
 
 ## A. On the PC that runs OBS (Windows, macOS, Linux)
@@ -78,21 +78,21 @@ Open the platform (`http://127.0.0.1:4848` on the PC, `http://192.168.1.50:4848`
 enter the code, and choose the owner's user name and password. If the hour passes, restart the
 platform to get a new code.
 
-## Connect CTD Multi-Stream
+## Connect CTD Relay
 
-CTD Multi-Stream merges chat from every platform it streams to, and sends alerts, viewer counts
+CTD Relay merges chat from every platform it streams to, and sends alerts, viewer counts
 and live status. Its **profiles** are separate streams that can be live at the same time (for
 example DPRTMNT and Miami or Bust). **One connection follows every profile** (approve it for
 every profile): each profile is a stream of its own in CTD Overlay, new ones show up by
 themselves, and each overlay's **Fed by** picks which profile it shows. (Approved for one profile,
 the connection follows only that one.)
 
-1. In **CTD Multi-Stream → Settings → API**, copy the **LAN URL**, which ends in `/api/v1` (for
+1. In **CTD Relay → Settings → API**, copy the **LAN URL**, which ends in `/api/v1` (for
    example `http://192.168.1.50:30080/api/v1`).
-2. In CTD Overlay, open **Connections**. Under **Add a connection**, find **CTD Multi-Stream** and
+2. In CTD Overlay, open **Connections**. Under **Add a connection**, find **CTD Relay** and
    press **Set up**. Paste the address into **API address** and press **Connect**. A code appears,
    like `KQ7-2MX`, with a countdown (10 minutes).
-3. In **CTD Multi-Stream → Settings → API** (the link under the code opens it), a banner says CTD
+3. In **CTD Relay → Settings → API** (the link under the code opens it), a banner says CTD
    Overlay wants to connect. Check that the code matches, pick **every profile** (or the one
    profile this connection follows), and approve.
 4. Back in CTD Overlay, the connection connects by itself within a few seconds. Its card lists
@@ -100,7 +100,7 @@ the connection follows only that one.)
    **Connected**. While a destination is down, it shows **Partly working** with the reason (for
    example, Instagram (DPRTMNT) ended the live). That message is for you; viewers never see it.
 5. On each overlay's page (Settings → **Fed by**), choose **Only these** and tick the profile it
-   shows (**Multi-Stream · DPRTMNT**), or **All its profiles, including new ones**. An overlay fed
+   shows (**Relay · DPRTMNT**), or **All its profiles, including new ones**. An overlay fed
    by every connection shows every profile. Each show's stream on Live is then its profile's.
 
 **Paste a token instead:** on the setup page, open **Paste a token instead**, and paste a token
@@ -113,12 +113,12 @@ for every profile follows every profile after the update (one whose **Profile** 
 another profile than the default one keeps following only that one), and an overlay fed by every
 connection keeps working; choose per overlay which profile feeds it when you are ready.
 
-If CTD Multi-Stream says the token was revoked, press **Connect again** on the connection's page.
+If CTD Relay says the token was revoked, press **Connect again** on the connection's page.
 
 ### The CTD OBS plugin
 
 A connection made with Connect also shares the overlays it feeds with the **CTD OBS plugin**,
-through CTD Multi-Stream: the plugin lists them for its profile (an overlay fed by one profile is
+through CTD Relay: the plugin lists them for its profile (an overlay fed by one profile is
 listed for that profile; one fed by every profile, for every profile) and adds them as browser sources at
 the right size and canvas (main or vertical), and can ask for a new one ("Let other apps create
 overlays", on by default in the connection's settings). The connection's card says **Shared with
@@ -186,7 +186,7 @@ can read every repository the account can; a fine-grained token is narrower. On 
 
 - **Without a stream:** on an overlay's page, **Simulate** sends a sample chat message, sub, gift,
   raid or cheer to that overlay, and the overlay in OBS shows it. **Reset** clears the result.
-- **With a test stream:** start a private stream through CTD Multi-Stream. Chat from each platform
+- **With a test stream:** start a private stream through CTD Relay. Chat from each platform
   appears with its platform tag, and alerts appear one at a time.
 
 ## During the show: alerts
@@ -207,10 +207,10 @@ The **Alerts** card on **Live** shows what is on screen and what is waiting:
 |---|---|
 | A page says "This platform serves its local network only" | The device isn't on the LAN (a phone on mobile data, a VPN). Join the LAN or use Tailscale. For a router port forward, set `SKP_ALLOW_PLAIN_INTERNET: "true"` and add the public address with its port to `SKP_HOSTS` (e.g. `192.168.1.50:4850,203.0.113.10:4850`, with your router's public address in place of `203.0.113.10`). It's plain HTTP, so turn on two-factor; HTTPS through a tunnel (`SKP_EXPOSURE=public`) is the safer way. |
 | Signing in fails with "This can only be requested from the platform's own pages… at the platform's own address" | The address in the browser isn't one the platform knows (common in a container). Add it, with its port if that isn't 4848, to `SKP_HOSTS` and restart. |
-| The connection says the token was refused | Press **Connect again** on the connection's page and approve the code in CTD Multi-Stream (or paste a new token). |
-| "Another CTD Multi-Stream token already registered the app…" | An older connection (or token) registered it. In CTD Multi-Stream → Settings → API, delete that old **CTD Overlay** app; it registers again within 30 s. |
+| The connection says the token was refused | Press **Connect again** on the connection's page and approve the code in CTD Relay (or paste a new token). |
+| "Another CTD Relay token already registered the app…" | An older connection (or token) registered it. In CTD Relay → Settings → API, delete that old **CTD Overlay** app; it registers again within 30 s. |
 | "The OBS plugin sees no overlay URLs" | Set `SKP_HOSTS` to the address OBS reaches CTD Overlay at (on the PC, start with `--exposure lan --hosts <PC address>:4848`). |
-| The connection is "Reconnecting" | CTD Multi-Stream isn't reachable at that address. Open `<address>/status` in a browser on the same machine. |
+| The connection is "Reconnecting" | CTD Relay isn't reachable at that address. Open `<address>/status` in a browser on the same machine. |
 | Chat shows in the admin page but not in OBS | Check the browser source's URL (copy it again) and size. Then in OBS: right-click the source → Refresh. |
 | Phone video won't play in OBS | Install ffmpeg (on the PC); the image already has it. |
 | "Port 4848 is already in use" | The old Stream Kit (v0) uses 4848 too. Stop it, or start with `--port 4849`. |

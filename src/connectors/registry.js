@@ -1,9 +1,9 @@
 // Connector definitions (06 §6.1): what a connector is, checked once when the platform starts, so
 // a mistake in one shows at startup with its name, never as a crash mid-show. Built in: CTD
-// Multi-Stream (step 16b); Twitch and Kick (17), OBS (18) and the rest follow.
+// Relay (step 16b); Twitch and Kick (17), OBS (18) and the rest follow.
 //
 //   {
-//     id: 'ctd-multistream', name: 'CTD Multi-Stream',
+//     id: 'ctd-multistream', name: 'CTD Relay',
 //     platform?: 'twitch',                     its main platform (src.platform by default)
 //     platforms?: ['twitch', …],               every platform it may speak for (default [platform])
 //     vendor?: 'ctd',                          may publish x-ctd.* events and state

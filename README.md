@@ -280,22 +280,22 @@ paste the address it landed on under **Finish sign-in**). Each connection shows 
 what it feeds and the values it sets now; a count that can't be read is held for two minutes,
 marked stale, then hidden: never shown as 0.
 
-**CTD Multi-Stream** is built in. Copy its LAN URL from Settings → API (`http://<NAS-IP>:30080/api/v1`),
-set up a CTD Multi-Stream connection with it and press **Connect**: approve the code shown in
-CTD Multi-Stream → Settings → API and pick the profile, or every profile (a token can be pasted
+**CTD Relay** is built in. Copy its LAN URL from Settings → API (`http://<NAS-IP>:30080/api/v1`),
+set up a CTD Relay connection with it and press **Connect**: approve the code shown in
+CTD Relay → Settings → API and pick the profile, or every profile (a token can be pasted
 instead). Approved for every profile, one connection follows them all, each profile a stream of
 its own with its live status on Live (new profiles show up by themselves), and each overlay's
-**Fed by** picks its profile ("Multi-Stream · DPRTMNT") or all of them; approved for one, the
-connection is that profile, named "Multi-Stream · <profile>". Its merged chat and alerts reach overlays whose template shows them, and the TAKEOVER
+**Fed by** picks its profile ("Relay · DPRTMNT") or all of them; approved for one, the
+connection is that profile, named "Relay · <profile>". Its merged chat and alerts reach overlays whose template shows them, and the TAKEOVER
 viewer count becomes the total across every platform it streams to. It also shares the overlays
-it feeds with the CTD OBS plugin through CTD Multi-Stream (their URLs at `SKP_HOSTS`'s address;
+it feeds with the CTD OBS plugin through CTD Relay (their URLs at `SKP_HOSTS`'s address;
 an overlay's **Role in OBS** keeps equivalent overlays matched across profiles), and the plugin
 can ask it for new ones ("Let other apps create overlays"). Twitch and Kick (step 17), OBS,
 YouTube and Spotify follow.
 
 Overlays take every connection by default ("all", new ones too); an overlay can be bound to some
 only (`PATCH /api/v1/overlays/<slug>` with `{ "connections": ["con_…"] }`, or `"con_…/<profile
-id>"` for one CTD Multi-Stream profile of a connection that follows every profile). Owners and admins
+id>"` for one CTD Relay profile of a connection that follows every profile). Owners and admins
 manage connections; operators see each one's status on the Connections page (from
 `GET /api/v1/system/health`).
 

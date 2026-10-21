@@ -1,5 +1,5 @@
-// CTD Multi-Stream's hub (its docs/API.md §9.2, v1.2), for the ctd-multistream connector: apps
-// register what they offer there, so the CTD OBS plugin, connected only to CTD Multi-Stream, can
+// CTD Relay's hub (its docs/API.md §9.2, v1.2), for the ctd-multistream connector: apps
+// register what they offer there, so the CTD OBS plugin, connected only to CTD Relay, can
 // add this platform's overlays as browser sources and ask for new ones.
 //
 // - Registration: PUT /apps/<appId> with every overlay bound to this connection ("all" counts),
@@ -134,25 +134,25 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
     } catch (err) {
       if (stopped) return;
       if (err.status === 401) { reauth(); return; }
-      show({ status: 'failed', detail: `Couldn't reach it (${err.message})` }, `Sharing overlays with the OBS plugin through CTD Multi-Stream failed (${err.message}); trying again in 30 s.`);
+      show({ status: 'failed', detail: `Couldn't reach it (${err.message})` }, `Sharing overlays with the OBS plugin through CTD Relay failed (${err.message}); trying again in 30 s.`);
       return;
     }
     if (stopped) return;
     if (r.status >= 400) {
       const code = r.data?.code;
       const said = str(r.data?.detail) ? r.data.detail.slice(0, 200) : `it answered ${r.status}`;
-      if (r.status === 404) { show({ status: 'off', detail: 'This CTD Multi-Stream has no hub to share overlays through (it is older than v1.2).' }); return; }
-      const why = code === 'app_owned' ? `Another CTD Multi-Stream token already registered the app "${appId}", so the OBS plugin can't see these overlays. In CTD Multi-Stream → Settings → API, delete the old "${appId}" app (or revoke the token that made it): this connection registers again within 30 s.`
-        : code === 'limit' ? 'CTD Multi-Stream has as many apps registered as it allows, so these overlays aren\'t shared with the OBS plugin: remove apps you no longer use in its Settings → API.'
+      if (r.status === 404) { show({ status: 'off', detail: 'This CTD Relay has no hub to share overlays through (it is older than v1.2).' }); return; }
+      const why = code === 'app_owned' ? `Another CTD Relay token already registered the app "${appId}", so the OBS plugin can't see these overlays. In CTD Relay → Settings → API, delete the old "${appId}" app (or revoke the token that made it): this connection registers again within 30 s.`
+        : code === 'limit' ? 'CTD Relay has as many apps registered as it allows, so these overlays aren\'t shared with the OBS plugin: remove apps you no longer use in its Settings → API.'
           : code === 'missing_scope' ? 'The token can\'t share overlays with the OBS plugin (it lacks apps:write): Connect again to get one that can.'
-            : `CTD Multi-Stream refused the overlay list for the OBS plugin: ${said}`;
+            : `CTD Relay refused the overlay list for the OBS plugin: ${said}`;
       show({ status: 'failed', detail: why }, why);
       return;
     }
     ctx.memory.set('hubApp', appId);
     const notes = [];
     if (!ctx.overlays.baseUrl) notes.push(`The OBS plugin sees no overlay URLs: ${ctx.overlays.baseProblem}`);
-    if (p.kept < p.total) notes.push(`Only ${p.kept} of ${p.total} overlay URLs are shared with the OBS plugin: CTD Multi-Stream takes ${MAX_RESOURCES} per app. Bind fewer overlays to this connection.`);
+    if (p.kept < p.total) notes.push(`Only ${p.kept} of ${p.total} overlay URLs are shared with the OBS plugin: CTD Relay takes ${MAX_RESOURCES} per app. Bind fewer overlays to this connection.`);
     show({ status: 'shared', overlays: p.overlays, resources: p.kept, at: new Date(ctx.now()).toISOString() }, notes[0]);
   }
 
@@ -185,12 +185,12 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
     if (seen.includes(m.id)) return;
     ctx.memory.set('hubHandled', [...seen, m.id].slice(-HANDLED_KEEP));
     const about = str(m.profileId) ? m.profileId : null;
-    if (about && profileId && about !== profileId) return answer(m, { ok: false, reason: 'This CTD Overlay connection follows another CTD Multi-Stream profile.' });
+    if (about && profileId && about !== profileId) return answer(m, { ok: false, reason: 'This CTD Overlay connection follows another CTD Relay profile.' });
     const feed = every && about ? profileOf(about) : undefined;
-    if (every && about && !feed) return answer(m, { ok: false, reason: `CTD Overlay doesn't follow a CTD Multi-Stream profile "${about.slice(0, 100)}" (yet): try again in a moment.` });
+    if (every && about && !feed) return answer(m, { ok: false, reason: `CTD Overlay doesn't follow a CTD Relay profile "${about.slice(0, 100)}" (yet): try again in a moment.` });
     if (m.type !== 'overlay.create') return answer(m, { ok: false, reason: `CTD Overlay doesn't handle ${m.type.slice(0, 64)}.` });
     if (isOld(env)) return answer(m, { ok: false, reason: 'CTD Overlay wasn\'t connected when this was asked: ask again.' });
-    if (!allowMaking()) return answer(m, { ok: false, reason: 'Making overlays from other apps is turned off in CTD Overlay (the "Let other apps create overlays" setting of its CTD Multi-Stream connection).' });
+    if (!allowMaking()) return answer(m, { ok: false, reason: 'Making overlays from other apps is turned off in CTD Overlay (the "Let other apps create overlays" setting of its CTD Relay connection).' });
     if (!ctx.overlays.baseUrl) return answer(m, { ok: false, reason: `CTD Overlay doesn't know the address OBS would open it at: ${ctx.overlays.baseProblem}` });
     if (recent(made).length >= MAKES_PER_MINUTE) return answer(m, { ok: false, reason: `CTD Overlay makes at most ${MAKES_PER_MINUTE} overlays a minute for other apps: ask again in a minute.` });
     const d = m.data && typeof m.data === 'object' && !Array.isArray(m.data) ? m.data : {};

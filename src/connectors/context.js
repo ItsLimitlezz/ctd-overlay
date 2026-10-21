@@ -7,7 +7,7 @@
 //   ctx.platform     the definition's main platform
 //   ctx.publish(type, data, { platform, dedupeKey, backfill, profile })   an event (names.js decides
 //                            which); profile: for one of the streams it follows at its service (a
-//                            CTD Multi-Stream profile), a feed of its own that overlays are bound
+//                            CTD Relay profile), a feed of its own that overlays are bound
 //                            to as "<connection>/<profile>" (bus/owners.js)
 //   ctx.room(n?)             resolves once n more events (1) may be published this second
 //   ctx.recentChat({ profile }?)   this connection's (that feed's) chat messages still in the chat
@@ -47,7 +47,7 @@ export function makeContext(runner, gen, { def, config, secrets }) {
   const live = () => runner.current(gen);
   const names = namesOf(def);
   const env = runner.env;
-  // profile: a feed of this connection (a CTD Multi-Stream profile it follows, bus/owners.js).
+  // profile: a feed of this connection (a CTD Relay profile it follows, bus/owners.js).
   const src = (platform, profile) => ({ connector: def.id, connection: runner.id, ...(platform ? { platform } : {}), ...(profile ? { profile } : {}) });
   const profileFor = (profile) => {
     if (profile === undefined || profile === null) return undefined;

@@ -86,7 +86,7 @@ Installation
   Kick and YouTube connections receives all three merged. Unbound data never reaches it. An
   overlay is bound to `"all"` connections (including ones made later) or to a list of them;
   `"all"` is the default, so an overlay shows a service's data as soon as it is connected.
-  A connection that follows several streams at its service (CTD Multi-Stream's profiles, 06
+  A connection that follows several streams at its service (CTD Relay's profiles, 06
   §6.11) publishes each one's data as a **feed** of its own, `src.profile` set (02 §2.1): an
   entry of the list is a connection id (all of it, every feed, new ones too) or
   `"<connection id>/<profile id>"` (that feed only). Changing the bindings reaches open pages at

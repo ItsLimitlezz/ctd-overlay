@@ -81,7 +81,7 @@ idempotent), at most twice, on network errors, `500`/`502`/`503`/`504` and a `42
 down for its `Retry-After` (60 s without one): requests to it fail at once until then. Answers
 are capped (1 MiB by default), requests time out (10 s; a stream until its headers), and a
 redirect is an error. Destinations (07 §7.11): a service's own API over HTTPS; an address the
-operator typed (OBS, CTD Multi-Stream) on the local network, plain HTTP only to private
+operator typed (OBS, CTD Relay) on the local network, plain HTTP only to private
 addresses, never link-local, unspecified or multicast, a self-signed certificate trusted by its
 SHA-256 fingerprint, checked before the request is sent.
 
@@ -145,7 +145,7 @@ copied from the installation's configuration.
 | **Auth code + PKCE** | Kick, Google, Spotify | Yes — `SKP_PUBLIC_URL/oauth/callback/<connector>`, or a loopback URL for a desktop install |
 | **Client credentials** | App-only reads (viewer counts) | No |
 | **Password** | obs-websocket | No |
-| **Pairing** | CTD Multi-Stream (§6.11): the service shows a code an admin approves in its own settings, then hands over a token once | No |
+| **Pairing** | CTD Relay (§6.11): the service shows a code an admin approves in its own settings, then hands over a token once | No |
 
 OAuth requests **MUST** use `state` bound to the user's session and **MUST** use PKCE (S256)
 whenever the service supports it, even for confidential clients.
@@ -381,7 +381,7 @@ action and the UI **MUST** say it grants access to credentials.
 
 ---
 
-## 6.11 CTD Multi-Stream
+## 6.11 CTD Relay
 
 The operator's multistreaming server ([ctd-multi-stream](https://github.com/ItsLimitlezz/ctd-multi-stream),
 its `docs/API.md` v1.2) streams to every platform at once and merges their chat into this
@@ -397,7 +397,7 @@ the whole connection (or `"all"`), it is fed by every profile, new ones too.
 local network, or its HTTPS address with the certificate's SHA-256 fingerprint when self-signed)
 and presses Connect: `POST /pairing` (no token) asks for `status:read`, `chat:read`, `apps:read`,
 `apps:write` with `appName: "CTD Overlay"`, `kind: "ctd-overlay"`, `profileId: null`. The code
-shows on the connection's page with its `approveUrl`; an admin approves it in CTD Multi-Stream →
+shows on the connection's page with its `approveUrl`; an admin approves it in CTD Relay →
 Settings → API and picks the profile, or every profile. The platform polls `POST /pairing/{id}/token` every
 `interval` s (`202` pending, `200` the token, once; `403` denied, `410` expired; a `429` waits for
 its `Retry-After`), and saves the token as the connection's token secret; the poll secret is
@@ -420,10 +420,10 @@ profiles, then each one's status and chat, again. Events about no single profile
 (`profiles.changed`, `system.notice`, `app.message`) are the connection's. Each profile (name,
 colour, `offline | starting | live | stopping`, since when) is in the connection's `info.profiles`
 (with `info.everyProfile: true`, and in `GET /system/health`), kept fresh by `profile.status`. A
-connection nobody named is called "Multi-Stream". With one profile picked in the setting instead,
+connection nobody named is called "Relay". With one profile picked in the setting instead,
 it passes `?profile=<id>` on `/status`, `/chat` and `/events`, always: the profile is the
 connection's `info.profile`, `profiles.changed` reads it again, a profile deleted there is an
-`error` saying so, and a connection nobody named is called "Multi-Stream · <profile name>". A
+`error` saying so, and a connection nobody named is called "Relay · <profile name>". A
 cursor kept from the other kind of stream (one profile, every profile) is never resumed from. A
 stream fed by a profile (src/streams.js) shows it and is **on air when the profile is live**,
 before any platform says so. A server older than v1.2 (no `profileId` in `GET /`) is read as

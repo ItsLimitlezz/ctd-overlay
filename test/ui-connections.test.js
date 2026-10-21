@@ -1,5 +1,5 @@
-// The Connections page in a real browser (08 §8.7): setting up CTD Multi-Stream with Connect (the
-// address only, the code to approve until CTD Multi-Stream says yes, then connected and following
+// The Connections page in a real browser (08 §8.7): setting up CTD Relay with Connect (the
+// address only, the code to approve until CTD Relay says yes, then connected and following
 // its profile), or from its form (the token in a password field never shown again, the profile to
 // pick), and a device sign-in showing its code until the service says yes; a connection that
 // follows every profile lists each on its card, and an overlay's "Fed by" offers each profile.
@@ -35,7 +35,7 @@ const viewText = 'document.querySelector("[data-view]").innerText';
 const box = (start, root = '#fed-by') => `[...document.querySelector(${JSON.stringify(root)}).querySelectorAll('label')].map((l) => document.getElementById(l.htmlFor)).find((i) => i && document.querySelector('label[for="' + i.id + '"]').textContent.startsWith(${JSON.stringify(start)}))`;
 const boxState = (start) => `(() => { const i = ${box(start)}; return i ? [i.checked, i.disabled] : null; })()`;
 
-test('Connect to CTD Multi-Stream: the code until it is approved there, then connected, named after its profile and following it', { skip: browserSkip, timeout: 120000 }, async (t) => {
+test('Connect to CTD Relay: the code until it is approved there, then connected, named after its profile and following it', { skip: browserSkip, timeout: 120000 }, async (t) => {
   const ms = await startFakeMultistream();
   defer(t, () => ms.close());
   const root = tempDir(t);
@@ -59,13 +59,13 @@ test('Connect to CTD Multi-Stream: the code until it is approved there, then con
   await page.waitFor('location.hash.startsWith("#/connections/con_") && document.querySelector(".device-code") && /\\d+:\\d\\d/.test(document.querySelector(".countdown")?.textContent || "")', 15000);
   const p = ms.pairings.at(-1);
   assert.equal(await page.eval('document.querySelector(".device-code").textContent'), p.code);
-  assert.match(await page.eval(viewText), /Approve this code in CTD Multi-Stream → Settings → API, and pick the profile/);
+  assert.match(await page.eval(viewText), /Approve this code in CTD Relay → Settings → API, and pick the profile/);
   assert.match(await page.eval('[...document.querySelectorAll("a")].find((a) => /Settings → API/.test(a.textContent))?.href'), new RegExp(`/settings\\?tab=api&pair=${p.id}$`));
   assert.equal(await page.eval(`document.documentElement.outerHTML.includes(${JSON.stringify(p.secret)})`), false, 'the poll secret never reaches the page');
   // Approved there for DPRTMNT: connected, named after it, its status shown.
   const token = ms.approve({ profileId: 'p-dprtmnt' });
   await page.waitFor('/Follows the profile DPRTMNT/.test(document.querySelector("[data-view]").innerText) && /DPRTMNT · Offline/.test(document.querySelector("[data-view]").innerText)', 20000);
-  await page.waitFor('document.querySelector("h1")?.textContent.includes("Multi-Stream · DPRTMNT")', 10000);
+  await page.waitFor('document.querySelector("h1")?.textContent.includes("Relay · DPRTMNT")', 10000);
   assert.match(await page.eval(viewText), /Shared with the OBS plugin|Not shared with the OBS plugin/);
   assert.equal(await page.eval(`document.documentElement.outerHTML.includes(${JSON.stringify(token)})`), false, 'the token never reaches the page');
   ms.setProfileStatus('p-dprtmnt', 'live');
@@ -74,7 +74,7 @@ test('Connect to CTD Multi-Stream: the code until it is approved there, then con
   assert.deepEqual(page.problems.slice(before), []);
 });
 
-test('set up CTD Multi-Stream with a pasted token until it runs, its profile to pick; a device sign-in shows its code until approved', { skip: browserSkip, timeout: 120000 }, async (t) => {
+test('set up CTD Relay with a pasted token until it runs, its profile to pick; a device sign-in shows its code until approved', { skip: browserSkip, timeout: 120000 }, async (t) => {
   const ms = await startFakeMultistream();
   defer(t, () => ms.close());
   const svc = await startFakeService();
@@ -138,7 +138,7 @@ test('a connection that follows every profile: its card lists each profile with 
   // The card: every profile it follows, each with its status.
   await page.goto(`${platform.url}/?signed=1#/connections`);
   await page.waitFor('/Miami or Bust · Live/.test(document.querySelector("[data-view]").innerText) && /DPRTMNT · Offline/.test(document.querySelector("[data-view]").innerText)', 15000);
-  assert.match(await page.eval(viewText), /Follows every CTD Multi-Stream profile \(2\), each a stream of its own/);
+  assert.match(await page.eval(viewText), /Follows every CTD Relay profile \(2\), each a stream of its own/);
   ms.setProfileStatus('p-dprtmnt', 'live');
   await page.waitFor('/DPRTMNT · Live/.test(document.querySelector("[data-view]").innerText)', 20000);
   assert.equal(await page.eval('document.documentElement.scrollWidth > innerWidth + 1'), false, 'no sideways scrolling on a phone');
@@ -153,21 +153,21 @@ test('a connection that follows every profile: its card lists each profile with 
   await page.eval('location.hash = "#/overlays/tk?tab=settings"');
   await page.waitFor('document.querySelector("#fed-by fieldset") && !document.querySelector("[data-view] > .loading")', 15000);
   assert.deepEqual(await page.eval(boxState('All its profiles, including new ones')), [true, false]);
-  assert.deepEqual(await page.eval(boxState('Multi-Stream · DPRTMNT')), [true, true], 'included, so ticked and not changeable');
-  assert.deepEqual(await page.eval(boxState('Multi-Stream · Miami or Bust')), [true, true]);
-  assert.match(await page.eval('document.querySelector("#fed-by").innerText'), /Multi-Stream · DPRTMNT \(Live\)\s*— included/);
+  assert.deepEqual(await page.eval(boxState('Relay · DPRTMNT')), [true, true], 'included, so ticked and not changeable');
+  assert.deepEqual(await page.eval(boxState('Relay · Miami or Bust')), [true, true]);
+  assert.match(await page.eval('document.querySelector("#fed-by").innerText'), /Relay · DPRTMNT \(Live\)\s*— included/);
   // Only DPRTMNT: untick the whole connection, tick DPRTMNT.
   await page.eval(`(${box('All its profiles, including new ones')}).click()`);
-  assert.deepEqual(await page.eval(boxState('Multi-Stream · DPRTMNT')), [false, false]);
-  await page.eval(`(${box('Multi-Stream · DPRTMNT')}).click()`);
+  assert.deepEqual(await page.eval(boxState('Relay · DPRTMNT')), [false, false]);
+  await page.eval(`(${box('Relay · DPRTMNT')}).click()`);
   const etag = (await (await fetch(`${platform.url}/api/v1/overlays/tk`, { headers: signedIn(platform) })).headers.get('etag'));
   await page.eval('[...document.querySelectorAll("#fed-by button")].find((b) => b.textContent.trim() === "Save connections").click()');
-  await page.waitFor('[...document.querySelectorAll(".toast span")].some((s) => /"tk" is fed by Multi-Stream · DPRTMNT now/.test(s.textContent))', 8000);
+  await page.waitFor('[...document.querySelectorAll(".toast span")].some((s) => /"tk" is fed by Relay · DPRTMNT now/.test(s.textContent))', 8000);
   assert.deepEqual(platform.overlays.resolve('tk').doc.data.connections, [`${conn.id}/p-dprtmnt`]);
   assert.deepEqual(JSON.parse(patches.at(-1).body), { connections: [`${conn.id}/p-dprtmnt`] });
   assert.equal(patches.at(-1).ifMatch, etag);
-  await page.waitFor('document.querySelector("#fed-by").innerText.includes("Now: Only Multi-Stream · DPRTMNT.")', 8000);
-  assert.deepEqual(await page.eval(boxState('Multi-Stream · DPRTMNT')), [true, false]);
-  assert.deepEqual(await page.eval(boxState('Multi-Stream · Miami or Bust')), [false, false]);
+  await page.waitFor('document.querySelector("#fed-by").innerText.includes("Now: Only Relay · DPRTMNT.")', 8000);
+  assert.deepEqual(await page.eval(boxState('Relay · DPRTMNT')), [true, false]);
+  assert.deepEqual(await page.eval(boxState('Relay · Miami or Bust')), [false, false]);
   assert.deepEqual(page.problems.slice(before).filter((p) => !p.startsWith('network:')), []);
 });

@@ -1,5 +1,5 @@
 // Who owns a value or an event on the bus (01 §1.2–1.3): the core (''), a connection (its id), or
-// one feed of a connection, a profile it follows at its service (CTD Multi-Stream's, 06 §6.11):
+// one feed of a connection, a profile it follows at its service (CTD Relay's, 06 §6.11):
 // "<connection id>/<profile id>". A connection's own data and its feeds' data are its data: what
 // acts on a connection (stopping it, deleting it, holding its values through an error, ranking it
 // as a relay) acts on its feeds too. Bindings name owners the same way: a connection id (every

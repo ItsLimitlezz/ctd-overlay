@@ -684,7 +684,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
 
   // ---- role in OBS (06 §6.11) ------------------------------------------------------------
   // How the CTD OBS plugin knows this overlay's place in a scene across streams: the same role
-  // for the equivalent overlay of every CTD Multi-Stream profile, so switching profile re-points
+  // for the equivalent overlay of every CTD Relay profile, so switching profile re-points
   // its browser sources. Empty: the template's short name.
   const rolePanel = h('section.card.stack#role', h('h2', 'Role in OBS'));
   {
@@ -705,7 +705,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
         toast(next ? `"${overlay.slug}" plays the role "${next}" in OBS now.` : `"${overlay.slug}" plays its template's role in OBS now.`);
       });
     } },
-    field('Role', input, { hint: `The same role for this overlay in every stream (like "chat-main"), so the CTD OBS plugin can switch its sources between CTD Multi-Stream profiles. Lowercase letters, digits and dashes. Empty: "${fallback}".` }),
+    field('Role', input, { hint: `The same role for this overlay in every stream (like "chat-main"), so the CTD OBS plugin can switch its sources between CTD Relay profiles. Lowercase letters, digits and dashes. Empty: "${fallback}".` }),
     h('div.form-actions', saveRole)));
     if (!canWrite) rolePanel.append(h('p.muted', 'Your role can see this but not change it.'));
   }

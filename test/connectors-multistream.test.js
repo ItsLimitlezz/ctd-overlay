@@ -1,4 +1,4 @@
-// CTD Multi-Stream (PLAN step 16b), against a pretend Multi-Stream on 127.0.0.1: its merged chat
+// CTD Relay (PLAN step 16b), against a pretend Relay on 127.0.0.1: its merged chat
 // reaches an overlay bound to every connection and a deletion takes a line off; an alert reaches a
 // template that consumes alerts (its chat line hidden); viewers.<platform> and viewers.total from
 // its status; a destination down makes the connection degraded, saying why; after a disconnect it
@@ -34,7 +34,7 @@ async function start(t, { history = [] } = {}) {
   const channel = platform.overlays.resolve('main').channel;
   const live = [];
   channel.subscribe((env) => live.push(env));
-  const made = await fetch(`${platform.url}/api/v1/connections`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ connector: 'ctd-multistream', name: 'Multi-Stream', config: { baseUrl: `${ms.url}/api/v1` }, secrets: { token: ms.token } }) });
+  const made = await fetch(`${platform.url}/api/v1/connections`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ connector: 'ctd-multistream', name: 'Relay', config: { baseUrl: `${ms.url}/api/v1` }, secrets: { token: ms.token } }) });
   assert.equal(made.status, 201, await made.clone().text());
   const conn = await made.json();
   const get = () => platform.connectors.get(conn.id);
@@ -174,7 +174,7 @@ test('stopping closes its event stream: settings saves, off and on, a quiet reco
   await one('on again');
   // The watchdog's reconnect (it went quiet): the old stream closes, the new one opens.
   const n = streams();
-  platform.connectors.runnerOf(conn.id).ctx.fail(new Error('CTD Multi-Stream went quiet for 45 s; reconnecting.'));
+  platform.connectors.runnerOf(conn.id).ctx.fail(new Error('CTD Relay went quiet for 45 s; reconnecting.'));
   await until(() => streams() === n + 1, 8000, 'the reconnect');
   await one('reconnected');
   const del = await fetch(`${platform.url}/api/v1/connections/${conn.id}`, { method: 'DELETE', headers: H });
@@ -253,7 +253,7 @@ test('ages are judged on CTD\'s clock, and only for the replay: a clock 150 s be
   platform.overlays.create({ slug: 'main', template: TESTBED, settings: {} });
   const live = [];
   platform.overlays.resolve('main').channel.subscribe((env) => live.push(env));
-  const made = await fetch(`${platform.url}/api/v1/connections`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ connector: 'ctd-multistream', name: 'Multi-Stream', config: { baseUrl: `${ms.url}/api/v1` }, secrets: { token: ms.token } }) });
+  const made = await fetch(`${platform.url}/api/v1/connections`, { method: 'POST', headers: signedIn(platform, { 'content-type': 'application/json' }), body: JSON.stringify({ connector: 'ctd-multistream', name: 'Relay', config: { baseUrl: `${ms.url}/api/v1` }, secrets: { token: ms.token } }) });
   const conn = await made.json();
   const get = () => platform.connectors.get(conn.id);
   await until(() => ['connected', 'degraded'].includes(get().health.status), 5000, 'connected');

@@ -1,4 +1,4 @@
-// Connections (08 §8.1, §8.7): what feeds the overlays (CTD Multi-Stream now; Twitch, Kick,
+// Connections (08 §8.1, §8.7): what feeds the overlays (CTD Relay now; Twitch, Kick,
 // YouTube, Spotify and OBS in later versions), their status, and their setup.
 //
 //   #/connections                    every connection with its status, values and buttons; what
@@ -9,7 +9,7 @@
 //                                    redirect with "Finish sign-in" to paste the address landed on),
 //                                    what it feeds, its actions, its settings
 //
-// A connector that pairs (auth 'pairing', CTD Multi-Stream) is set up with its address only and
+// A connector that pairs (auth 'pairing', CTD Relay) is set up with its address only and
 // Connect: the code to approve at the service shows on the connection's page, with its countdown,
 // until the service hands over the token; "Paste a token instead" keeps the whole form. Its info
 // (what the running connection tells about itself) shows the profile it follows and what it shares
@@ -48,6 +48,9 @@ const DELETE_CONSEQUENCE = 'Overlays showing its chat and viewer count stop show
 const statusOf = (health) => STATUS[health?.status] || [undefined, health?.status || 'Unknown'];
 const feedsOf = (caps = []) => caps.map((c) => FEEDS[c]).filter(Boolean);
 const platformName = (p) => PLATFORM[p] || p;
+// A connector's app icon, for the CTD family's own apps (decorative: the name is beside it).
+const APP_ICONS = { 'ctd-multistream': '/ui/relay.svg' };
+const appIcon = (id) => (APP_ICONS[id] ? h('img.app-icon', { src: APP_ICONS[id], alt: '', width: 28, height: 28 }) : null);
 const signsIn = (def) => Boolean(def && SIGN_IN.has(def.auth));
 const pairs = (def) => def?.auth === 'pairing';
 // Connect, or Connect again once it has a token (a refused one, or another profile).
@@ -66,8 +69,8 @@ function profileLine(c) {
   if (everyProfile(c)) {
     const list = profilesOf(c);
     return h('div.stack.profiles',
-      h('p.small', list.length ? `Follows every CTD Multi-Stream profile (${list.length}), each a stream of its own:` : 'Follows every CTD Multi-Stream profile: none yet.'),
-      list.length ? h('div.stack', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, list.map(profileItem)) : null);
+      h('p.small', list.length ? `Follows every CTD Relay profile (${list.length}), each a stream of its own:` : 'Follows every CTD Relay profile: none yet.'),
+      list.length ? h('div.stack', { role: 'list', 'aria-label': 'CTD Relay profiles' }, list.map(profileItem)) : null);
   }
   const p = c.info?.profile || (Array.isArray(c.profiles) && c.profiles.length === 1 ? c.profiles[0] : undefined);
   if (!p || typeof p !== 'object') return null;
@@ -84,7 +87,7 @@ function feedValues(c) {
     return rows.length ? h('div', h('h3.small', names.get(f.profile) || f.profile), kv(rows)) : null;
   });
 }
-// What it shares with the OBS plugin (CTD Multi-Stream's hub); a failure's reason is a warning.
+// What it shares with the OBS plugin (CTD Relay's hub); a failure's reason is a warning.
 function hubLine(c) {
   const hub = c.info?.hub;
   if (!hub || typeof hub !== 'object') return null;
@@ -209,7 +212,7 @@ export async function list(view, ctx) {
       canWrite ? { label: 'Delete…', danger: true, onSelect: () => remove(c, () => load()) } : null,
     ], { ariaLabel: `More for ${c.name}` }));
     return h('article.card', { dataset: { id: c.id } },
-      h('div.card-head', h('h2', h('a', { href: `#/connections/${api.seg(c.id)}` }, c.name))),
+      h('div.card-head', h('h2.with-icon', appIcon(c.connector), h('a', { href: `#/connections/${api.seg(c.id)}` }, c.name))),
       statusLine(c),
       profileLine(c),
       h('p.small.muted', [def?.name || c.connector, feeds.length ? `feeds ${feeds.join(', ').toLowerCase()}` : ''].filter(Boolean).join(' · ')),
@@ -233,7 +236,7 @@ export async function list(view, ctx) {
       connectors.length ? h('section.section',
         h('h2', 'Add a connection'),
         h('div.grid', connectors.map((d) => h('div.card',
-          h('div.card-head', h('h3', d.name), d.relay ? badge('Relay') : null),
+          h('div.card-head', h('h3.with-icon', appIcon(d.id), d.name), d.relay && d.id !== 'ctd-multistream' ? badge('Relay') : null),
           h('p.muted', feedsOf(d.capabilities).join(', ')),
           d.platforms?.length > 1 ? h('p.small.muted', `For ${d.platforms.map(platformName).join(', ')}`) : null,
           canWrite ? h('a.btn.primary', { href: `#/connections/new/${api.seg(d.id)}` }, 'Set up') : h('p.small.muted', 'Owners and admins set connections up.'))))) : null,
@@ -273,7 +276,7 @@ async function operatorList(view) {
         const [kind, label] = statusOf(c);
         const profiles = Array.isArray(c.profiles) ? c.profiles : [];
         return h('li', statusDot(kind, label), h('div.grow', h('strong', c.name), h('div.small.muted', [label, c.detail].filter(Boolean).join(' · ')),
-          profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null),
+          profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Relay profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null),
         Number.isFinite(c.viewers) ? h('span', `${c.viewers.toLocaleString()} viewers`) : null);
       }))
       : empty('Nothing connected yet', 'Ask an owner or admin to connect your services.'));
@@ -334,7 +337,7 @@ export async function create(view, ctx) {
     if (made) ctx.navigate(`/connections/${encodeURIComponent(made.id)}`);
   };
   const settings = h('form', { onsubmit: submit },
-    field('Name', nameInput, { hint: 'What you call it here, like "Multi-Stream (NAS)".' }),
+    field('Name', nameInput, { hint: 'What you call it here, like "Relay (NAS)".' }),
     form.el,
     field('Turn it on when saved', on),
     h('div.form-actions', h('a.btn', { href: '#/connections' }, 'Cancel'), save));

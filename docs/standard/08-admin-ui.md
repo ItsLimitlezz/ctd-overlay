@@ -50,7 +50,7 @@ The path a non-technical user takes: **browse → preview → use → copy into 
 
 Several streams can run at once: a stream is a show, or an overlay outside a show, and each is fed
 by the connections its overlays are bound to (§8.3), so two shows bound to two connections (two
-CTD Multi-Stream servers, say) are two streams.
+CTD Relay servers, say) are two streams.
 
 - Live opens on **every stream**: a card per show and per overlay outside a show, with its
   on-air state in words (**On air**, **Offline**, or **Unknown** when no connection says), each

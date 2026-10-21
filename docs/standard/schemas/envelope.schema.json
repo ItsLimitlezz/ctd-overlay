@@ -21,7 +21,7 @@
         "connector": { "type": "string" },
         "connection": { "type": "string" },
         "platform": { "type": "string", "enum": ["twitch", "kick", "youtube", "facebook", "x", "instagram", "tiktok", "spotify", "obs", "core", "simulator", "custom"] },
-        "profile": { "type": "string", "pattern": "^[^\\s/]{1,100}$", "description": "The stream at the service the connection's data belongs to (a CTD Multi-Stream profile): the connection's feed \"<connection>/<profile>\" (01 §1.3)." }
+        "profile": { "type": "string", "pattern": "^[^\\s/]{1,100}$", "description": "The stream at the service the connection's data belongs to (a CTD Relay profile): the connection's feed \"<connection>/<profile>\" (01 §1.3)." }
       }
     },
     "data": { "type": "object" },

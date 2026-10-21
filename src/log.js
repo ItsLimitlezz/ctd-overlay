@@ -12,7 +12,7 @@ const SECRET_STRINGS = [
   // An OAuth callback's code (06 §6.4), a device code, a PKCE verifier, besides keys. Its state is
   // no secret on its own: single use, and only whoever started the sign-in can finish it.
   [/([?&](?:key|token|access_token|refresh_token|code|client_secret|code_verifier|device_code)=)[^&#\s"']+/gi, '$1[redacted]'],
-  [/\b(ctd_pat_)[A-Za-z0-9_-]+/g, '$1[redacted]'], // CTD Multi-Stream API tokens (step 16b)
+  [/\b(ctd_pat_)[A-Za-z0-9_-]+/g, '$1[redacted]'], // CTD Relay API tokens (step 16b)
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]'],
   // GitHub tokens (template sources, Settings → Integrations): ghp_ classic, github_pat_
   // fine-grained, gho_ OAuth (the device sign-in), ghu_/ghs_/ghr_ app tokens.

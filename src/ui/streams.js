@@ -1,5 +1,5 @@
 // Streams in the admin UI: a show's or an overlay's stream status as people read it (on air or not,
-// the CTD Multi-Stream profile it follows, each platform, viewers, what feeds it), and the "Fed by"
+// the CTD Relay profile it follows, each platform, viewers, what feeds it), and the "Fed by"
 // choice of connections. Live, Overlays
 // and Shows use these. A stream's status comes from the API (`stream` on a show or an overlay,
 // src/streams.js): onAir true, false, or absent when nothing says, which is "Unknown", never
@@ -40,8 +40,8 @@ function platformText(p) {
   return `${parts.join(' · ')}${p.stale ? ' (held)' : ''}`;
 }
 
-// A CTD Multi-Stream profile's status in words (06 §6.11).
-const PROFILE = { live: 'Live', starting: 'Starting', stopping: 'Stopping', offline: 'Offline', missing: 'Not in CTD Multi-Stream any more' };
+// A CTD Relay profile's status in words (06 §6.11).
+const PROFILE = { live: 'Live', starting: 'Starting', stopping: 'Stopping', offline: 'Offline', missing: 'Not in CTD Relay any more' };
 export const profileWords = (status) => PROFILE[status] || 'Unknown';
 
 // A profile as a chip: its colour (never alone: its name and status are the words), "DPRTMNT · Live".
@@ -77,7 +77,7 @@ export function streamStatus({ compact = false } = {}) {
         rec ? badge('REC', 'danger') : null,
         Number.isFinite(stream?.viewers) ? h('strong', viewersText(stream.viewers)) : null,
         !compact && title ? h('span.muted.truncate', title) : null),
-      profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Multi-Stream profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null,
+      profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Relay profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null,
       platforms.length ? h('div.chips', { role: 'list', 'aria-label': 'Platforms' }, platforms.map((p) => h('span.chip', { role: 'listitem' }, platformText(p)))) : null,
       connections.length
         ? h('div.chips', { role: 'list', 'aria-label': 'Fed by' }, connections.map((c) => { const chip = connectionChip(c); chip.setAttribute('role', 'listitem'); return chip; }))
@@ -88,13 +88,13 @@ export function streamStatus({ compact = false } = {}) {
 }
 
 // A binding entry's parts: a connection id, or "<connection id>/<profile id>" (one CTD
-// Multi-Stream profile of a connection that follows every profile).
+// Relay profile of a connection that follows every profile).
 const partsOf = (entry) => {
   const s = String(entry);
   const i = s.indexOf('/');
   return i < 0 ? { conn: s } : { conn: s.slice(0, i), profile: s.slice(i + 1) };
 };
-// A binding entry as people read it: "Multi-Stream (NAS)", "Multi-Stream · DPRTMNT".
+// A binding entry as people read it: "Relay (NAS)", "Relay · DPRTMNT".
 // connections: GET /api/v1/system/health's.
 export function bindingName(connections, entry) {
   const { conn, profile } = partsOf(entry);
@@ -104,7 +104,7 @@ export function bindingName(connections, entry) {
   return `${c?.name || conn} · ${p?.name || profile}`;
 }
 
-// "Fed by": every connection (made later too), or only some; a CTD Multi-Stream connection that
+// "Fed by": every connection (made later too), or only some; a CTD Relay connection that
 // follows every profile, all its profiles (new ones too) or only some of them. connections:
 // [{ id, name, status, everyProfile?, profiles?: [{ id, name, status }] }] (GET
 // /api/v1/system/health, which operators can read); value: "all" or entries (connection ids, and
@@ -132,7 +132,7 @@ export function fedByForm({ connections, value, disabled = false, legend = 'Fed 
     if (!split) return { c, whole, profiles: [], el: field(`${c.name} (${words})`, whole) };
     // A profile named in the bindings that the connection doesn't follow now (deleted there): kept.
     const rows = [...profiles.map((p) => ({ id: p.id, label: `${c.name} · ${p.name || p.id} (${profileWords(p.status)})` })),
-      ...named.filter((id) => !profiles.some((p) => p.id === id)).map((id) => ({ id, label: `${c.name} · ${id} (not in CTD Multi-Stream any more)` }))];
+      ...named.filter((id) => !profiles.some((p) => p.id === id)).map((id) => ({ id, label: `${c.name} · ${id} (not in CTD Relay any more)` }))];
     const boxes = rows.map((r) => {
       const input = h('input', { type: 'checkbox', value: `${c.id}/${r.id}`, checked: named.includes(r.id) });
       const hint = h('span.small.muted', { hidden: true }, ' — included');
@@ -176,7 +176,7 @@ export function fedByForm({ connections, value, disabled = false, legend = 'Fed 
     groups.length
       ? h('div.fed-by-list', groups.map((g) => g.el))
       : h('p.small.muted', 'There are no connections yet: an owner or admin adds them in Connections.'),
-    h('p.small.muted', 'Two streams at once: feed each stream\'s overlays from its own CTD Multi-Stream profile ("Multi-Stream · DPRTMNT") or connection, so each shows its own chat, alerts and viewers.'));
+    h('p.small.muted', 'Two streams at once: feed each stream\'s overlays from its own CTD Relay profile ("Relay · DPRTMNT") or connection, so each shows its own chat, alerts and viewers.'));
   const current = () => {
     if (all.checked) return 'all';
     return groups.flatMap((g) => (g.whole.checked ? [g.c.id] : g.profiles.filter((b) => b.input.checked).map((b) => b.input.value)));
@@ -193,7 +193,7 @@ export function fedByForm({ connections, value, disabled = false, legend = 'Fed 
 // (bound: the overlay's `bound`, connections and profiles of one, by name).
 export function fedByWords(binding, bound) {
   if (binding === 'all') return 'Every connection, including new ones.';
-  const names = list(bound).map((c) => (c.missing ? `${c.name} (not in CTD Multi-Stream any more)` : c.name)).filter(Boolean);
+  const names = list(bound).map((c) => (c.missing ? `${c.name} (not in CTD Relay any more)` : c.name)).filter(Boolean);
   if (!list(binding).length) return 'No connection: it shows sample data and the show only.';
   return `Only ${names.length ? names.join(', ') : `${list(binding).length} connection${list(binding).length === 1 ? '' : 's'}`}.`;
 }

@@ -14,7 +14,7 @@ import { CHAT_TYPES } from '../bus/names.js';
 
 export const CAPABILITIES = Object.freeze(['chat.read', 'alerts', 'viewers', 'stream.status', 'music', 'obs']);
 // The platforms a connection may speak for (02 §2.1 src.platform): the standard's, and those CTD
-// Multi-Stream relays.
+// Relay relays.
 export const PLATFORMS = Object.freeze(['twitch', 'kick', 'youtube', 'facebook', 'x', 'instagram', 'tiktok', 'spotify', 'obs', 'custom']);
 
 export function namesOf(def) {

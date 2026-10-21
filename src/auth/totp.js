@@ -69,6 +69,6 @@ export function verifyTotp(secret, code, ms, { lastStep = -1 } = {}) {
   return undefined;
 }
 
-export function otpauthUri(secret, account, issuer = 'Stream Kit') {
+export function otpauthUri(secret, account, issuer = 'CTD Overlay') {
   return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=${DIGITS}&period=${STEP_S}`;
 }

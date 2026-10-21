@@ -2,7 +2,7 @@
 import * as api from '../api.js';
 import { field, h, mount, notice } from '../dom.js';
 
-const brand = () => h('div.brand', h('span.brand-mark', { 'aria-hidden': 'true' }), h('span', 'Stream Kit'));
+const brand = () => h('div.brand', h('span.brand-mark', { 'aria-hidden': 'true' }), h('span', 'CTD Overlay'));
 
 // Where to go after signing in: the page asked for, if it is one of ours.
 const nextOf = (ctx) => {

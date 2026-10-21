@@ -129,8 +129,10 @@ img { max-width: 100%; }
   display: inline-flex; align-items: center; gap: 10px; min-height: var(--tap);
   color: var(--text); text-decoration: none; font-weight: 700; white-space: nowrap;
 }
-.brand-mark { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); flex: none; }
+.brand-mark { width: 28px; height: 28px; border-radius: 7px; background: url(/ui/icon.svg) center / cover no-repeat; flex: none; }
 .brand-logo { height: 28px; width: auto; border-radius: 4px; }
+.with-icon { display: flex; align-items: center; gap: 10px; }
+.app-icon { width: 28px; height: 28px; border-radius: 7px; flex: none; }
 .nav { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; }
 .nav a {
   display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 12px;

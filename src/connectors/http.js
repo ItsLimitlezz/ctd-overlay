@@ -20,7 +20,7 @@
 // - Egress (07 §7.11):
 //     service  the connector's own service: https only (a test may point an endpoint at a local
 //              http server; those origins are allowed by name);
-//     lan      an address the operator typed (OBS, CTD Multi-Stream): resolved once and connected to
+//     lan      an address the operator typed (OBS, CTD Relay): resolved once and connected to
 //              exactly that address; loopback and private addresses only over plain http;
 //              link-local (cloud metadata), unspecified and multicast never. An https service with a
 //              self-signed certificate is trusted by its SHA-256 fingerprint (tls.fingerprint256),
@@ -253,7 +253,7 @@ export function createHttpClient({ fetch = globalThis.fetch, lookup = defaultLoo
         // The timeout covered the headers; the body is the caller's to read. Stopping (the
         // instance's signal or the request's own) must still close the socket for as long as the
         // body lives: a stream left open holds one of the service's stream slots (CTD
-        // Multi-Stream allows 5 per token) and keeps being read. So the listeners stay until the
+        // Relay allows 5 per token) and keeps being read. So the listeners stay until the
         // body ends, fails or is cancelled.
         timers.clearTimeout(timer);
         return { status, headers: res.headers, body: res.body ? untilDone(res.body, done, () => ctrl.abort()) : (done(), null) };

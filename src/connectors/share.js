@@ -1,5 +1,5 @@
 // Overlays shared with a connection's service (06 §6.11): what a connector whose definition says
-// `sharesOverlays` gets as ctx.overlays, so it can tell an app hub (CTD Multi-Stream's) which
+// `sharesOverlays` gets as ctx.overlays, so it can tell an app hub (CTD Relay's) which
 // overlays it feeds, with their URLs for OBS, and make one when another app asks.
 //
 //   ctx.overlays.baseUrl       where OBS reaches this platform: SKP_PUBLIC_URL, else the first

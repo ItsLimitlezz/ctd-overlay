@@ -10,7 +10,7 @@
 //
 // - connections: the turned-on connections that feed it (every one for "all"), by name and status
 //   only: whoever reads overlays or shows sees it, connections:read or not, so never a setting.
-// - profiles: the CTD Multi-Stream profiles those connections follow (06 §6.11), from the ones
+// - profiles: the CTD Relay profiles those connections follow (06 §6.11), from the ones
 //   connected now, each on its own: a connection that follows every profile gives all of them when
 //   bound whole, else the ones named. Its status says live before any platform does (offline,
 //   starting, live, stopping; "missing" for a profile named that the connection doesn't follow

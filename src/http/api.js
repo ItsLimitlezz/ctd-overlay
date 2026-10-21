@@ -353,7 +353,7 @@ export function createApi({ guard, hosts, store, log, now = Date.now, perMinute 
     }
     return {
       openapi: '3.1.0',
-      info: { title: 'Stream Kit Platform API', version: version || '1', description: 'Every route of the platform\'s API v1 (docs/standard/03-api.md).' },
+      info: { title: 'CTD Overlay API', version: version || '1', description: 'Every route of the platform\'s API v1 (docs/standard/03-api.md).' },
       servers: [{ url: base }],
       paths,
       components: {

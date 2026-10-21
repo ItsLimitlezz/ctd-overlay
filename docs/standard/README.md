@@ -35,7 +35,7 @@ Everything else in this standard follows from that sentence.
 | 03 | [API](03-api.md) | REST surface, auth modes, errors, streaming, versioning |
 | 04 | [Templates](04-templates.md) | Package format, manifest, runtime SDK, sandboxing |
 | 05 | [Animation](05-animation.md) | Lifecycle, sequencing, alert queues, sync, performance |
-| 06 | [Integrations](06-integrations.md) | Connector contract; Twitch, Kick, YouTube, Spotify, OBS; other apps; CTD Multi-Stream |
+| 06 | [Integrations](06-integrations.md) | Connector contract; Twitch, Kick, YouTube, Spotify, OBS; other apps; CTD Relay |
 | 07 | [Security](07-security.md) | Login, sessions, tokens, secrets at rest, exposure modes |
 | 08 | [Admin UI](08-admin-ui.md) | Navigation, template gallery, previews, theming |
 | 09 | [Timeline](09-timeline.md) | Shows, scheduled cues, the time rules |
@@ -124,7 +124,7 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
-**2026-10-15.** From building the connector host and CTD Multi-Stream (plan steps 16, 16b):
+**2026-10-15.** From building the connector host and CTD Relay (plan steps 16, 16b):
 
 1. Bindings are `"all"` (every connection, made later too: the default) or a list; existing
    overlays take `"all"`. A rebinding reaches open pages at once. *(01 §1.3, 03 §3.4)*
@@ -143,7 +143,7 @@ These are settled. An implementation that departs from one is not SKP-conformant
 5. The connector contract as built: `create(ctx)` per start, health pushed by the connector, the
    context's holds, memory, quota and signal; the HTTP client's rules; the redirect URI (public
    URL, else the loopback IP), `state` bound to whoever started it, single use, 10 minutes, no
-   `form_post`; the device flow's polling. CTD Multi-Stream is §6.11. *(06 §6.1, §6.3, §6.4,
+   `form_post`; the device flow's polling. CTD Relay is §6.11. *(06 §6.1, §6.3, §6.4,
    §6.11)*
 6. What is encrypted with what associated data; the three kinds of destination connections
    reach. *(07 §7.7, §7.11)*

@@ -538,7 +538,7 @@ test('two-factor: enroll with the password, confirm a code, ten recovery codes; 
   assert.equal((await owner.call('POST', '/auth/totp/enroll', { password: 'wrong' })).status, 403);
   const enrolled = (await owner.call('POST', '/auth/totp/enroll', { password: PASSWORD })).body;
   assert.match(enrolled.secret, /^[A-Z2-7]{32}$/);
-  assert.match(enrolled.uri, new RegExp(`^otpauth://totp/Stream%20Kit:juan\\?secret=${enrolled.secret}&issuer=Stream%20Kit`));
+  assert.match(enrolled.uri, new RegExp(`^otpauth://totp/CTD%20Overlay:juan\\?secret=${enrolled.secret}&issuer=CTD%20Overlay`));
   assert.equal((await owner.call('POST', '/auth/totp/verify', { code: '000000' })).status, 422);
   const code = () => hotp(enrolled.secret, stepAt(clock.t));
   const on = await owner.call('POST', '/auth/totp/verify', { code: code() });

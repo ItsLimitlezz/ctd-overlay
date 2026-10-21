@@ -48,7 +48,7 @@ test('on air, offline or unknown; the bus\'s choice between connections; viewers
   const make = (connector, name) => platform.connectors.create({ connector, name, config: { behaviour: 'push', clientId: 'client-id-value' }, secrets: { clientSecret: 'client-secret-value' } });
   const a = make('fake', 'Stream A');
   const b = make('fake-yt', 'Stream B');
-  const r = make('relay', 'Multi-Stream');
+  const r = make('relay', 'Relay');
   await until(() => direct.live.length === 1 && youtube.live.length === 1 && relay.live.length === 1, 5000, 'the connections running');
   const ctxOf = (id) => [...direct.live, ...youtube.live, ...relay.live].find((i) => i.ctx.connection.id === id).ctx;
   for (const c of [a, b, r]) ctxOf(c.id).setHealth({ status: 'connected' });
@@ -83,8 +83,8 @@ test('on air, offline or unknown; the bus\'s choice between connections; viewers
 
   // Bound to every connection: both platforms, every connection; a show with one "all" member too.
   const solo = await streamOf('/overlays/solo');
-  assert.deepEqual([solo.onAir, solo.viewers, solo.platforms.map((p) => p.platform), names(solo)], [true, 214, ['twitch', 'youtube'], ['Stream A', 'Stream B', 'Multi-Stream']]);
-  assert.deepEqual(names(await streamOf(`/shows/${showC.id}`)), ['Stream A', 'Stream B', 'Multi-Stream']);
+  assert.deepEqual([solo.onAir, solo.viewers, solo.platforms.map((p) => p.platform), names(solo)], [true, 214, ['twitch', 'youtube'], ['Stream A', 'Stream B', 'Relay']]);
+  assert.deepEqual(names(await streamOf(`/shows/${showC.id}`)), ['Stream A', 'Stream B', 'Relay']);
   // A count with no live status yet (Kick, through B): its viewers count, its "on air" isn't said.
   platform.bus.setState('viewers.kick', 12, { src: { connector: 'fake-yt', connection: b.id, platform: 'kick' } });
   const sb2 = await streamOf(`/shows/${showB.id}`);
@@ -134,7 +134,7 @@ test('on air, offline or unknown; the bus\'s choice between connections; viewers
   assert.deepEqual([o2.etag, o1.body.stream.onAir, o2.body.stream.onAir], [o1.etag, true, false]);
 });
 
-test('two CTD Multi-Stream servers feed two shows: one on air with its viewers, the other offline', { timeout: 60000 }, async (t) => {
+test('two CTD Relay servers feed two shows: one on air with its viewers, the other offline', { timeout: 60000 }, async (t) => {
   const one = await startFakeMultistream();
   defer(t, () => one.close());
   const two = await startFakeMultistream();
