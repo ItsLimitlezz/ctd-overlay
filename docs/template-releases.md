@@ -37,7 +37,7 @@ jobs:
           path: template
       - uses: actions/checkout@v4
         with:
-          repository: ItsLimitlezz/CTD---Overlay
+          repository: ItsLimitlezz/ctd-overlay
           path: platform
       - uses: actions/setup-node@v4
         with:

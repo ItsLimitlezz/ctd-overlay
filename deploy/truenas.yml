@@ -3,7 +3,7 @@
 # address (a container's own addresses aren't the NAS's, so the platform must be told its name).
 services:
   ctd-overlay:
-    image: ghcr.io/itslimitlezz/ctd---overlay:latest
+    image: ghcr.io/itslimitlezz/ctd-overlay:latest
     restart: unless-stopped
     ports:
       - "4848:4848"
