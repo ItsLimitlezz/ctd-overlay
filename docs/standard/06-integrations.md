@@ -516,6 +516,14 @@ has said anything about its outputs (02 §2.5).
   scene changes nothing; a different one (a change this platform missed) is taken. `since` is when
   it changed, on this platform's clock (Relay's `at`, corrected by the clock difference its `Date`
   shows).
+- **The scene list** (v1.6): a newer plugin adds `scenes: [{ name, uuid }]` to every `obs.scene`,
+  the canvas's every scene in OBS's order (groups left out), and sends `obs.scene` again within
+  ~100 ms when a scene is added, renamed or removed; `GET /profiles/{id}/obs` keeps it per canvas.
+  The connection makes it `obs.scenes.<canvas>` (`[{ scene, sceneUuid? }]`, at most 200, a name
+  once) from the machine the canvas shows. A list that changed without the scene is taken; an
+  event without `scenes` (an older plugin) keeps the list it had. Relay keeps the list in memory
+  only and doesn't send a list-only change on `/events` again, so a change may show only at its
+  next resend (60 s) or reconnect.
 - A profile deleted there takes its OBS values with it; a stopped connection takes them all, an
   error holds them like any value (02 §2.8).
 - What OBS shows is on each stream (`stream.obs`, 03 §3.4: the Live strip "OBS · landscape: Live ·

@@ -156,6 +156,8 @@ without `display`.
 | `obs.scene` | string — current program scene (the main, landscape canvas's) | OBS |
 | `obs.scene.landscape` | `{ scene, sceneUuid?, appId?, since }` — the landscape (main) canvas's program scene; `appId`: the OBS machine that reported it (CTD Relay), `since`: epoch ms it became the program scene | OBS |
 | `obs.scene.vertical` | the same, for the vertical canvas (Aitum Vertical) | OBS |
+| `obs.scenes.landscape` | `[{ scene, sceneUuid? }]` — every scene of the landscape canvas, in OBS's order, when OBS says them (the CTD OBS plugin through CTD Relay v1.6) | OBS |
+| `obs.scenes.vertical` | the same, for the vertical canvas | OBS |
 | `obs.streaming` | boolean — any output but the recording runs | OBS |
 | `obs.recording` | boolean | OBS |
 | `show.scene` | string — the overlay's active scene | core |

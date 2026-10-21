@@ -140,11 +140,12 @@ It acts as the owner and is accepted only from a loopback address, never through
 the ETag): `{ connections: [{ id, name, connector, status, detail? }], onAir?, platforms: [{
 platform, live?, title?, startedAt?, viewers?, stale? }], profiles?: [{ connection, profile, name,
 color?, status, startedAt? }], viewers?, obs?: [{ source, name, landscape?, vertical?, streaming?,
-recording?, stale?, seen? }] }`. `obs` is what OBS shows, per feed of those connections that
+recording?, stale?, seen?, scenes? }] }`. `obs` is what OBS shows, per feed of those connections that
 reports it (`source`: `"<connection>"` or `"<connection>/<profile>"`, as `followObs.source` takes
 it): each canvas's program scene `{ scene, sceneUuid?, since? }`, whether it streams and records,
-and `seen: { landscape, vertical }`, the OBS scenes it has shown since the platform started,
-newest first (what Follow OBS offers to map). `profiles` are the CTD Relay profiles the
+`seen: { landscape, vertical }`, the OBS scenes it has shown since the platform started,
+newest first, and `scenes: { landscape?, vertical? }`, each canvas's every scene in OBS's order
+when OBS says them (`obs.scenes.<canvas>`, 02 §2.5): what Follow OBS offers to map. `profiles` are the CTD Relay profiles the
 connected ones follow (06 §6.11; `status` `offline | starting | live | stopping`, or `missing` for
 one bound by name that its connection doesn't follow any more), each on its own: all of a
 connection's when it is bound whole, the ones named when bound by profile, whose `platforms` and

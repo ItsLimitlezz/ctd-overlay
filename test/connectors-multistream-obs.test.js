@@ -136,6 +136,35 @@ test('ordering by atMs per OBS machine and canvas, duplicates dropped by eventId
   assert.equal(feedState(get, 'default')['obs.scene'], 'Studio again', 'obs.scene: the landscape scene\'s name');
 });
 
+test('each canvas\'s whole scene list (v1.6): read on connecting, kept by events, a list-only change taken, an event without a list keeps it; the stream says it', { timeout: 60000 }, async (t) => {
+  const LIST = [{ name: 'Starting', uuid: 'u-start' }, { name: 'Live', uuid: 'u-live' }, { name: 'BRB', uuid: 'u-brb' }];
+  const ctx = await start(t, (ms) => ms.obsScene({ canvas: 'landscape', scene: 'Live', sceneUuid: 'u-live', scenes: LIST, atMs: 1000, emit: false }));
+  const { ms, platform } = ctx;
+  const { id, get } = await connect(ctx);
+  const list = (canvas = 'landscape') => feedState(get, 'default')[`obs.scenes.${canvas}`];
+  assert.deepEqual(list(), [{ scene: 'Starting', sceneUuid: 'u-start' }, { scene: 'Live', sceneUuid: 'u-live' }, { scene: 'BRB', sceneUuid: 'u-brb' }], 'from GET …/obs, in OBS\'s order');
+  assert.equal(list('vertical'), undefined, 'none sent for the vertical canvas');
+  assert.equal(feedState(get, 'p-dprtmnt')['obs.scenes.landscape'], undefined, 'DPRTMNT\'s OBS sent none');
+
+  // A scene added in OBS: the plugin sends the same scene with the new list (a list-only change).
+  const changes = changesOf(platform, 'obs.scene.landscape');
+  ms.obsScene({ canvas: 'landscape', scene: 'Live', sceneUuid: 'u-live', scenes: [...LIST, { name: 'Ending' }, { name: 'BRB' }, { nope: 1 }], atMs: 2000 });
+  await until(() => list()?.length === 4, 5000, 'the new list');
+  assert.deepEqual(list()[3], { scene: 'Ending' }, 'no uuid, none said; a name once; a bad entry left out');
+  assert.deepEqual(changes, [], 'the scene itself didn\'t change');
+
+  // An older plugin's event (no list): the scene changes, the list stays.
+  ms.obsScene({ canvas: 'landscape', scene: 'BRB', sceneUuid: 'u-brb', previous: 'Live', atMs: 3000 });
+  await until(() => feedState(get, 'default')['obs.scene.landscape']?.scene === 'BRB', 5000, 'BRB');
+  assert.equal(list().length, 4);
+
+  platform.overlays.create({ slug: 'miami', template: { id: 'dev.skp.testbed', version: '1.0.0' }, settings: {}, connections: [`${id}/default`] });
+  const show = platform.shows.create({ name: 'Miami', overlays: ['miami'], date: '2026-10-17', timezone: 'America/Toronto' }, { actor: 'test' });
+  const stream = (await ctx.api('GET', `/shows/${show.id}`)).body.stream;
+  assert.deepEqual(stream.obs[0].scenes.landscape.map((s) => s.scene), ['Starting', 'Live', 'BRB', 'Ending']);
+  assert.equal(stream.obs[0].scenes.vertical, undefined);
+});
+
 test('a connection limited to one profile has OBS as its own values; an older Relay (no OBS) still connects', { timeout: 60000 }, async (t) => {
   const ctx = await start(t, (ms) => ms.obsScene({ profile: 'p-dprtmnt', canvas: 'vertical', scene: 'Vert', atMs: 1, emit: false }));
   const { ms, platform } = ctx;

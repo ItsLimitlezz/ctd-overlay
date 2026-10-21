@@ -32,8 +32,9 @@
 //        ms.messages (POST /messages bodies), ms.ownApp(id) (registered by another token),
 //        ms.injectMessage({ from, to, type, profileId, data }) → the message id (an app.message)
 //   ms.legacy = true     answers as before v1.2: no profiles, pairing or hub
-//   OBS (its §10, v1.4/v1.5): ms.obsScene({ profile, appId, canvas, scene, sceneUuid, previous,
-//        atMs, eventId, emit }) keeps a canvas's program scene for GET /profiles/<id>/obs and (emit,
+//   OBS (its §10, v1.4–v1.6): ms.obsScene({ profile, appId, canvas, scene, sceneUuid, previous,
+//        scenes, atMs, eventId, emit }) keeps a canvas's program scene (and its scene list
+//        [{ name, uuid }], v1.6) for GET /profiles/<id>/obs and (emit,
 //        the default) sends obs.scene with appId, eventId and at; ms.obsOutput({ profile, appId,
 //        output, canvas, state, emit }) the same for an output; ms.obsOffline(appId, profile) marks
 //        an app offline; ms.noObsRoute = true answers 404 there (a Relay older than v1.4)
@@ -153,12 +154,14 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
   };
   let obsSeq = 0;
   const obsEmit = (type, data, profile, appId, eventId) => ms.emit(type, { ...data, appId, eventId: eventId ?? `e${++obsSeq}`, at: Date.now() + ms.skewMs }, { platform: 'obs', destination: appId, profile });
-  ms.obsScene = ({ profile = 'default', appId = 'ctd-obs-plugin-studio', canvas = 'landscape', scene, sceneUuid, previous, atMs = Date.now(), eventId, emit = true } = {}) => {
+  ms.obsScene = ({ profile = 'default', appId = 'ctd-obs-plugin-studio', canvas = 'landscape', scene, sceneUuid, previous, scenes, atMs = Date.now(), eventId, emit = true } = {}) => {
     const app = obsApp(profile, appId);
-    app.scenes = [...app.scenes.filter((s) => s.canvas !== canvas), { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), atMs, updatedAt: Date.now() }];
+    // v1.6: the canvas's scene list, kept when an event comes without one.
+    const list = scenes ?? app.scenes.find((s) => s.canvas === canvas)?.scenes;
+    app.scenes = [...app.scenes.filter((s) => s.canvas !== canvas), { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), atMs, ...(list ? { scenes: list } : {}), updatedAt: Date.now() }];
     app.updatedAt = Date.now();
     if (!emit) return undefined;
-    return obsEmit('obs.scene', { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), ...(previous !== undefined ? { previous } : {}), atMs }, profile, appId, eventId);
+    return obsEmit('obs.scene', { canvas, scene, ...(sceneUuid ? { sceneUuid } : {}), ...(previous !== undefined ? { previous } : {}), ...(scenes ? { scenes } : {}), atMs }, profile, appId, eventId);
   };
   ms.obsOutput = ({ profile = 'default', appId = 'ctd-obs-plugin-studio', output = 'main', canvas, state = 'live', eventId, emit = true } = {}) => {
     const app = obsApp(profile, appId);

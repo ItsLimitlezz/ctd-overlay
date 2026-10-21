@@ -78,6 +78,9 @@
 //   ordered by atMs (its own clock: an older one is ignored), an event seen before (eventId) is
 //   dropped, and the canvas shows the most recent of them by atMs (two machines' clocks may
 //   disagree). Relay's 60 s resend of an unchanged scene (no `previous`) changes nothing.
+//   obs.scenes.landscape / obs.scenes.vertical: the canvas's whole scene list in OBS's order,
+//   [{ scene, sceneUuid? }], when the plugin sends one (`scenes` in obs.scene, v1.6's GET …/obs;
+//   an event without it keeps the list), of the machine the canvas shows.
 //
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
@@ -106,6 +109,7 @@ const SCOPES = ['status:read', 'chat:read', 'apps:read', 'apps:write']; // what 
 const OBS_CANVASES = ['landscape', 'vertical'];
 const OBS_SCENE_CHARS = 200;
 const OBS_IDS = 500; // OBS event ids remembered per profile, to drop one seen twice
+const OBS_LIST = 200; // scenes kept of a canvas's list
 const TOKEN = /^ctd_pat_[A-Za-z0-9_-]{16,200}$/;
 const EVERY = '*'; // the Profile setting's "Every profile" (empty means it too)
 const NOT_CONNECTED = 'Not connected yet: press Connect, then approve the code in CTD Relay → Settings → API (or paste a token into this connection\'s settings).';
@@ -255,7 +259,7 @@ export const ctdMultistream = {
     const feeds = new Map();
     // clock: its last /clock answer ({ startedAt on CTD's clock, or null; fps }); clockKey: the
     // session (status and start) that answer was for. obs: what its OBS machines say (step 18).
-    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), clock: null, clockKey: undefined, obs: { apps: new Map(), ids: new Set(), shown: {}, keys: new Set(), seq: 0 } });
+    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), clock: null, clockKey: undefined, obs: { apps: new Map(), ids: new Set(), shown: {}, listed: {}, keys: new Set(), seq: 0 } });
     const one = () => feeds.get('');
     const feedName = (f) => f.view?.name || f.id || '';
     // ?profile= on /status and /chat: following every profile, the feed's; following one with a
@@ -500,7 +504,7 @@ export const ctdMultistream = {
     const appOf = (feed, appId) => {
       let a = feed.obs.apps.get(appId);
       if (!a) {
-        a = { scenes: {}, outputs: new Map() };
+        a = { scenes: {}, lists: {}, outputs: new Map() };
         feed.obs.apps.set(appId, a);
       }
       return a;
@@ -533,14 +537,37 @@ export const ctdMultistream = {
       if (was && atMs !== undefined && was.atMs !== undefined && atMs < was.atMs) return;
       const scene = d.scene.slice(0, OBS_SCENE_CHARS);
       const sceneUuid = str(d.sceneUuid) ? d.sceneUuid.slice(0, 100) : undefined;
+      // The canvas's whole scene list (a newer plugin, v1.6's GET …/obs), kept when one comes
+      // without it: an older plugin's event says nothing about the list.
+      const list = obsList(d.scenes);
+      if (list) {
+        app.lists[canvas] = list;
+        showObsList(feed, canvas);
+      }
       if (was && was.scene === scene && was.sceneUuid === sceneUuid) {
         if (atMs !== undefined) was.atMs = atMs;
         return;
       }
       app.scenes[canvas] = { scene, sceneUuid, atMs, since: Number.isFinite(at) ? at - skew : ctx.now(), seq: ++feed.obs.seq };
       showObsScene(feed, canvas);
+      showObsList(feed, canvas);
     }
-    function showObsScene(feed, canvas) {
+    // [{ name, uuid }] as sent, as [{ scene, sceneUuid? }] in OBS's order (names once, OBS_LIST at
+    // most); undefined when it isn't a list.
+    function obsList(v) {
+      if (!Array.isArray(v)) return undefined;
+      const out = [];
+      for (const s of v) {
+        if (out.length >= OBS_LIST) break;
+        if (!s || typeof s !== 'object' || !str(s.name)) continue;
+        const scene = s.name.slice(0, OBS_SCENE_CHARS);
+        if (out.some((x) => x.scene === scene)) continue;
+        out.push({ scene, ...(str(s.uuid) ? { sceneUuid: s.uuid.slice(0, 100) } : {}) });
+      }
+      return out;
+    }
+    // The app whose scene the canvas shows: the newest change (atMs), else the last one taken.
+    function showingApp(feed, canvas) {
       let best;
       const order = (x) => x.atMs ?? -Infinity;
       for (const [appId, a] of feed.obs.apps) {
@@ -548,12 +575,26 @@ export const ctdMultistream = {
         if (!s) continue;
         if (!best || order(s) > order(best) || (order(s) === order(best) && s.seq > best.seq)) best = { appId, ...s };
       }
+      return best;
+    }
+    function showObsScene(feed, canvas) {
+      const best = showingApp(feed, canvas);
       const value = best && { scene: best.scene, ...(best.sceneUuid ? { sceneUuid: best.sceneUuid } : {}), appId: best.appId, since: best.since };
       const key = value && JSON.stringify([value.scene, value.sceneUuid, value.appId]);
       if (feed.obs.shown[canvas] === key) return;
       feed.obs.shown[canvas] = key;
       obsSet(feed, `obs.scene.${canvas}`, value);
       if (canvas === 'landscape') obsSet(feed, 'obs.scene', value?.scene);
+    }
+    // obs.scenes.<canvas>: the scene list of the app the canvas shows, else of any app that sent
+    // one (an older plugin showing beside a newer one).
+    function showObsList(feed, canvas) {
+      const apps = [...feed.obs.apps.values()];
+      const list = feed.obs.apps.get(showingApp(feed, canvas)?.appId)?.lists[canvas] || apps.find((a) => a.lists[canvas])?.lists[canvas];
+      const key = list && JSON.stringify(list);
+      if (feed.obs.listed[canvas] === key) return;
+      feed.obs.listed[canvas] = key;
+      obsSet(feed, `obs.scenes.${canvas}`, list);
     }
 
     // An output's state (obs.output, or GET …/obs): streaming while any output but "record" runs,

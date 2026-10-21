@@ -1,8 +1,9 @@
 // Follow OBS in the admin UI (09 §9.7): what OBS shows, in words ("OBS · landscape: Live ·
 // vertical: BRB · Streaming"), and the "Follow OBS" card of a show's Details and of an overlay
 // outside a show (its Scenes tab): on or off, whose OBS, which canvas drives it, and per OBS scene
-// the scene to take, picked from the scenes OBS has shown (`stream.obs[].seen`, from the state its
-// connection reports), or typed when OBS hasn't shown one yet. Saved with If-Match (H16).
+// the scene to take, for every scene OBS has (`stream.obs[].scenes`, when the plugin sends its
+// list), else the scenes OBS has shown (`stream.obs[].seen`), or typed when OBS hasn't shown one
+// yet. Saved with If-Match (H16).
 import * as api from './api.js';
 import { field, h, mount, notice, run, toast } from './dom.js';
 
@@ -99,11 +100,14 @@ export function followObsCard({ resource, path, scenes, what = 'show', canWrite,
     const f = followedFeed();
     const c = canvas.value;
     const now = f?.[c]?.scene;
-    // The scenes this OBS has shown on the canvas (newest first), then those mapped already, then typed.
+    // Every scene of the canvas in OBS's order when the plugin sends its list; else the scenes this
+    // OBS has shown on it (newest first). Then those mapped already, then typed.
+    const all = Array.isArray(f?.scenes?.[c]) ? f.scenes[c] : undefined;
     const names = [];
     const uuids = new Map();
-    for (const s of list(f?.seen?.[c])) if (s?.scene && !names.includes(s.scene)) { names.push(s.scene); if (s.sceneUuid) uuids.set(s.scene, s.sceneUuid); }
+    for (const s of all || list(f?.seen?.[c])) if (s?.scene && !names.includes(s.scene)) { names.push(s.scene); if (s.sceneUuid) uuids.set(s.scene, s.sceneUuid); }
     if (now && !names.includes(now)) { names.unshift(now); if (f[c].sceneUuid) uuids.set(now, f[c].sceneUuid); }
+    const inObs = new Set(names);
     for (const n of [...chosen.keys(), ...extra]) if (!names.includes(n)) names.push(n);
     for (const [n, u] of uuids) { const x = chosen.get(n); if (x && !x.uuid) x.uuid = u; }
     rowSelects = new Map();
@@ -113,11 +117,13 @@ export function followObsCard({ resource, path, scenes, what = 'show', canWrite,
         chosen.set(n, { scene: sel.value, uuid: chosen.get(n)?.uuid || uuids.get(n) });
       });
       rowSelects.set(n, sel);
-      return field(`${n}${n === now ? ' (on now)' : ''}`, sel);
+      return field(`${n}${n === now ? ' (on now)' : all && !inObs.has(n) ? ' (not in OBS now)' : ''}`, sel);
     });
+    const none = all ? 'OBS has no scenes on this canvas.' : 'No scene from OBS yet: change scenes in OBS once to list them here, or add one by its name.';
     mount(rowsBox,
       h('h3', `OBS scenes, ${CANVAS[c].toLowerCase()} canvas`),
-      rows.length ? h('div.obs-map', rows) : h('p.muted', 'No scene from OBS yet: change scenes in OBS once to list them here, or add one by its name.'),
+      all ? h('p.small.muted', `Every scene in ${f.name}'s OBS on this canvas, in OBS's order.`) : null,
+      rows.length ? h('div.obs-map', rows) : h('p.muted', none),
       canWrite ? h('div.inline-form', field('Add an OBS scene', addName), addButton) : null,
       field('Any other OBS scene', otherwise, { hint: 'For a scene in OBS not listed above.' }));
     drawStatus();
