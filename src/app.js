@@ -368,7 +368,8 @@ function admission(config) {
   return (req) => {
     const { ip, https } = req.client;
     const inside = isPrivateAddress(ip);
-    if (config.exposure === 'lan' && !inside) {
+    // SKP_ALLOW_PLAIN_INTERNET: the owner opened lan mode to the internet (a port forward).
+    if (config.exposure === 'lan' && !inside && !config.allowPlainInternet) {
       return { status: 403, title: 'Forbidden', detail: 'This platform serves its local network only (SKP_EXPOSURE=lan).' };
     }
     if (config.exposure === 'public' && !inside && !https) {

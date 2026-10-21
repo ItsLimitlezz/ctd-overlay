@@ -205,7 +205,7 @@ The **Alerts** card on **Live** shows what is on screen and what is waiting:
 
 | What you see | What to do |
 |---|---|
-| A page says "This platform serves its local network only" | The device isn't on the LAN (a phone on mobile data, a VPN). Join the LAN. |
+| A page says "This platform serves its local network only" | The device isn't on the LAN (a phone on mobile data, a VPN). Join the LAN or use Tailscale. For a router port forward, set `SKP_ALLOW_PLAIN_INTERNET: "true"` and add the public address with its port to `SKP_HOSTS` (e.g. `192.168.1.50:4850,203.0.113.10:4850`, with your router's public address in place of `203.0.113.10`). It's plain HTTP, so turn on two-factor; HTTPS through a tunnel (`SKP_EXPOSURE=public`) is the safer way. |
 | Signing in fails with "This can only be requested from the platform's own pages… at the platform's own address" | The address in the browser isn't one the platform knows (common in a container). Add it, with its port if that isn't 4848, to `SKP_HOSTS` and restart. |
 | The connection says the token was refused | Press **Connect again** on the connection's page and approve the code in CTD Multi-Stream (or paste a new token). |
 | "Another CTD Multi-Stream token already registered the app…" | An older connection (or token) registered it. In CTD Multi-Stream → Settings → API, delete that old **CTD Overlay** app; it registers again within 30 s. |

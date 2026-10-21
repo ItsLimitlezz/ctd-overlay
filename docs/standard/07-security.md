@@ -191,7 +191,7 @@ posture and shows it on the dashboard.
 | Mode | Binds | Requires | Notes |
 |---|---|---|---|
 | `local` | 127.0.0.1 | — | Single machine (desktop install default) |
-| `lan` | all interfaces; serves only private/loopback clients | Login | Default for TrueNAS/Docker |
+| `lan` | all interfaces; serves only private/loopback clients (also the internet, over plain HTTP, with `SKP_ALLOW_PLAIN_INTERNET=true`: the owner's choice for a port forward, warned at startup and in Settings) | Login | Default for TrueNAS/Docker |
 | `public` | all interfaces | TLS, login, `SKP_PUBLIC_URL` | Needed for remote control and Kick webhooks |
 
 In `public` mode the platform **MUST** refuse to start unless TLS is available — either its own
