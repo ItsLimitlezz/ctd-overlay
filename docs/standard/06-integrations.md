@@ -105,7 +105,7 @@ A connector **MUST**:
 | `chat.read` | `chat.*` events |
 | `alerts` | `alert.*` events |
 | `viewers` | `viewers.<platform>` state |
-| `stream.status` | `stream.<platform>.*` state |
+| `stream.status` | `stream.<platform>.*` state, and `stream.clock` (02 §2.5.2) |
 | `music` | `music.nowPlaying` state |
 | `obs` | `obs.*` state; scene/source actions |
 | `chat.write`, `moderation` | reserved for v2 |
@@ -338,8 +338,10 @@ event; `obs.streaming` from `GetStreamStatus` / `StreamStateChanged`; `obs.recor
 
 **Scene mapping.** An overlay or show **MAY** map OBS scenes to overlay scenes
 (`"BRB" → brb`, `"Live" → program`). When OBS changes scene, the platform takes the mapped
-overlay scene — the operator switches once, in OBS, and the graphics follow. Timeline cues
-**MAY** do the reverse with `obs.setScene`.
+overlay scene — the operator switches once, in OBS, and the graphics follow (Follow OBS, 09
+§9.7). It works from the `obs.scene.<canvas>` state, whoever reports it: today CTD Relay, which
+relays the CTD OBS plugin's scene changes (§6.11); a direct obs-websocket connection would set the
+same keys. Timeline cues **MAY** do the reverse with `obs.setScene`.
 
 **Placement and security.** OBS usually runs on the streaming PC while the platform runs on a
 NAS, so the connection is LAN-to-LAN. A password is **REQUIRED**. obs-websocket **MUST NOT** be
@@ -474,7 +476,7 @@ message is handled once (its id remembered across restarts); a request replayed 
 connection was away over two minutes is refused; at most 100 answers a minute (the hub takes 120).
 
 **Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`
-(and `profile.status,profiles.changed`, and `app.message` with `apps:read`; `profile=*` following
+(and `profile.status,profiles.changed,obs.scene,obs.output`, and `app.message` with `apps:read`; `profile=*` following
 every profile),
 resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
 when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
@@ -493,6 +495,59 @@ A "<name> joined" presence line (`join: true`, Instagram and TikTok, v1.3) is no
 left out unless the connection's "Show who joined" is on, and then reaches overlays marked `join`.
 `viewers.<platform>` and `stream.<platform>.live | title | startedAt` come from `/status` and each
 `destination.status`; a count it doesn't know (`null`) is absent, never 0.
+
+**OBS** (its §10, v1.4; scene changes v1.5). The CTD OBS plugin sends what OBS does to CTD Relay,
+which relays it per profile; the connection makes it that profile's state (the feed's, like its
+viewers; capability `obs`, `src.platform: "obs"`): `obs.scene.landscape` and
+`obs.scene.vertical`, each canvas's program scene `{ scene, sceneUuid?, appId, since }`;
+`obs.scene`, the landscape scene's name; `obs.streaming` (an output other than `record` is
+`starting`, `live` or `reconnecting`) and `obs.recording` (`record` is), absent until the plugin
+has said anything about its outputs (02 §2.5).
+- It subscribes to `obs.scene` and `obs.output` on `/events` (with `status:read`, which it holds),
+  and reads `GET /profiles/{id}/obs` on every connect and `system.reset`: each app's (OBS machine's)
+  `scenes[]` and `outputs[]`, an app that isn't `online` left out (stale). A Relay without that
+  route (older than v1.4) has nothing to say; the rest works as before.
+- `obs.scene` data: `{ canvas, scene, sceneUuid, previous?, atMs, appId, eventId, at }`, sent within
+  ~100 ms of a transition's start. Several OBS machines are told apart by `appId`: each one's
+  changes are ordered by `atMs` (its own clock; one older than the last it said is ignored), an
+  event seen before (`eventId`, the last 500 per profile) is dropped, and the canvas shows the most
+  recent of the machines' scenes by `atMs` (two machines' clocks may disagree: keep one OBS per
+  profile and canvas). Relay resends the current scene every 60 s without `previous`: the same
+  scene changes nothing; a different one (a change this platform missed) is taken. `since` is when
+  it changed, on this platform's clock (Relay's `at`, corrected by the clock difference its `Date`
+  shows).
+- **The scene list** (v1.6): a newer plugin adds `scenes: [{ name, uuid }]` to every `obs.scene`,
+  the canvas's every scene in OBS's order (groups left out), and sends `obs.scene` again within
+  ~100 ms when a scene is added, renamed or removed; `GET /profiles/{id}/obs` keeps it per canvas.
+  The connection makes it `obs.scenes.<canvas>` (`[{ scene, sceneUuid? }]`, at most 200, a name
+  once) from the machine the canvas shows. A list that changed without the scene is taken; an
+  event without `scenes` (an older plugin) keeps the list it had. Relay sends `obs.scene` again
+  whenever a canvas's list changes, with the same scene and no `previous` (from its v1.6; before,
+  such a change showed at the next 60 s resend or reconnect). It keeps the list in memory only:
+  after a Relay restart there is none until the plugin sends it again.
+- A profile deleted there takes its OBS values with it; a stopped connection takes them all, an
+  error holds them like any value (02 §2.8).
+- What OBS shows is on each stream (`stream.obs`, 03 §3.4: the Live strip "OBS · landscape: Live ·
+  vertical: BRB · Streaming"), and drives the shows and overlays that follow OBS (09 §9.7).
+**Stream clock** (its §4, `GET /clock`, v1.3), with `status:read`: the connection measures CTD
+Relay's clock against its own, NTP-style, and publishes each profile's `stream.clock` (02 §2.5.2)
+as that profile's state (or the connection's, following one profile), so a template counts the
+stream's run time and timecode from `SK.clock` with no request per frame. A **sync** asks
+`GET /clock?t0=<this server's time>` (with `?profile=` as `/status`) 6 times, a second apart
+(following every profile: at least once per profile, the profiles in turn); for each answer, with
+`t3` its arrival, `offset = ((receivedAt − t0) + (sentAt − t3)) / 2` and
+`delay = (t3 − t0) − (sentAt − receivedAt)`; the **lowest delay's offset** is kept (one server
+answers for every profile, so one offset serves them all). Each profile's last answer gives its
+`session.startedAt` (CTD's clock) and `fps`: `stream.clock` is `{ startedAt: session.startedAt −
+offset` (absent while no session runs)`, fps, offsetMs: offset, at }` (`at`: when the kept sample
+was taken). It syncs on every start (so after every reconnect), after `system.reset`, and every
+5 minutes (30 s after one that failed); a session that starts or stops in between
+(`stream.status`, `profile.status`) is read again at once, one answer, with the last offset; a
+profile new here is read at once. Times come from the connector's `ctx.now()` and waits from
+`ctx.schedule` (a test's fake clock in tests). A Relay older than v1.3 answers `404`: asked once a
+start, no clock state, one warning ("older than v1.3: overlays get no stream clock"); a `403` stops
+it quietly; anything else tries again later, never failing the connection. A deleted profile's
+clock goes with its other values.
 
 **Health:** `connected` while the stream is open; `degraded` while a destination is down, saying
 which and why (`Instagram: ended the live (copyright)…`); its `system.notice`s are the

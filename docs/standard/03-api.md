@@ -114,7 +114,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | Method · Path | Purpose |
 |---|---|
 | `GET/POST /overlays` | List · create from a template (`connections`: `"all"`, the default, or connection ids, each whole or one of its profiles: `"<connection id>/<profile id>"`, 01 §1.3) |
-| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections`, `role` (its role in OBS, `[a-z0-9-]` ≤ 54, `null` clears: 06 §6.11) and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist, and a `"<connection>/<profile>"` a profile that connection follows now, as its own feed (`422` otherwise; one the overlay already has is kept, its profile deleted or not)) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: what feeds it now, `[{ id, name, connector, status }]` per connection and `{ id, connection, profile, name ("Relay · DPRTMNT"), connector, status, missing? }` per profile of one (`missing`: the connection doesn't follow it now), and its `stream` (below) |
+| `GET/PATCH/DELETE /overlays/{id}` | Read · update settings, slug, `connections`, `role` (its role in OBS, `[a-z0-9-]` ≤ 54, `null` clears: 06 §6.11), `followObs` (outside a show, as a show's below, its template's scenes; it carries `sceneByObs` when OBS took its scene) and `keyRequired` (every field is checked before any is saved; `keyRequired: false` needs `system:admin`, the owner's; `connections` name connections that exist, and a `"<connection>/<profile>"` a profile that connection follows now, as its own feed (`422` otherwise; one the overlay already has is kept, its profile deleted or not)) · delete (the overlay also leaves its show). An overlay shows its `connections` and `bound`: what feeds it now, `[{ id, name, connector, status }]` per connection and `{ id, connection, profile, name ("Relay · DPRTMNT"), connector, status, missing? }` per profile of one (`missing`: the connection doesn't follow it now), and its `stream` (below) |
 | `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate`. `dryRun`, `confirm` and `runMigrate` are `true` or `false`; anything else is a `422` |
 | `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL** and ends streams opened with the old key; UI must confirm; never replayed for an `Idempotency-Key` (its answer holds the key) |
@@ -127,7 +127,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 ### Shows & timeline
 | Method · Path | Purpose |
 |---|---|
-| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change. `live` is true while REC runs; whether the show is on air on a platform is its `stream` (below) |
+| `GET/POST /shows` · `GET/PATCH/DELETE /shows/{id}` | Shows and their member overlays. A show's ETag (`rev`) moves when what `PATCH` changes does, not with live control (a scene, who's on, REC), so an edit made mid-show isn't refused at every act change; `stateRev` moves with every change. `live` is true while REC runs; whether the show is on air on a platform is its `stream` (below). `followObs` (09 §9.7): `{ enabled, canvas: "landscape" \| "vertical", source?, map: [{ obsScene (≤ 200), obsSceneUuid?, scene }] (≤ 50), otherwise? }`, its scenes the members' (`422 unknown-scene` otherwise), unknown fields refused, `null` removes it; turned on without `source` while several feeds report OBS: `422 pick-obs`. `sceneByObs: { at, obsScene, canvas, source }`: the scene on now was taken by OBS |
 | `PUT /shows/{id}/scene` | Take a scene on every member overlay |
 | `POST /shows/{id}/triggers/{name}` | One-shot trigger to all members |
 | `GET /alerts` · `POST /alerts/pause` · `/resume` · `/skip` · `/replay` | The alert queues (05 §5.5): one per show, or per overlay outside a show, each named by `queue` (the show's or the overlay's id). `GET` lists what is on screen and what waits; pause and resume apply to every queue; skip and replay take `{ queue }` (skip without it: every queue) |
@@ -139,7 +139,13 @@ It acts as the owner and is accepted only from a loopback address, never through
 **Stream status.** A show and an overlay carry `stream`, worked out on each read (it never moves
 the ETag): `{ connections: [{ id, name, connector, status, detail? }], onAir?, platforms: [{
 platform, live?, title?, startedAt?, viewers?, stale? }], profiles?: [{ connection, profile, name,
-color?, status, startedAt? }], viewers? }`. `profiles` are the CTD Relay profiles the
+color?, status, startedAt? }], viewers?, obs?: [{ source, name, landscape?, vertical?, streaming?,
+recording?, stale?, seen?, scenes? }] }`. `obs` is what OBS shows, per feed of those connections that
+reports it (`source`: `"<connection>"` or `"<connection>/<profile>"`, as `followObs.source` takes
+it): each canvas's program scene `{ scene, sceneUuid?, since? }`, whether it streams and records,
+`seen: { landscape, vertical }`, the OBS scenes it has shown since the platform started,
+newest first, and `scenes: { landscape?, vertical? }`, each canvas's every scene in OBS's order
+when OBS says them (`obs.scenes.<canvas>`, 02 §2.5): what Follow OBS offers to map. `profiles` are the CTD Relay profiles the
 connected ones follow (06 §6.11; `status` `offline | starting | live | stopping`, or `missing` for
 one bound by name that its connection doesn't follow any more), each on its own: all of a
 connection's when it is bound whole, the ones named when bound by profile, whose `platforms` and

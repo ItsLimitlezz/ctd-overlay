@@ -1,10 +1,11 @@
 // Streams in the admin UI: a show's or an overlay's stream status as people read it (on air or not,
-// the CTD Relay profile it follows, each platform, viewers, what feeds it), and the "Fed by"
+// the CTD Relay profile it follows, each platform, viewers, what OBS shows, what feeds it), and the "Fed by"
 // choice of connections. Live, Overlays
 // and Shows use these. A stream's status comes from the API (`stream` on a show or an overlay,
 // src/streams.js): onAir true, false, or absent when nothing says, which is "Unknown", never
 // "Offline"; viewers absent when no count is known, never 0 (H6).
 import { badge, field, h, mount } from './dom.js';
+import { obsStrip } from './obs.js';
 
 export const PLATFORMS = { twitch: 'Twitch', youtube: 'YouTube', kick: 'Kick', facebook: 'Facebook', x: 'X', instagram: 'Instagram', tiktok: 'TikTok', custom: 'Other' };
 export const platformName = (p) => PLATFORMS[p] || p;
@@ -79,6 +80,7 @@ export function streamStatus({ compact = false } = {}) {
         !compact && title ? h('span.muted.truncate', title) : null),
       profiles.length ? h('div.chips', { role: 'list', 'aria-label': 'CTD Relay profiles' }, profiles.map((p) => { const chip = profileChip(p); chip.setAttribute('role', 'listitem'); return chip; })) : null,
       platforms.length ? h('div.chips', { role: 'list', 'aria-label': 'Platforms' }, platforms.map((p) => h('span.chip', { role: 'listitem' }, platformText(p)))) : null,
+      obsStrip(stream),
       connections.length
         ? h('div.chips', { role: 'list', 'aria-label': 'Fed by' }, connections.map((c) => { const chip = connectionChip(c); chip.setAttribute('role', 'listitem'); return chip; }))
         : h('p.small.muted', 'No connection feeds it, so whether it is on air is unknown.'),

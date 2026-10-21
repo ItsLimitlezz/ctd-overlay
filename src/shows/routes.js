@@ -3,7 +3,7 @@
 // as ISO 8601 (epoch ms is for live envelopes only, 03 §3.1).
 //
 //   GET    /api/v1/shows                           every show, paged
-//   POST   /api/v1/shows                           { name, overlays, date, timezone, dayBoundary?, goLive?, lineup? }
+//   POST   /api/v1/shows                           { name, overlays, date, timezone, dayBoundary?, goLive?, lineup?, followObs? }
 //   GET    /api/v1/shows/:ref                      by id or name
 //   PATCH  /api/v1/shows/:ref                      any of the above (If-Match)
 //   DELETE /api/v1/shows/:ref
@@ -28,10 +28,16 @@
 // A show as answered carries `stream` (src/streams.js): the connections its members are fed by,
 // whether it is on air on each platform and its viewers, worked out on each read. `live` stays what
 // it was: REC is running (recStartedAt), which is not the same as being on air on a platform.
+//
+// followObs (09 §9.7): which OBS canvas drives the show's scene, whose OBS, and OBS scene → scene;
+// an edit like the others (If-Match). sceneByObs: the last take was OBS's (src/obs/follow.js).
+import { FOLLOW_OBS_FIELDS } from '../obs/mapping.js';
+
 const READ = 'timeline:read';
 const WRITE = 'timeline:write';
 const CONTROL = 'overlays:control';
-const SHOW_FIELDS = ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup'];
+const SHOW_FIELDS = ['name', 'overlays', 'date', 'timezone', 'dayBoundary', 'goLive', 'lineup', 'followObs'];
+const SHOW_BODY = { fields: SHOW_FIELDS, nested: { followObs: FOLLOW_OBS_FIELDS } };
 const iso = (ms) => (typeof ms === 'number' ? new Date(ms).toISOString() : ms);
 
 // A show as a resource: its instants as ISO 8601.
@@ -40,6 +46,7 @@ export function showResource(s) {
   delete out.actor;
   for (const k of ['goLiveAt', 'recStartedAt', 'sceneTakenAt']) if (out[k] !== undefined) out[k] = iso(out[k]);
   if (out.sceneReturn) out.sceneReturn = { ...out.sceneReturn, at: iso(out.sceneReturn.at) };
+  if (out.sceneByObs) out.sceneByObs = { ...out.sceneByObs, at: iso(out.sceneByObs.at) };
   if (out.lineup) out.lineup = out.lineup.map((slot) => ({ ...slot, startAt: iso(slot.startAt) }));
   return out;
 }
@@ -56,9 +63,9 @@ export function showRoutes({ api, shows, timeline, streams }) {
   const r = (def) => api.route({ tag, ...def });
   return [
     r({ method: 'GET', path: '/api/v1/shows', scope: READ, summary: 'List shows, each with its stream status (what feeds it, on air or not, viewers)', paged: true, run: ({ url }) => api.paginate(shows.list().map(answer), url) }),
-    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: { fields: SHOW_FIELDS }, status: 201, run: ({ body, who }) => ({ status: 201, body: answer(shows.create(body, { actor: who.label })) }) }),
+    r({ method: 'POST', path: '/api/v1/shows', scope: WRITE, summary: 'Create a show', body: SHOW_BODY, status: 201, run: ({ body, who }) => ({ status: 201, body: answer(shows.create(body, { actor: who.label })) }) }),
     r({ method: 'GET', path: '/api/v1/shows/:ref', scope: READ, summary: 'A show, by id or name, with its stream status', run: ({ params }) => answer(shows.get(params.ref)) }),
-    r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: { fields: SHOW_FIELDS }, resource: showRev, run: ({ params, body, ifRev }) => answer(shows.update(params.ref, body, { ifRev })) }),
+    r({ method: 'PATCH', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Change a show', body: SHOW_BODY, resource: showRev, run: ({ params, body, ifRev }) => answer(shows.update(params.ref, body, { ifRev })) }),
     r({ method: 'DELETE', path: '/api/v1/shows/:ref', scope: WRITE, summary: 'Delete a show', resource: showRev, run: ({ params }) => shows.remove(params.ref) }),
     r({ method: 'PUT', path: '/api/v1/shows/:ref/scene', scope: CONTROL, command: true, summary: 'Take a scene on every member', body: { fields: ['scene', 'transition'] }, run: ({ params, body, who }) => answer(shows.take(params.ref, body.scene, { transition: body.transition ?? 'fade', actor: who.label })) }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/triggers/:name', scope: CONTROL, command: true, summary: 'Fire an action on every member that has it', body: { fields: ['args'] }, run: ({ params, body, who }) => {
