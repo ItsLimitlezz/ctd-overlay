@@ -104,3 +104,58 @@ test('Settings → Integrations → GitHub: a private repository says to connect
   assert.ok(gh.to('objects.githubusercontent.com').length && gh.to('objects.githubusercontent.com').every((q) => !q.headers.authorization), 'the signed link gets no token');
   assert.deepEqual(page.problems.filter((p) => !p.startsWith('network:')), []);
 });
+
+test('installing a release with "Install its new releases" ticked lets the repository update a template first installed from a file', opts, async (t) => {
+  const gh = await startFakeGithub();
+  defer(t, () => gh.close());
+  const zip = (version) => packTemplate(DIAG_DIR, { manifest: { id: ID, name: 'Miami or Bust', version } });
+  gh.repo(REPO, { private: true });
+  gh.release(REPO, 'overlay-v1.0.0', { assets: [{ name: 'miami-or-bust-1.0.0.zip', data: zip('1.0.0') }] });
+  gh.token(TOKEN, { login: 'ItsLimitlezz', repos: [REPO] });
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  const platform = await startPlatform(config, { log: memoryLogger().log, scrypt: { N: 1024 }, fetch: gh.fetch, lookup: gh.lookup });
+  defer(t, () => platform.stop());
+  const made = await fetch(`${platform.url}/api/v1/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: platform.auth.setupCode, username: 'juan', password: PASSWORD }) });
+  assert.equal(made.status, 201);
+  const browser = await launchBrowser(t);
+  const page = await browser.open(`${platform.url}/#/login`, { width: 1280, height: 900 });
+  await page.waitFor('document.querySelector("input[name=username]")', 15000);
+  await page.eval(`(() => {
+    document.querySelector('input[name=username]').value = 'juan';
+    document.querySelector('input[name=password]').value = ${JSON.stringify(PASSWORD)};
+    document.querySelector('form').requestSubmit();
+  })()`);
+  await page.waitFor('location.hash.startsWith("#/live") && document.querySelector("[data-view] h1")', 15000);
+  // Signed in: the token saved and the template uploaded as a file, through the API as the page would.
+  const call = (method, p, body, headers = {}) => page.eval(`(async () => {
+    const s = await (await fetch('/api/v1/auth/session')).json();
+    const r = await fetch(${JSON.stringify(p)}, { method: ${JSON.stringify(method)}, headers: { 'x-skp-csrf': s.csrf, ...${JSON.stringify(headers)} }, body: ${body} });
+    return r.status;
+  })()`);
+  assert.equal(await call('PUT', '/api/v1/integrations/github/token', `JSON.stringify({ token: ${JSON.stringify(TOKEN)} })`, { 'content-type': 'application/json' }), 200);
+  const b64 = zip('1.0.0').toString('base64');
+  assert.equal(await call('POST', '/api/v1/templates', `Uint8Array.from(atob(${JSON.stringify(b64)}), (c) => c.charCodeAt(0))`, { 'content-type': 'application/octet-stream', 'x-skp-filename': 'miami-or-bust-1.0.0.zip' }), 201);
+
+  // The same release from GitHub, following the repository.
+  await page.eval('location.hash = "#/templates"');
+  await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent.trim() === "Install template")', 15000);
+  await click(page, '[data-view] button', 'Install template');
+  await page.waitFor('document.querySelector("dialog[open] [role=tab]")', 5000);
+  await click(page, 'dialog[open] [role=tab]', 'From GitHub or a link');
+  await type(page, 'dialog[open] input[name=url]', REPO);
+  await click(page, 'dialog[open] button', 'Test');
+  await page.waitFor('document.querySelectorAll("dialog[open] input[type=radio]:checked").length === 2', 10000);
+  await page.eval('[...document.querySelectorAll("dialog[open] input[type=checkbox]")].find((c) => /new releases/i.test(c.closest("label")?.textContent || "")).click()');
+  await sleep(50);
+  await click(page, 'dialog[open] button', 'Install');
+  await page.waitFor('!document.querySelector("dialog[open]")', 15000);
+  const until = async (fn, ms, what) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) throw new Error(`timed out: ${what}`); await sleep(50); } };
+  await until(() => platform.sources.list().some((s) => s.data.repo === REPO), 10000, 'the repository followed');
+  assert.equal(platform.sources.list().find((s) => s.data.repo === REPO).data.claim, ID, 'it may update the template installed from a file');
+
+  // Its next release installs.
+  gh.release(REPO, 'overlay-v1.1.0', { assets: [{ name: 'miami-or-bust-1.1.0.zip', data: zip('1.1.0') }] });
+  await platform.sources.check(undefined, { force: true });
+  assert.ok(platform.templates.get(ID, '1.1.0'), '1.1.0 installed from the followed repository');
+});

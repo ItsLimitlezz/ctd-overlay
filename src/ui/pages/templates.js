@@ -393,10 +393,12 @@ export async function list(view, ctx) {
       let name = out.id;
       try { name = (await api.get(apiOf(out.id)))?.name || out.id; } catch { /* the id will do */ }
       toast(out.installed ? `Installed "${name}" version ${out.version}` : `"${name}" version ${out.version} was already installed`);
-      // Followed after installing: its tag prefix and file name come from what was installed.
+      // Followed after installing: its tag prefix and file name come from what was installed, and
+      // it may update this template even if it was first installed from a file (installing this
+      // release and ticking the box says so); otherwise its next release is refused as id-taken.
       if (follow) {
         try {
-          await api.post('/api/v1/templates/sources', { source: repo });
+          await api.post('/api/v1/templates/sources', { source: repo, template: out.id });
           toast(`Following ${repo}: its new releases install by themselves`);
         } catch (err) {
           if (err.status === 409) toast(`${repo} was already followed`);
