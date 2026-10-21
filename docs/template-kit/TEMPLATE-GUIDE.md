@@ -75,7 +75,7 @@ my-template/
 | Field | Rules |
 |---|---|
 | `standard` | Always `"skp/1"`. |
-| `id` | Reverse-DNS (`com.yourname.thing`), lowercase, at most 100 characters, never changes for the life of the template. Don't use the bundled ids (`com.dprtmnt.takeover`, `com.dprtmnt.chat`, `com.dprtmnt.alerts`, `dev.skp.*`). |
+| `id` | Reverse-DNS (`com.yourname.thing`), lowercase, at most 100 characters, never changes for the life of the template. Don't use the bundled ids (`com.dprtmnt.takeover`, `com.dprtmnt.chat`, `com.dprtmnt.alerts`, `com.ctd.text-clock`, `dev.skp.*`). |
 | `version` | Strict SemVer `MAJOR.MINOR.PATCH` (no leading zeros, no `+build`). A given id@version can never be installed with different bytes: bump the version for every change. |
 | `name`, `description` | Shown in the gallery. |
 | `author` | `{ "name", "url"? }`; `url` must be http(s). |
@@ -167,12 +167,14 @@ Declare it in `consumes`; read it through `SK`. Patterns: an exact name, or a pr
 | `viewers.<platform>` | integer for one platform (`viewers.twitch`, `viewers.kick`, `viewers.youtube` …) |
 | `viewers.stale` | `true` while a count is held through an error (show it quieter) |
 | `stream.<platform>.live` / `.title` / `.startedAt` | boolean / string / epoch ms |
+| `stream.clock` | `{ startedAt?, fps, offsetMs, at }`: the stream's start on server time (absent while off air) and its frame rate, from CTD Relay. Run time is `SK.clock.now() − startedAt`; a timecode's frames `floor((ms mod 1000) × fps / 1000)`. Compute them yourself as you paint |
 | `music.nowPlaying` | a Track: `{ title, artists[], album, art, url, durationMs, progressMs, progressAt, playing, source }` (use `SK.music`) |
 | `show.scene` | the overlay's current scene id (always delivered) |
 | `show.lineup` | `[{ time "HH:MM", name, b2b?, headliner?, closer?, logo?, startAt (epoch ms) }]`, in night order |
 | `show.currentSlot` | integer index into `show.lineup` of who is on, or absent |
 | `show.headliner` | the name of the act flagged headliner (the headliner and the closer are different) |
 | `show.date` | `YYYY-MM-DD` |
+| `show.timezone` | the show's IANA time zone (`America/Toronto`) |
 | `show.goLiveAt` | epoch ms of go-live (for a countdown) |
 | `show.recStartedAt` | epoch ms since when the show is live (for a REC timer) |
 | `custom.*`, `x-<vendor>.*` | values other apps set through the API |

@@ -1,0 +1,75 @@
+{
+  "standard": "skp/1",
+  "id": "com.ctd.text-clock",
+  "name": "Text & Clock",
+  "version": "1.0.0",
+  "description": "Up to three lines of text and a clock: the time of day in any time zone, a countdown, a count-up, the stream's run time or a frame-accurate timecode from CTD Relay. Every source ticks together on the server's clock.",
+  "author": { "name": "CTD Overlay" },
+  "license": "GPL-2.0-or-later",
+  "category": "widget",
+  "tags": ["clock", "countdown", "timecode", "text", "lower-third", "widget"],
+  "entry": "index.html",
+  "previews": ["previews/text-clock.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Text & Clock", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "state": ["stream.clock", "show.goLiveAt", "show.recStartedAt", "show.timezone"]
+  },
+  "settings": { "$ref": "#/definitions/settings" },
+  "definitions": {
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "line1": { "type": "string", "title": "Line 1", "maxLength": 200, "default": "", "examples": ["MIAMI OR BUST"], "description": "Empty lines are hidden.", "x-skp-preview": "live", "x-skp-group": "Text" },
+        "line2": { "type": "string", "title": "Line 2", "maxLength": 200, "default": "", "examples": ["Road to Miami · Day 3"], "x-skp-preview": "live", "x-skp-group": "Text" },
+        "line3": { "type": "string", "title": "Line 3", "maxLength": 200, "default": "", "x-skp-preview": "live", "x-skp-group": "Text" },
+
+        "mode": {
+          "type": "string", "title": "Clock", "enum": ["none", "time", "countdown", "countup", "runtime", "timecode"],
+          "x-skp-labels": ["No clock", "Time of day", "Countdown to a time", "Count up since a time", "Stream run time (CTD Relay)", "Timecode"],
+          "default": "countdown", "x-skp-group": "Clock"
+        },
+        "label": { "type": "string", "title": "Label", "maxLength": 60, "default": "", "examples": ["STARTING IN", "ON AIR FOR"], "description": "A word or two with the clock. Empty: none.", "x-skp-preview": "live", "x-skp-group": "Clock" },
+        "labelPosition": { "type": "string", "title": "Label goes", "enum": ["above", "below"], "x-skp-labels": ["Above the clock", "Below the clock"], "default": "above", "x-skp-group": "Clock" },
+        "timezone": {
+          "type": "string", "title": "Time zone", "maxLength": 64, "pattern": "^[A-Za-z0-9_+/-]*$", "default": "", "examples": ["America/New_York"],
+          "description": "An IANA name, such as America/New_York or UTC: for the time of day, a date and time below, and local timecode. Empty: the computer running OBS.",
+          "x-skp-bind": "show.timezone", "x-skp-group": "Clock"
+        },
+        "hour12": { "type": "boolean", "title": "12-hour clock (AM/PM)", "default": true, "x-skp-group": "Clock", "x-skp-showIf": { "field": "mode", "equals": "time" } },
+        "seconds": { "type": "boolean", "title": "Show seconds", "default": true, "x-skp-group": "Clock", "x-skp-showIf": { "field": "mode", "equals": "time" } },
+        "targetDate": { "type": "string", "format": "date", "title": "Date (countdown, count-up)", "description": "Empty: the nearest day with that time. Both empty: a countdown runs to the show's go-live and a count-up from when the show went live.", "x-skp-group": "Clock" },
+        "targetTime": { "type": "string", "format": "time", "title": "Time (countdown, count-up)", "description": "In the time zone above. A stream's run time counts from here when CTD Relay doesn't say when it started.", "x-skp-group": "Clock" },
+        "atZero": { "type": "string", "title": "When the countdown reaches zero, show", "maxLength": 60, "default": "LIVE", "x-skp-preview": "live", "x-skp-group": "Clock", "x-skp-showIf": { "field": "mode", "equals": "countdown" } },
+        "timecodeSource": {
+          "type": "string", "title": "Timecode of", "enum": ["run", "utc", "local"],
+          "x-skp-labels": ["The stream's run time (CTD Relay)", "UTC time of day (CTD Relay's clock)", "Time of day in the time zone"],
+          "default": "run", "x-skp-group": "Clock", "x-skp-showIf": { "field": "mode", "equals": "timecode" }
+        },
+
+        "position": {
+          "type": "string", "title": "Position", "enum": ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"],
+          "x-skp-labels": ["Top left", "Top", "Top right", "Left", "Centre", "Right", "Bottom left", "Bottom", "Bottom right"],
+          "default": "bottom-left", "x-skp-group": "Look"
+        },
+        "align": { "type": "string", "title": "Text alignment", "enum": ["auto", "left", "center", "right"], "x-skp-labels": ["Follow the position", "Left", "Centre", "Right"], "default": "auto", "x-skp-group": "Look" },
+        "font": { "type": "string", "title": "Font", "enum": ["sans", "condensed", "mono"], "x-skp-labels": ["Sans serif", "Condensed", "Monospace"], "default": "sans", "x-skp-group": "Look" },
+        "clockFont": { "type": "string", "title": "Clock font", "enum": ["sans", "condensed", "mono"], "x-skp-labels": ["Sans serif", "Condensed", "Monospace"], "default": "mono", "x-skp-group": "Look" },
+        "size": { "type": "integer", "title": "Text size (px)", "minimum": 20, "maximum": 160, "default": 56, "x-skp-widget": "slider", "x-skp-preview": "live", "x-skp-group": "Look" },
+        "clockSize": { "type": "integer", "title": "Clock size (px)", "minimum": 20, "maximum": 240, "default": 88, "x-skp-widget": "slider", "x-skp-preview": "live", "x-skp-group": "Look" },
+        "color": { "type": "string", "format": "color", "title": "Text colour", "default": "#FFFFFF", "x-skp-group": "Look" },
+        "accent": { "type": "string", "format": "color", "title": "Accent", "description": "Line 2, the label and the bar.", "default": "#16E0FF", "x-skp-group": "Look" },
+        "pill": { "type": "boolean", "title": "Background panel", "default": true, "x-skp-group": "Look" },
+        "pillOpacity": { "type": "integer", "title": "Panel opacity (%)", "minimum": 0, "maximum": 100, "default": 70, "x-skp-widget": "slider", "x-skp-preview": "live", "x-skp-group": "Look", "x-skp-showIf": { "field": "pill", "equals": true } },
+        "shadow": { "type": "boolean", "title": "Drop shadow", "default": true, "x-skp-group": "Look" }
+      }
+    }
+  }
+}

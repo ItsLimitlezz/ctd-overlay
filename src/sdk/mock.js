@@ -109,6 +109,9 @@
       // Ten minutes away, so a countdown has something to count (an "auto" scene goes live then).
       'show.goLiveAt': t + 10 * MIN,
       'show.recStartedAt': t - 42 * MIN,
+      'show.timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
+      // CTD Relay's stream clock (02 §2.5.2): a stream on air for 42 minutes, at 30 fps.
+      'stream.clock': { startedAt: t - 42 * MIN - 17250, fps: 30, offsetMs: 0, at: t },
       'music.nowPlaying': tracks[0],
       'viewers.twitch': viewers.twitch,
       'viewers.kick': viewers.kick,

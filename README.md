@@ -22,8 +22,10 @@ member, triggers land on the same frame, timed scenes return on the server, and 
 itself; the show's cues fire on the server's clock from its schedule. Sign-in has roles, API
 tokens, two-factor codes and an audit log; overlay URLs carry keys, secrets are encrypted at rest,
 and the platform can serve the local network or the internet over HTTPS. Everything goes through
-the API v1, described at `/api/v1/openapi.json`. Bundled: the D/PRTMNT TAKEOVER show package, a
-viewer-count widget and a diagnostic template. Next is step 14: the admin UI.
+the API v1, described at `/api/v1/openapi.json`. Bundled: the D/PRTMNT TAKEOVER show package, Chat,
+Alerts, Text & Clock (text lines with a time of day, countdown, count-up, stream run time or
+timecode: [docs/RUNNING.md](docs/RUNNING.md#text--clock)), a viewer-count widget and a diagnostic
+template. Next is step 14: the admin UI.
 
 ## Try it in OBS
 
