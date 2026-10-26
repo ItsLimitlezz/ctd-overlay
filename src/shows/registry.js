@@ -7,7 +7,8 @@
 //
 // What a show publishes to each member, as that overlay's own state (02 §2.5): show.scene,
 // show.lineup (each slot with startAt, the instant its time resolves to, 09 §9.2), show.headliner,
-// show.currentSlot, show.date, show.goLiveAt and show.recStartedAt. Two shows never share state.
+// show.currentSlot, show.date, show.timezone, show.goLiveAt and show.recStartedAt. Two shows never
+// share state.
 //
 // Everything is timed on the server: a scene with durationMs + then (04 §4.2) schedules its
 // return as part of the take, kept in the record so a restart mid-intro still returns; a trigger
@@ -41,7 +42,7 @@ const SLOT_FIELDS = ['time', 'name', 'b2b', 'headliner', 'closer', 'logo'];
 // What the show resource adds to each slot (09 §9.1–9.2): taken and ignored on a write, so a
 // lineup read, edited and sent back whole goes through.
 const SLOT_RESOLVED = ['startAt', 'clockGap', 'clockOverlap'];
-const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.goLiveAt', 'show.recStartedAt'];
+const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.timezone', 'show.goLiveAt', 'show.recStartedAt'];
 
 // A template's scene by id, else by core (04 §4.2).
 export function resolveScene(manifest, name) {
@@ -147,6 +148,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       'show.headliner': head ? head.name : undefined,
       'show.currentSlot': Number.isInteger(d.currentSlot) && d.currentSlot < lineup.length ? d.currentSlot : undefined,
       'show.date': d.date,
+      'show.timezone': d.timezone,
       'show.goLiveAt': d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined,
       'show.recStartedAt': typeof d.recStartedAt === 'number' ? d.recStartedAt : undefined,
     };

@@ -5,7 +5,8 @@
 //   chat.read       chat.message, chat.message.deleted, chat.user.cleared, chat.cleared
 //   alerts          alert.<kind>
 //   viewers         viewers.<platform> (viewers.total and viewers.stale are worked out by the bus)
-//   stream.status   stream.<platform>.live | title | startedAt
+//   stream.status   stream.<platform>.live | title | startedAt, and stream.clock (the stream's
+//                   start and frame rate on this server's clock, 02 §2.5.2)
 //   music           music.nowPlaying
 //   obs             obs.<key> state
 //   every connector system.notice (operator-facing), and x-<vendor>.* if it names a vendor
@@ -41,6 +42,7 @@ export function namesOf(def) {
       let m;
       if (caps.has('viewers') && (m = /^viewers\.([a-z0-9-]+)$/.exec(key)) && platforms.has(m[1])) return;
       if (caps.has('stream.status') && (m = /^stream\.([a-z0-9-]+)\.(live|title|startedAt)$/.exec(key)) && platforms.has(m[1])) return;
+      if (caps.has('stream.status') && key === 'stream.clock') return;
       if (caps.has('music') && key === 'music.nowPlaying') return;
       if (caps.has('obs') && /^obs\.[A-Za-z][A-Za-z0-9]*$/.test(key)) return;
       if (vendor && key.startsWith(vendor)) return;

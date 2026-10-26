@@ -32,6 +32,15 @@
 //        ms.messages (POST /messages bodies), ms.ownApp(id) (registered by another token),
 //        ms.injectMessage({ from, to, type, profileId, data }) → the message id (an app.message)
 //   ms.legacy = true     answers as before v1.2: no profiles, pairing or hub
+//   v1.3's clock (GET /clock?t0=…&profile=…, status:read): ms.clock = {
+//     offsetMs   its clock minus the asker's (default ms.skewMs)
+//     samples    [{ outMs, procMs, backMs }] used one per request, then none (0, 0, 0): the way out,
+//                its own time, the way back; receivedAt = t0 + outMs + offsetMs, sentAt = that + procMs
+//     advance    (ms) => …   moves the asker's clock by the whole round trip before answering (a
+//                test's fake clock), so its t3 is t0 + outMs + procMs + backMs
+//     fps        the feed's frame rate (30)
+//     missing    true: answers 404 as a Relay older than v1.3 }
+//   The session's startedAt is Date.parse(status.session.startedAt): on its clock, as written.
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import { createUlid } from '../../src/ids.js';
@@ -90,6 +99,7 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     registrations: [],
     heartbeats: [],
     messages: [],
+    clock: { offsetMs: undefined, samples: [], advance: null, fps: 30, missing: false },
   };
 
   const statusFor = (id) => (id === 'default' ? ms.status : ms.statuses[id]);
@@ -298,6 +308,28 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
       return undefined;
     }
     if (ms.legacy) return problem(res, 404, 'not_found', 'Unknown path');
+
+    if (path === '/api/v1/clock') {
+      const c = ms.clock;
+      if (c.missing) return problem(res, 404, 'not_found', 'Unknown path');
+      if (needs('status:read')) return undefined;
+      const p = pick();
+      if (!p) return undefined;
+      const asked = Number(u.searchParams.get('t0'));
+      const t0 = Number.isFinite(asked) ? asked : Date.now();
+      const { outMs = 0, procMs = 0, backMs = 0 } = c.samples.shift() || {};
+      const receivedAt = t0 + outMs + (c.offsetMs ?? ms.skewMs);
+      const sentAt = receivedAt + procMs;
+      c.advance?.(outMs + procMs + backMs);
+      const session = statusFor(p)?.session || {};
+      const started = Date.parse(session.startedAt ?? '');
+      const running = ['live', 'starting', 'stopping'].includes(session.status) && Number.isFinite(started);
+      return json200({
+        t0: Number.isFinite(asked) ? asked : null, receivedAt, sentAt, iso: new Date(sentAt).toISOString(), utcOffsetMinutes: 0, profileId: p,
+        session: { status: session.status || 'idle', startedAt: running ? started : null, elapsedMs: running ? sentAt - started : null },
+        fps: c.fps, fpsSource: 'landscape', timecode: { run: null, utc: '00:00:00:00', local: '00:00:00:00' },
+      });
+    }
 
     if (path === '/api/v1/profiles') {
       if (needs('status:read')) return undefined;

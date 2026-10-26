@@ -1,0 +1,67 @@
+/* Text & Clock. The canvas is the whole frame (1920 x 1080, or 1080 x 1920 with ?canvas=v), the
+   page transparent: the box sits at one of nine anchors inside a safe margin. Fonts are the
+   system's (nothing to download): a sans, a condensed and a monospace stack. Numbers are
+   tabular, so a ticking clock never shifts sideways. */
+:root {
+  --tc-color: #ffffff; --tc-accent: #16e0ff; --tc-size: 56px; --tc-clock-size: 88px; --tc-pill: rgba(8, 10, 12, .7);
+  --tc-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --tc-condensed: 'Bahnschrift SemiCondensed', 'Roboto Condensed', 'Arial Narrow', 'Helvetica Neue Condensed', 'Liberation Sans Narrow', sans-serif;
+  --tc-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, 'Roboto Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+}
+html, body { margin: 0; background: transparent; overflow: hidden; }
+
+.tc {
+  position: absolute; left: 72px; right: 72px; top: 60px; bottom: 60px;
+  display: flex; flex-direction: column; color: var(--tc-color); font-family: var(--tc-sans);
+}
+[data-skp-canvas="v"] .tc { left: 60px; right: 60px; top: 140px; bottom: 180px; }
+.tc[data-v="start"] { justify-content: flex-start; }
+.tc[data-v="center"] { justify-content: center; }
+.tc[data-v="end"] { justify-content: flex-end; }
+.tc[data-h="start"] { align-items: flex-start; }
+.tc[data-h="center"] { align-items: center; }
+.tc[data-h="end"] { align-items: flex-end; }
+.tc[data-align="left"] { text-align: left; }
+.tc[data-align="center"] { text-align: center; }
+.tc[data-align="right"] { text-align: right; }
+.tc[data-font="condensed"] { font-family: var(--tc-condensed); font-stretch: condensed; }
+.tc[data-font="mono"] { font-family: var(--tc-mono); }
+
+.box { box-sizing: border-box; max-width: 100%; display: flex; flex-direction: column; gap: calc(var(--tc-size) * .16); }
+.box[hidden], .line[hidden], .label[hidden], .clockwrap[hidden] { display: none; }
+.tc.pill .box { padding: calc(var(--tc-size) * .32) calc(var(--tc-size) * .5) calc(var(--tc-size) * .36); background: var(--tc-pill); border-left: 6px solid var(--tc-accent); }
+.tc.pill[data-align="right"] .box { border-left: 0; border-right: 6px solid var(--tc-accent); }
+.tc.pill[data-align="center"] .box { border-left: 0; border-top: 6px solid var(--tc-accent); }
+.tc.shadow .box { text-shadow: 0 2px 10px rgba(0, 0, 0, .55), 0 1px 2px rgba(0, 0, 0, .5); }
+.tc.shadow.pill .box { box-shadow: 0 10px 30px rgba(0, 0, 0, .3); }
+
+.line { overflow-wrap: anywhere; line-height: 1.12; }
+.l1 { font-size: var(--tc-size); font-weight: 800; letter-spacing: -.01em; }
+.l2 { font-size: calc(var(--tc-size) * .56); font-weight: 600; color: var(--tc-accent); }
+.l3 { font-size: calc(var(--tc-size) * .48); font-weight: 500; opacity: .9; }
+
+.clockwrap { display: flex; flex-direction: column; gap: calc(var(--tc-clock-size) * .06); margin-top: calc(var(--tc-size) * .08); }
+.clockwrap.below { flex-direction: column-reverse; }
+.tc[data-align="left"] .clockwrap { align-items: flex-start; }
+.tc[data-align="center"] .clockwrap { align-items: center; }
+.tc[data-align="right"] .clockwrap { align-items: flex-end; }
+.label { font-size: calc(var(--tc-clock-size) * .26); font-weight: 700; letter-spacing: .22em; color: var(--tc-accent); line-height: 1.1; overflow-wrap: anywhere; }
+/* Letter-spacing trails the last letter too: taken back where the text lines up on the right. */
+.tc[data-align="right"] .label, .tc[data-align="center"] .label { margin-right: -.22em; }
+.clock {
+  font-size: var(--tc-clock-size); font-weight: 700; line-height: 1; white-space: nowrap;
+  font-variant-numeric: tabular-nums; letter-spacing: .01em;
+}
+.tc[data-clock-font="sans"] .clock { font-family: var(--tc-sans); }
+.tc[data-clock-font="condensed"] .clock { font-family: var(--tc-condensed); font-stretch: condensed; }
+.tc[data-clock-font="mono"] .clock { font-family: var(--tc-mono); letter-spacing: 0; }
+/* A countdown that arrived shows its words in the accent. */
+.clockwrap.zero .clock { color: var(--tc-accent); white-space: normal; overflow-wrap: anywhere; }
+
+/* Motion: the box fades in with the scene; an arrival flashes once. Opacity and transform only
+   (05 §5.8), none in lite or reduced-motion previews. */
+[data-skp-scene-root][data-skp-state="enter"] .box { animation: tcIn .5s cubic-bezier(.2, .7, .2, 1) both; }
+.clockwrap.arrived .clock { animation: tcArrive .9s ease-out both; }
+@keyframes tcIn { from { opacity: 0; transform: translateY(14px); } }
+@keyframes tcArrive { 0% { opacity: 0; transform: scale(.92); } 40% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: none; } }
+[data-skp-lite] .box, [data-skp-lite] .clock, [data-skp-reduced-motion] .box, [data-skp-reduced-motion] .clock { animation: none !important; }

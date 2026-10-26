@@ -136,6 +136,7 @@ overlay's page shows its URL, ready to copy. In OBS, add a **Browser** source wi
 | Alerts | Alerts (`com.dprtmnt.alerts`) | h | 1920 × 1080 |
 | Alerts (vertical) | Alerts | v | 1080 × 1920 |
 | Show | TAKEOVER | h / v | 1920 × 1080 / 1080 × 1920 |
+| Text & Clock | Text & Clock (`com.ctd.text-clock`) | h / v | 1920 × 1080 / 1080 × 1920 |
 
 In the browser source's options:
 
@@ -145,6 +146,30 @@ In the browser source's options:
 
 Each overlay's page has its settings: accent colour, font size, how long lines stay, which
 platform tags to show, the alert sound and its volume.
+
+## Text & Clock
+
+Up to three lines of text ("MIAMI OR BUST", "Road to Miami · Day 3") and a clock, over the whole
+frame. **Templates → Text & Clock → Make an overlay**, then on the overlay's **Settings**: type the
+lines (an empty one is hidden), pick the clock, and under **Look** where it sits (nine places), the
+fonts (system fonts: nothing to download), sizes, colours, the background panel and its opacity,
+and the drop shadow. Add it to OBS at 1920 × 1080 (or 1080 × 1920 with `?canvas=v`). Every copy
+ticks on the server's clock, so the horizontal and vertical feeds show the same second, and a
+timecode the same frame.
+
+| Clock | Shows |
+|---|---|
+| Time of day | The time in the **Time zone** (an IANA name such as `America/New_York`; empty: the show's zone, else the OBS computer's), 12- or 24-hour, with or without seconds. |
+| Countdown to a time | Time left until the **Date** and **Time** (in that zone), then the "reaches zero" words (`LIVE` unless you change them). A time with no date counts to its nearest occurrence; neither: to the show's go-live. |
+| Count up since a time | Time since the date and time (neither: since the show went live). |
+| Stream run time | Time since the stream started, from CTD Relay (if CTD Relay doesn't know, from the date and time set, else `—`). |
+| Timecode | `HH:MM:SS:FF`, frame-accurate: the stream's run time (CTD Relay), UTC on CTD Relay's clock, or the time of day in the zone. |
+
+The **Label** goes above or below the clock ("STARTING IN", "ON AIR FOR"). Stream run time and the
+run-time timecode need **CTD Relay v1.3 or newer** and a connection whose token has `status:read`
+(Connect gives one): the connection syncs to CTD Relay's clock every 5 minutes, and an overlay fed
+by one profile counts that profile's stream. An older CTD Relay works as before; its connection
+says it has no stream clock.
 
 ## Templates from a private GitHub repository
 

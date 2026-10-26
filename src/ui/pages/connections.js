@@ -121,7 +121,14 @@ function valueRows(state = {}, stale = []) {
     else if ((m = /^stream\.([a-z0-9-]+)\.live$/.exec(key))) { label = `${platformName(m[1])} live`; text = value ? 'Yes' : 'No'; }
     else if ((m = /^stream\.([a-z0-9-]+)\.title$/.exec(key))) { label = `${platformName(m[1])} title`; text = String(value); }
     else if ((m = /^stream\.([a-z0-9-]+)\.startedAt$/.exec(key))) { label = `${platformName(m[1])} live since`; text = Number.isFinite(value) ? clock(new Date(value).toISOString()) : String(value); }
-    else if (key === 'music.nowPlaying') { label = 'Now playing'; text = [value?.title, Array.isArray(value?.artists) ? value.artists.join(', ') : ''].filter(Boolean).join(' · '); }
+    else if (key === 'stream.clock' && value && typeof value === 'object') {
+      label = 'Stream clock';
+      text = [
+        Number.isFinite(value.startedAt) ? `stream started ${clock(new Date(value.startedAt).toISOString())}` : 'no stream running',
+        Number.isFinite(value.fps) ? `${value.fps} fps` : '',
+        Number.isFinite(value.offsetMs) ? `its clock ${value.offsetMs < 0 ? '−' : '+'}${Math.abs(value.offsetMs).toLocaleString()} ms from this server's` : '',
+      ].filter(Boolean).join(' · ');
+    } else if (key === 'music.nowPlaying') { label = 'Now playing'; text = [value?.title, Array.isArray(value?.artists) ? value.artists.join(', ') : ''].filter(Boolean).join(' · '); }
     else if ((m = /^obs\.(.+)$/.exec(key))) { label = `OBS ${m[1]}`; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     else { label = key; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     rows.push([label, stale.includes(key) ? `${text} (held: the service isn't answering)` : text]);
