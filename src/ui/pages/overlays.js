@@ -1,9 +1,11 @@
 // Overlays (08 §8.3, §8.5): every overlay as a card, and one overlay's page: previews at each
 // canvas, its URL for OBS, the settings form and what feeds it ("Fed by": every connection or only
-// some), its role in OBS (for the CTD OBS plugin), scenes outside a show, the Simulate panel,
-// template versions (upgrade, go back), and the More menu (rename, the key, delete).
+// some), its role in OBS (for the CTD OBS plugin), scenes outside a show (and "Follow OBS", obs.js),
+// the Simulate panel, template versions (upgrade, go back), and the More menu (rename, the key,
+// delete).
 import * as api from '../api.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
+import { followObsCard } from '../obs.js';
 import { bindingName, connectionChip, fedByForm, fedByWords } from '../streams.js';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -730,6 +732,10 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     });
     scenesPanel.append(h('p.muted', 'Not in a show: take a scene on this overlay alone. OBS follows at once.'), h('div.pad', buttons));
   }
+  // Follow OBS outside a show (09 §9.7): its scene follows the OBS scene, saved with If-Match.
+  const followPanel = !overlay.show && scenes.length
+    ? followObsCard({ resource: overlay, path: ref(), scenes: scenes.map((s) => ({ value: s.id, label: s.label || s.id })), what: 'overlay', canWrite, reload: () => reload() })
+    : null;
 
   // ---- simulate (08 §8.5) ----------------------------------------------------------------
   const simNote = h('div', { 'aria-live': 'polite' });
@@ -869,7 +875,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const panels = { settings: settingsPanel, scenes: scenesPanel, test: testPanel, version: versionPanel };
   const tabList = tabs([
     { id: 'settings', label: 'Settings', render: (p) => { p.append(panels.settings, fedByPanel, rolePanel); } },
-    { id: 'scenes', label: 'Scenes', render: (p) => { p.append(panels.scenes); } },
+    { id: 'scenes', label: 'Scenes', render: (p) => { p.append(panels.scenes); if (followPanel) p.append(followPanel); } },
     { id: 'test', label: 'Test', render: (p) => { p.append(panels.test); } },
     { id: 'version', label: 'Version', render: (p) => { p.append(panels.version); } },
   ], { selected: state.tab, onChange: (id) => { state.tab = id; } });

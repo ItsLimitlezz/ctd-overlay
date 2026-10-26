@@ -29,7 +29,34 @@
         }
       }
     },
-    "obsSceneMap": { "type": "object", "additionalProperties": { "type": "string" }, "description": "OBS scene name → overlay scene id (06 §6.9)." },
+    "followObs": {
+      "type": "object",
+      "description": "Follow OBS (09 §9.7): the OBS canvas that drives the show's scene, whose OBS, and OBS scene → the members' scene.",
+      "additionalProperties": false,
+      "required": ["enabled", "canvas", "map"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "canvas": { "enum": ["landscape", "vertical"], "default": "landscape" },
+        "source": { "type": "string", "description": "A feed: \"<connection id>\" or \"<connection id>/<profile id>\". Absent: the one feeding the show that reports OBS." },
+        "map": {
+          "type": "array", "maxItems": 50,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["obsScene", "scene"],
+            "properties": {
+              "obsScene": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "obsSceneUuid": { "type": "string", "maxLength": 100 },
+              "scene": { "type": "string", "description": "A member's scene, by id or core." }
+            }
+          }
+        },
+        "otherwise": { "type": "string", "description": "The scene for an OBS scene in no row; absent: such a scene changes nothing." }
+      }
+    },
+    "sceneByObs": {
+      "type": "object",
+      "description": "The scene on now was taken by OBS (read only).",
+      "properties": { "at": { "type": "string", "format": "date-time" }, "obsScene": { "type": "string" }, "canvas": { "enum": ["landscape", "vertical"] }, "source": { "type": "string" } }
+    },
     "recipe": { "type": "object", "description": "Cue generation recipe (09 §9.5)." }
   }
 }

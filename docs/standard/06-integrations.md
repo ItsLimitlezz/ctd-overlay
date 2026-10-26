@@ -338,8 +338,10 @@ event; `obs.streaming` from `GetStreamStatus` / `StreamStateChanged`; `obs.recor
 
 **Scene mapping.** An overlay or show **MAY** map OBS scenes to overlay scenes
 (`"BRB" → brb`, `"Live" → program`). When OBS changes scene, the platform takes the mapped
-overlay scene — the operator switches once, in OBS, and the graphics follow. Timeline cues
-**MAY** do the reverse with `obs.setScene`.
+overlay scene — the operator switches once, in OBS, and the graphics follow (Follow OBS, 09
+§9.7). It works from the `obs.scene.<canvas>` state, whoever reports it: today CTD Relay, which
+relays the CTD OBS plugin's scene changes (§6.11); a direct obs-websocket connection would set the
+same keys. Timeline cues **MAY** do the reverse with `obs.setScene`.
 
 **Placement and security.** OBS usually runs on the streaming PC while the platform runs on a
 NAS, so the connection is LAN-to-LAN. A password is **REQUIRED**. obs-websocket **MUST NOT** be
@@ -474,7 +476,7 @@ message is handled once (its id remembered across restarts); a request replayed 
 connection was away over two minutes is refused; at most 100 answers a minute (the hub takes 120).
 
 **Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`
-(and `profile.status,profiles.changed`, and `app.message` with `apps:read`; `profile=*` following
+(and `profile.status,profiles.changed,obs.scene,obs.output`, and `app.message` with `apps:read`; `profile=*` following
 every profile),
 resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
 when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
@@ -494,6 +496,30 @@ left out unless the connection's "Show who joined" is on, and then reaches overl
 `viewers.<platform>` and `stream.<platform>.live | title | startedAt` come from `/status` and each
 `destination.status`; a count it doesn't know (`null`) is absent, never 0.
 
+**OBS** (its §10, v1.4; scene changes v1.5). The CTD OBS plugin sends what OBS does to CTD Relay,
+which relays it per profile; the connection makes it that profile's state (the feed's, like its
+viewers; capability `obs`, `src.platform: "obs"`): `obs.scene.landscape` and
+`obs.scene.vertical`, each canvas's program scene `{ scene, sceneUuid?, appId, since }`;
+`obs.scene`, the landscape scene's name; `obs.streaming` (an output other than `record` is
+`starting`, `live` or `reconnecting`) and `obs.recording` (`record` is), absent until the plugin
+has said anything about its outputs (02 §2.5).
+- It subscribes to `obs.scene` and `obs.output` on `/events` (with `status:read`, which it holds),
+  and reads `GET /profiles/{id}/obs` on every connect and `system.reset`: each app's (OBS machine's)
+  `scenes[]` and `outputs[]`, an app that isn't `online` left out (stale). A Relay without that
+  route (older than v1.4) has nothing to say; the rest works as before.
+- `obs.scene` data: `{ canvas, scene, sceneUuid, previous?, atMs, appId, eventId, at }`, sent within
+  ~100 ms of a transition's start. Several OBS machines are told apart by `appId`: each one's
+  changes are ordered by `atMs` (its own clock; one older than the last it said is ignored), an
+  event seen before (`eventId`, the last 500 per profile) is dropped, and the canvas shows the most
+  recent of the machines' scenes by `atMs` (two machines' clocks may disagree: keep one OBS per
+  profile and canvas). Relay resends the current scene every 60 s without `previous`: the same
+  scene changes nothing; a different one (a change this platform missed) is taken. `since` is when
+  it changed, on this platform's clock (Relay's `at`, corrected by the clock difference its `Date`
+  shows).
+- A profile deleted there takes its OBS values with it; a stopped connection takes them all, an
+  error holds them like any value (02 §2.8).
+- What OBS shows is on each stream (`stream.obs`, 03 §3.4: the Live strip "OBS · landscape: Live ·
+  vertical: BRB · Streaming"), and drives the shows and overlays that follow OBS (09 §9.7).
 **Stream clock** (its §4, `GET /clock`, v1.3), with `status:read`: the connection measures CTD
 Relay's clock against its own, NTP-style, and publishes each profile's `stream.clock` (02 §2.5.2)
 as that profile's state (or the connection's, following one profile), so a template counts the

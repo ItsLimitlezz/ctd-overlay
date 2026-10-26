@@ -4,9 +4,11 @@
 // to instants (09 §9.2) and this page shows the instants it answers with. Edits send If-Match with
 // the show (or cue) as the form read it (H16); destructive actions sit in a menu behind a
 // confirmation (H20). Details also sets what feeds every overlay of the show at once ("Fed by":
-// one change per overlay, each with its own If-Match).
+// one change per overlay, each with its own If-Match), and whether the show follows OBS's scenes
+// ("Follow OBS", obs.js).
 import * as api from '../api.js';
 import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
+import { followObsCard } from '../obs.js';
 import { bindingName, fedByForm, fedByWords } from '../streams.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -533,6 +535,8 @@ export async function detail(view, ctx) {
 
     const fedBox = h('div');
     drawFedBy(fedBox, overlays);
+    const followBox = h('div');
+    drawFollow(followBox, overlays);
     mount(panel, h('div.stack', h('div.card',
       h('h2', 'Details'),
       disabled ? notice('You can look at this show; changing it needs an operator or a higher role.') : null,
@@ -543,7 +547,21 @@ export async function detail(view, ctx) {
         field('Day boundary', boundary, { hint: `When the show's day starts. ${boundaryWords(b, formShow.date)} An afternoon show sets it earlier, like ${timeLabel('06:00')}.` }),
         field('Goes live at', goLive, { hint: formShow.goLiveAt ? `Now: ${instantLabel(formShow.goLiveAt, formShow.timezone)}${zoneNote(formShow.timezone)}. Leave empty for no countdown.` : 'When the countdown ends and the show goes on air. Leave empty for no countdown.' })),
       picker.el,
-      canWrite ? h('div.form-actions', save) : null), fedBox));
+      canWrite ? h('div.form-actions', save) : null), fedBox, followBox));
+  }
+
+  // ---- Follow OBS (09 §9.7): OBS scene → the show's scene, saved with the show's If-Match ----
+  async function drawFollow(box, overlays) {
+    mount(box, h('section.card', h('h2', 'Follow OBS'), h('p.loading', 'Loading…')));
+    let cat;
+    try { cat = await loadCatalog(show, overlays, []); } catch (err) { mount(box, h('section.card', h('h2', 'Follow OBS'), notice(err.message, 'danger'))); return; }
+    const reload = async () => {
+      try { await fresh(true); } catch (err) { if (err.status === 404) { showGone(); return; } toast(err); return; }
+      drawFollow(box, await loadAll('/api/v1/overlays'));
+    };
+    mount(box, (show.overlays || []).length
+      ? followObsCard({ resource: show, path: base(), scenes: cat.scenes, what: 'show', canWrite, reload })
+      : h('section.card', h('h2', 'Follow OBS'), h('p.muted', 'Pick the show\'s overlays first: then map OBS scenes to their scenes here.')));
   }
 
   // ---- Fed by: the connections every overlay of the show shows -------------------------------

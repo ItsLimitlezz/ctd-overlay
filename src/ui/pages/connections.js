@@ -129,6 +129,9 @@ function valueRows(state = {}, stale = []) {
         Number.isFinite(value.offsetMs) ? `its clock ${value.offsetMs < 0 ? '−' : '+'}${Math.abs(value.offsetMs).toLocaleString()} ms from this server's` : '',
       ].filter(Boolean).join(' · ');
     } else if (key === 'music.nowPlaying') { label = 'Now playing'; text = [value?.title, Array.isArray(value?.artists) ? value.artists.join(', ') : ''].filter(Boolean).join(' · '); }
+    else if (key === 'obs.scene') continue; // the landscape scene's name, said by the row below
+    else if ((m = /^obs\.scene\.(landscape|vertical)$/.exec(key))) { label = `OBS scene (${m[1]})`; text = typeof value?.scene === 'string' ? value.scene : JSON.stringify(value); }
+    else if ((m = /^obs\.(streaming|recording)$/.exec(key))) { label = `OBS ${m[1]}`; text = value ? 'Yes' : 'No'; }
     else if ((m = /^obs\.(.+)$/.exec(key))) { label = `OBS ${m[1]}`; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     else { label = key; text = typeof value === 'object' ? JSON.stringify(value) : String(value); }
     rows.push([label, stale.includes(key) ? `${text} (held: the service isn't answering)` : text]);

@@ -153,8 +153,10 @@ without `display`.
 | `stream.<platform>.startedAt` | epoch ms | connector |
 | `stream.clock` | object — the stream's start and frame rate on this server's clock, for run times and timecodes (§2.5.2) | connector (CTD Relay, 06 §6.11) |
 | `music.nowPlaying` | Track object (§2.5.1) | music connector |
-| `obs.scene` | string — current program scene | OBS |
-| `obs.streaming` | boolean | OBS |
+| `obs.scene` | string — current program scene (the main, landscape canvas's) | OBS |
+| `obs.scene.landscape` | `{ scene, sceneUuid?, appId?, since }` — the landscape (main) canvas's program scene; `appId`: the OBS machine that reported it (CTD Relay), `since`: epoch ms it became the program scene | OBS |
+| `obs.scene.vertical` | the same, for the vertical canvas (Aitum Vertical) | OBS |
+| `obs.streaming` | boolean — any output but the recording runs | OBS |
 | `obs.recording` | boolean | OBS |
 | `show.scene` | string — the overlay's active scene | core |
 | `show.lineup` | array of slots (see 09) | core |
@@ -185,6 +187,10 @@ platform (two accounts on one platform count once), unless the core set `viewers
 a held value counts until it is removed. `GET /api/v1/state` and the `/events` stream show the
 same choice made with every connection. A change reaches an overlay only when the value it shows
 changes.
+
+A connection that relays OBS for several streams (CTD Relay's profiles, 06 §6.11) sets the `obs.*`
+keys per feed like any other value: an overlay fed by one profile sees that profile's OBS. Shows
+follow `obs.scene.<canvas>` (09 §9.7).
 
 ### 2.5.1 Track
 ```json

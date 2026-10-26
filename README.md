@@ -29,10 +29,10 @@
   chat box. Alerts play one at a time in priority order, and a gift of 25 subs is one alert.
 - **The show runs itself.** Scenes, timed returns, lineups and cues fire on the server's clock,
   so every overlay changes on the same frame, horizontal and vertical.
-- **Templates.** Chat, Alerts, TAKEOVER and Text & Clock (text with a clock, countdown, stream
-  run time or timecode) built in. Install more from a file, a link or a (private) GitHub release,
-  preview them with sample data, and they update themselves. Make your own with the
-  [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
+- **Templates.** Install from a file, a link or a (private) GitHub release, preview them with
+  sample data, and they update themselves. Built in: Chat, Alerts, the TAKEOVER show package and
+  [Text & Clock](docs/RUNNING.md#text--clock) (lines of text with a clock, countdown, stream run
+  time or timecode). Make your own with the [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
 - **Built for the night.** A phone-first Live console, Simulate buttons, alert Skip / Replay /
   Pause, previews of every overlay, and roles for your crew.
 - **Yours.** One small Node server with no dependencies, on your NAS or PC. Overlay links carry
