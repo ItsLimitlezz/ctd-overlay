@@ -1,31 +1,114 @@
-# CTD Overlay
+<p align="center">
+  <img src="docs/images/ctd-overlay-icon.svg" width="128" height="128" alt="CTD Overlay icon">
+</p>
 
-A self-hosted live-stream overlay platform: one server that connects to Twitch, Kick, YouTube,
-Spotify and OBS, runs the show on its own clock, and serves styled overlays to OBS browser
-sources.
+<h1 align="center">CTD Overlay</h1>
 
-It implements the **Stream Kit Platform Standard** (`skp/1`) and replaces the D/PRTMNT Stream Kit
-(v0) it was generalized from.
+<p align="center">
+  <b>Self-hosted stream overlays that run the show on their own.</b><br>
+  Chat, alerts, scenes and whole shows for OBS, fed live from every platform you stream to.
+</p>
 
-- [docs/standard/](docs/standard/README.md): the standard, with its JSON Schemas.
-- [docs/PLAN.md](docs/PLAN.md): the build plan, one PR per step.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/RUNNING.md">Running it</a> ·
+  <a href="docs/template-kit/TEMPLATE-GUIDE.md">Make a template</a> ·
+  <a href="docs/standard/README.md">The standard</a> ·
+  <a href="#the-ctd-family">CTD family</a>
+</p>
 
-**Status:** steps 1–13 of the plan, plus 8b (template updates from GitHub releases); step 13 is
-in review. The server keeps its data in SQLite, routes live data through the bus, and serves
-overlays to OBS browser sources over Server-Sent Events with a polling fallback. Every overlay
-page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)): the server clock,
-state and events, scenes and transitions, element lifecycle on deadlines, actions, alerts, chat
-and music helpers, and a mock show (`?mock=1`). Templates install from `.skp` or `.zip` packages,
-URLs or GitHub releases, with validation, settings and upgrades, and can follow a repository for
-updates; media uploads are converted for OBS. Shows put overlays together: one take changes every
-member, triggers land on the same frame, timed scenes return on the server, and REC starts by
-itself; the show's cues fire on the server's clock from its schedule. Sign-in has roles, API
-tokens, two-factor codes and an audit log; overlay URLs carry keys, secrets are encrypted at rest,
-and the platform can serve the local network or the internet over HTTPS. Everything goes through
-the API v1, described at `/api/v1/openapi.json`. Bundled: the D/PRTMNT TAKEOVER show package, Chat,
-Alerts, Text & Clock (text lines with a time of day, countdown, count-up, stream run time or
-timecode: [docs/RUNNING.md](docs/RUNNING.md#text--clock)), a viewer-count widget and a diagnostic
-template. Next is step 14: the admin UI.
+<p align="center">
+  <img src="docs/images/live.png" alt="The Live page: two streams, one on air with 244 viewers across Twitch and YouTube, one offline" width="900">
+</p>
+
+## What it does
+
+- **Several streams at once.** Each show is a stream with its own overlays, fed by its own
+  CTD Relay profile. Live shows which ones are on air, per platform, with viewer counts.
+- **Merged chat and alerts.** Twitch, YouTube, Kick, TikTok, Instagram, Facebook and X in one
+  chat box. Alerts play one at a time in priority order, and a gift of 25 subs is one alert.
+- **The show runs itself.** Scenes, timed returns, lineups and cues fire on the server's clock,
+  so every overlay changes on the same frame, horizontal and vertical.
+- **Templates.** Chat, Alerts, TAKEOVER and Text & Clock (text with a clock, countdown, stream
+  run time or timecode) built in. Install more from a file, a link or a (private) GitHub release,
+  preview them with sample data, and they update themselves. Make your own with the
+  [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
+- **Built for the night.** A phone-first Live console, Simulate buttons, alert Skip / Replay /
+  Pause, previews of every overlay, and roles for your crew.
+- **Yours.** One small Node server with no dependencies, on your NAS or PC. Overlay links carry
+  keys, secrets are encrypted at rest, and sign-in has two-factor.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/show-console.png" alt="A show's console: on-air status, platforms, overlay picker and the alert queue"><br><sub><b>A show's console:</b> its stream status, each overlay's controls, the alert queue.</sub></td>
+    <td width="50%"><img src="docs/images/connections.png" alt="Connections: CTD Relay following two profiles"><br><sub><b>Connections:</b> one CTD Relay connection follows every profile.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/templates.png" alt="The template gallery"><br><sub><b>Templates:</b> preview with sample data, then make an overlay.</sub></td>
+    <td width="50%" align="center"><img src="docs/images/phone.png" alt="The Live page on a phone" width="260"><br><sub><b>On a phone:</b> run the night one-handed.</sub></td>
+  </tr>
+</table>
+
+### In OBS
+
+<table>
+  <tr>
+    <td width="40%" align="center"><img src="docs/images/overlay-chat.png" alt="The chat overlay: lines from Twitch, YouTube, Kick, TikTok and Instagram with platform tags"><br><sub><b>Chat</b> from every platform, tagged.</sub></td>
+    <td width="60%" align="center"><img src="docs/images/overlay-alerts.png" alt="An alert: BigSpender gifted 25 subs on Twitch"><br><sub><b>Alerts</b>, one at a time.</sub><br><br><img src="docs/images/takeover.png" alt="The D/PRTMNT TAKEOVER template: Starting soon countdown"><br><sub><b>TAKEOVER</b>, a whole show package.</sub></td>
+  </tr>
+</table>
+
+## Quick start
+
+**On a NAS or any Docker host** (the image is public, no login needed):
+
+```bash
+docker run -d --name ctd-overlay -p 4848:4848 -e SKP_HOSTS=192.168.1.50 -v ctd-data:/data -v ctd-config:/config ghcr.io/itslimitlezz/ctd-overlay:latest
+```
+
+TrueNAS: **Apps → Discover Apps → ⋮ → Install via YAML** with [`deploy/truenas.yml`](deploy/truenas.yml).
+
+**On the PC that runs OBS** (Node.js 24, no `npm install`):
+
+```bash
+git clone https://github.com/ItsLimitlezz/ctd-overlay.git
+```
+
+```bash
+cd ctd-overlay
+```
+
+```bash
+npm start
+```
+
+Open the address it prints, enter the **setup code** from its log, and create the owner. Then
+**Connections → CTD Relay → Set up → Connect**, and add your overlays to OBS from their pages.
+The full walkthrough is in [docs/RUNNING.md](docs/RUNNING.md).
+
+## The CTD family
+
+<p align="center">
+  <img src="docs/images/ctd-family.png" alt="The CTD app icons: Live Studio, Tally, Ingest Studio, Live Mobile, Overlay, Relay, OBS Plugin" width="900">
+</p>
+
+| App | What it does |
+|---|---|
+| **[CTD Relay](https://github.com/ItsLimitlezz/ctd-relay)** | Streams to every platform at once, merges their chat, and is the hub the other apps talk through. |
+| **CTD Overlay** (this repo) | Overlays, chat, alerts and shows for OBS, fed by Relay. |
+| **[CTD OBS plugin](https://github.com/ItsLimitlezz/ctd-obs-plugin)** | Puts each profile's overlays into OBS and tells Relay which scene is on air. |
+
+## Under the hood
+
+CTD Overlay implements the **Stream Kit Platform Standard** (`skp/1`,
+[docs/standard/](docs/standard/README.md)) and grew out of the D/PRTMNT Stream Kit (v0). Data
+lives in SQLite; live data goes through a bus to overlays over Server-Sent Events, with a polling
+fallback. Every overlay page gets the runtime SDK (`SK`, [04 §4.4](docs/standard/04-templates.md)):
+the server clock, state and events, scenes and transitions, alerts, chat and a mock show
+(`?mock=1`). Everything goes through the API v1, described at `/api/v1/openapi.json`. The build
+plan is [docs/PLAN.md](docs/PLAN.md).
 
 ## Try it in OBS
 
