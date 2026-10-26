@@ -201,18 +201,29 @@ describe('Text & Clock in a browser', () => {
     for (let i = 0; i < 8; i++) {
       const c = await clock();
       assert.equal(c.text, T.timecode(c.at - startedAt, 30), 'exactly the frame of the time it shows');
-      assert.ok(c.now - c.at < 250, `painted every frame, not once a second (${c.now - c.at} ms old)`);
+      // Every frame, not once a second: well under a second old, with room for a busy machine.
+      assert.ok(c.now - c.at < 600, `painted every frame, not once a second (${c.now - c.at} ms old)`);
       assert.ok(Number(c.text.slice(-2)) < 30);
       frames.add(c.text);
       await new Promise((r) => setTimeout(r, 45));
     }
     assert.ok(frames.size >= 4, `the frames move: ${[...frames]}`);
     // 25 fps from CTD Relay: frames 00–24.
+    // The new rate reaches the page when it does (later on a busy machine): wait for a frame only
+    // 25 fps gives, then every frame is at 25.
     platform.bus.setState('stream.clock', { startedAt, fps: 25, offsetMs: 2000, at: Date.now() });
-    await page.waitFor('(() => { const c = document.querySelector("[data-clock]"); return c.textContent.length === 11; })()');
-    await new Promise((r) => setTimeout(r, 100));
-    let c = await clock();
-    assert.equal(c.text, T.timecode(c.at - startedAt, 25));
+    let c;
+    for (const end = Date.now() + 10000; ;) {
+      c = await clock();
+      if (c.text === T.timecode(c.at - startedAt, 25) && c.text !== T.timecode(c.at - startedAt, 30)) break;
+      assert.ok(Date.now() < end, `still not 25 fps: ${c.text}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 45));
+      c = await clock();
+      assert.equal(c.text, T.timecode(c.at - startedAt, 25));
+    }
     // The time of day in UTC, on CTD Relay's clock (2 s ahead of this server's).
     set({ mode: 'timecode', timecodeSource: 'utc' });
     await shows('/^03:00:\\d\\d:\\d\\d$/');

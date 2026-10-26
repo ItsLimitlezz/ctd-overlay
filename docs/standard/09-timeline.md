@@ -211,6 +211,8 @@ overlay outside a show **MAY** do the same with its own scenes.
   renamed in OBS keeps its uuid; one made again keeps its name). `scene` is one of the members'
   scenes, by id or core (§9.1); an OBS scene in no row takes `otherwise`, or, without it, changes
   nothing. At most 50 rows; an OBS scene's name is at most 200 characters; each OBS scene once.
+  The settings offer every scene of the canvas when OBS says them (`obs.scenes.<canvas>`), else
+  the scenes OBS has shown; a scene can also be typed in by its name.
 - **Only a real change acts:** the scene the followed feed shows for the canvas became another
   one. The first scene seen after a start, CTD Relay's resend of an unchanged scene every 60 s
   and a scene the show is on already (a timed scene isn't restarted) take nothing.

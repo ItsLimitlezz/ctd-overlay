@@ -3,7 +3,8 @@
 // state, the one on now marked), maps them to the show's scenes and saves with If-Match; OBS then
 // changes scene and the show follows. Live shows what OBS shows on the stream card and in the show's
 // console ("OBS · landscape: … · Streaming"), and says the scene was set by OBS. An overlay outside
-// a show has the same card on its Scenes tab. On a phone nothing scrolls sideways.
+// a show has the same card on its Scenes tab; when the plugin sends a canvas's whole scene list, the
+// card lists every scene in OBS's order. On a phone nothing scrolls sideways.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -109,6 +110,14 @@ test('Follow OBS: the card lists the scenes OBS has shown and saves a mapping; t
   await page.eval('document.querySelector("#follow-obs .btn.primary").click()');
   await toastSeen(page, '/Following OBS: 1 scene mapped on the vertical canvas/');
   assert.deepEqual((await api('GET', '/overlays/solo')).body.followObs, { enabled: true, canvas: 'vertical', map: [{ obsScene: 'Main V', scene: 'program' }] });
+
+  // A newer plugin sends the canvas's whole scene list: every scene is listed, in OBS's order,
+  // including those OBS hasn't shown yet.
+  ms.obsScene({ canvas: 'vertical', scene: 'Main V', scenes: [{ name: 'Intro V' }, { name: 'Main V' }, { name: 'BRB V' }], atMs: 4 });
+  await until(() => platform.bus.entriesOf('obs.scenes.vertical')[0]?.value.length === 3, 5000, 'the vertical list');
+  await page.goto(`${platform.url}/?signed=2#/overlays/solo?tab=scenes`);
+  await page.waitFor('document.querySelector("#follow-obs select[aria-label=\'Scene for the OBS scene Intro V\']")', 15000);
+  assert.match(await page.eval('document.querySelector("#follow-obs").innerText'), /Every scene in Relay · Miami or Bust's OBS on this canvas[\s\S]*Intro V[\s\S]*Main V \(on now\)[\s\S]*BRB V/);
 
   // ---- a phone: the card in one column, nothing sideways -----------------------------------------
   await page.resize(390, 844);

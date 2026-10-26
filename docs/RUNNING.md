@@ -129,8 +129,10 @@ The show's graphics can follow OBS: switch to **BRB** in OBS and the overlays ta
 It needs **CTD Relay v1.5** or newer and the **CTD OBS plugin with scene publishing** on the OBS
 machine, sending for the show's profile. Then:
 
-1. Switch scenes in OBS once or twice: Live shows **OBS · landscape: Live · vertical: …** on the
-   show's card, and the scenes OBS has shown appear on the show's page.
+1. Check Live: the show's card says **OBS · landscape: Live · vertical: …**. A newer CTD OBS
+   plugin (with CTD Relay v1.6) sends every scene it has, so they're all listed on the show's
+   page right away. With an older one, switch scenes in OBS once or twice: the scenes OBS has
+   shown are listed.
 2. **Shows → the show → Details → Follow OBS**: tick **Follow OBS scenes**, pick the canvas that
    drives the show (Landscape, the main one, unless the show is vertical only), and for each OBS
    scene the show's scene to take ("Leave the scene as it is" ignores it). A scene OBS hasn't
