@@ -518,9 +518,9 @@ test('something deleted elsewhere: saving says so plainly and shows it missing (
   await click(page, 'dialog[open] button', 'Reset settings');
   await page.waitFor('document.querySelector("[data-view] h1")?.textContent === "There is no overlay \\"solo\\""', 8000);
 
-  await go(page, `/shows/${show.body.id}?tab=lineup`, 'document.querySelector("[data-view] fieldset input[type=text]")');
+  await go(page, `/shows/${show.body.id}?tab=lineup`, 'document.querySelector("[data-view] fieldset input[type=text]:not(.time-field)")');
   assert.ok((await owner('DELETE', `/shows/${show.body.id}`, undefined, { 'if-match': (await owner('GET', `/shows/${show.body.id}`)).etag })).status < 300);
-  await page.eval('(() => { const i = document.querySelector("[data-view] fieldset input[type=text]"); i.value = "Later"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await page.eval('(() => { const i = document.querySelector("[data-view] fieldset input[type=text]:not(.time-field)"); i.value = "Later"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click(page, '[data-view] button', 'Save lineup');
   await page.waitFor('document.querySelector("[data-view]").innerText.includes("There is no show \\"Doomed\\"")', 8000);
   const said = (await toasts(page)).join(' | ');

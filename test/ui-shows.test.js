@@ -160,7 +160,7 @@ test('a TAKEOVER night from nothing: the overlay in no show makes one, quick dat
   else await click(page, 'dialog[open] button', 'Tonight');
   assert.equal(await page.eval('document.querySelector("dialog[open] input[type=date]").value'), saturday);
   await type(page, 'dialog[open] input[type=text]', 'Saturday TAKEOVER');
-  await type(page, 'dialog[open] input[type=time]', '22:00');
+  await type(page, 'dialog[open] input.time-field', '22:00');
   await click(page, 'dialog[open] button', 'Create show');
   // Then its lineup.
   await page.waitFor('location.hash.includes("tab=lineup") && document.querySelector("[data-view] h1")?.textContent === "Saturday TAKEOVER"', 10000);
@@ -172,7 +172,7 @@ test('a TAKEOVER night from nothing: the overlay in no show makes one, quick dat
   assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] datalist option")].map((o) => o.value).sort()'), ['Manzone', 'VIKKSTAR', 'strong']);
   for (const [i, [time, name]] of [['22:30', 'Manzone'], ['01:00', 'VIKKSTAR'], ['03:00', 'Deecee']].entries()) {
     await click(page, '[data-view] button', 'Add an act');
-    await type(page, '[data-view] fieldset input[type=time]', time, i);
+    await type(page, '[data-view] fieldset input.time-field', time, i);
     await type(page, '[data-view] fieldset input[type=text][list]', name, i * 2);
   }
   assert.equal(await page.eval('document.querySelector("[data-view] fieldset input[type=text][list]").getAttribute("list") === document.querySelector("[data-view] datalist").id'), true);
@@ -237,7 +237,7 @@ test('the first night: with no show yet, the overlay in no show is named and New
   await click(page, 'dialog[open] button', 'Tonight');
   await click(page, 'dialog[open] button', 'Next week'); // a week on: its go-live is still to come
   await type(page, 'dialog[open] input[type=text]', 'Saturday TAKEOVER');
-  await type(page, 'dialog[open] input[type=time]', '22:00');
+  await type(page, 'dialog[open] input.time-field', '22:00');
   await click(page, 'dialog[open] button', 'Create show');
   await page.waitFor('location.hash.includes("tab=lineup")', 10000);
   const show = (await call('GET', '/shows/Saturday TAKEOVER')).body;
@@ -267,7 +267,7 @@ test('the timeline: a card picks its act and puts them on as one cue, changed an
   await click(page, '[data-view] button', 'Add a cue');
   await page.waitFor('document.querySelector("dialog[open] select")', 10000);
   const visible = () => page.eval('[...document.querySelectorAll("dialog[open] .field")].filter((f) => !f.hidden && !f.closest("[hidden]")).map((f) => f.querySelector("label")?.textContent.trim()).filter(Boolean)');
-  await type(page, 'dialog[open] input[type=time]', '23:58');
+  await type(page, 'dialog[open] input.time-field', '23:58');
   // A now-playing held until hidden is about an act too.
   await type(page, 'dialog[open] select', 'nowPlayingHold', 1);
   assert.ok((await visible()).includes('Act'), 'a held now-playing is about an act');
@@ -383,12 +383,12 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
   assert.match(await planMenu(), /^More for the plan of /);
   await choose(page, await planMenu(), 'Change');
   await page.waitFor('document.querySelectorAll("[data-view] fieldset").length === 2', 10000);
-  await type(page, '[data-view] input[type=time]:not(fieldset input)', '23:00');
+  await type(page, '[data-view] input.time-field:not(fieldset input)', '23:00');
   assert.equal((await other(platform, 'PUT', `/shows/${id}/plans/${plan.id}`, { date: plan.date, lineup: [{ time: '23:00', name: 'GUEST' }] })).status, 200);
   await click(page, '[data-view] button', 'Save changes');
   await page.waitFor('[...document.querySelectorAll(".toast span")].some((t) => t.textContent.startsWith("This plan changed since you opened it"))', 10000);
   assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] fieldset")].map((f) => f.querySelector("input[type=text][list]").value)'), ['GUEST'], 'the latest, to change again');
-  await type(page, '[data-view] input[type=time]:not(fieldset input)', '23:00');
+  await type(page, '[data-view] input.time-field:not(fieldset input)', '23:00');
   // Another tab asks first, as Cancel does: cancelled, the change is still here.
   await page.eval('document.querySelector("#tab-lineup").click()');
   await page.waitFor('document.querySelector("dialog[open]")', 5000);
@@ -396,7 +396,7 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
   await click(page, 'dialog[open] button', 'Cancel');
   await page.waitFor('!document.querySelector("dialog[open]")', 5000);
   assert.equal(await page.eval('document.querySelector("#tab-plans").getAttribute("aria-selected")'), 'true');
-  assert.equal(await page.eval('document.querySelector("[data-view] input[type=time]:not(fieldset input)").value'), '23:00');
+  assert.equal(await page.eval('document.querySelector("[data-view] input.time-field:not(fieldset input)").value'), '23:00');
   await click(page, '[data-view] button', 'Save changes');
   await page.waitFor('[...document.querySelectorAll(".toast span")].some((t) => t.textContent.startsWith("Saved the plan"))', 10000);
   [plan] = (await call('GET', `/shows/${id}/plans`)).body.items;
@@ -447,7 +447,7 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
   assert.equal((await other(platform, 'PATCH', `/shows/${id}`, { goLive: '21:30' })).status, 200);
   await click(page, '[data-view] .notice button', await page.eval('document.querySelector("[data-view] .notice button").textContent'));
   await page.waitFor('[...document.querySelectorAll(".toast span")].some((t) => t.textContent.startsWith("The show changed since you opened it"))', 10000);
-  await page.waitFor('document.querySelector("[data-view] input[type=time]:not([required])")?.value === "21:30"', 5000);
+  await page.waitFor('document.querySelector("[data-view] input.time-field:not([required])")?.value === "21:30"', 5000);
   // Building its timeline now would make nothing: the dialog says so before.
   await page.eval('document.querySelector("#tab-timeline").click()');
   await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "Build from lineup")', 10000);
@@ -460,7 +460,7 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
   await page.eval('document.querySelector("#tab-lineup").click()');
   await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "Add an act")', 10000);
   await click(page, '[data-view] button', 'Add an act');
-  await type(page, '[data-view] fieldset input[type=time]', '02:30', 1);
+  await type(page, '[data-view] fieldset input.time-field', '02:30', 1);
   await type(page, '[data-view] fieldset input[type=text][list]', 'LATE ADD', 2);
   assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] fieldset legend")].map((l) => l.textContent)'), ['1. GUEST', '2. LATE ADD']);
   assert.equal(await page.eval('!!document.querySelector("[data-view] fieldset summary[aria-label=\'More for LATE ADD\']")'), true);

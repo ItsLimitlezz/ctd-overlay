@@ -31,6 +31,7 @@ import * as api from './api.js';
 import { dialog, field, h, mount, notice, run, toast } from './dom.js';
 import { browserZone, dateField, dateLabel, showDayNow, zoneInput } from './show-day.js';
 import { fedByWords } from './streams.js';
+import { timeInput } from './time-field.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -230,7 +231,7 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
   // The show's day now, as New show has it: after midnight, still the night before.
   const date = h('input', { type: 'date', value: showDayNow(zone), required: true });
   const tz = zoneInput(zone);
-  const goLive = h('input', { type: 'time' });
+  const goLive = timeInput();
   const dateEl = dateField('Date', date, { hint: 'The night of the show. Acts after midnight still belong to this date.', zone: () => tz.value.trim() || zone, weekdays: [5, 6] });
   // Tonight follows the zone chosen, until the date is picked (by hand or a quick pick).
   let datePicked = false;

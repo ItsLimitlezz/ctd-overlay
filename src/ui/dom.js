@@ -53,9 +53,19 @@ export function toast(message, { kind, ms } = {}) {
   if (!host) return;
   const isError = message instanceof Error || kind === 'error';
   const text = message instanceof Error ? message.message : String(message);
+  // The same words already showing (a button pressed twice): that one moves to the end, said
+  // again and up longer, instead of a second copy.
+  const same = [...host.children].find((t) => t.classList.contains('error') === isError && t.firstChild?.textContent === text);
+  if (same) {
+    clearTimeout(same.toastTimer);
+    same.remove();
+    host.append(same);
+    same.toastTimer = setTimeout(() => same.remove(), ms ?? (isError ? 8000 : 3500));
+    return;
+  }
   const el = h('div.toast', { class: isError ? 'error' : undefined, role: isError ? 'alert' : undefined }, h('span', text), h('button', { type: 'button', 'aria-label': 'Dismiss', onclick: () => el.remove() }, '✕'));
   host.append(el);
-  setTimeout(() => el.remove(), ms ?? (isError ? 8000 : 3500));
+  el.toastTimer = setTimeout(() => el.remove(), ms ?? (isError ? 8000 : 3500));
 }
 
 // ---- dialogs -------------------------------------------------------------------------------

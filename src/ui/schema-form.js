@@ -19,6 +19,7 @@
 // nested object is a fieldset. Anything the form doesn't understand is edited as plain text, with
 // a note; nothing in a schema makes it throw (H17).
 import { dialog, field, h, mount, notice } from './dom.js';
+import { formatTime, timeError, timeInput, twelveHour } from './time-field.js';
 
 // What a settings schema may use (04 §4.3; settings.js KEYWORDS); x-skp-* extensions besides.
 // writeOnly marks a secret (a connection's password or token, 06 §6.1): a password field that
@@ -818,7 +819,8 @@ function create({ schema, definitions, values, resolved, onChange, mediaList, sa
         if (widget === 'media') return mediaCtl(s, label);
         if (s.format === 'color' || widget === 'color') return colorCtl(s, label);
         if (widget === 'textarea' || widget === 'code') return textCtl(s, { area: true, code: widget === 'code' });
-        if (s.format === 'date' || s.format === 'time') return textCtl(s, { type: s.format });
+        if (s.format === 'time') return timeCtl();
+        if (s.format === 'date') return textCtl(s, { type: s.format });
         if (s.format === 'uri') return textCtl(s, { type: 'url' });
         return textCtl(s, { font: widget === 'font' });
       default: return plainCtl(s);
@@ -827,6 +829,27 @@ function create({ schema, definitions, values, resolved, onChange, mediaList, sa
 
   function example(s) {
     return Array.isArray(s.examples) && s.examples.length ? `e.g. ${show(s.examples[0])}` : '';
+  }
+
+  // A time (format "time"): typed as text, the same in every browser (time-field.js: Safari's time
+  // box looked set before its AM/PM was), with seconds when the value has them. The form says
+  // what's wrong itself.
+  function timeCtl() {
+    const input = timeInput({ seconds: true, inline: false });
+    return {
+      input,
+      marks: [input],
+      read() {
+        const v = input.value;
+        if (v.startsWith('?')) return { bad: timeError(v, { seconds: true }) };
+        return v === '' ? { empty: true } : { value: v };
+      },
+      write(v) {
+        input.value = v === undefined || v === null ? '' : show(v);
+      },
+      fallback() {},
+      note: (fb) => (typeof fb === 'string' && fb ? `Leave it empty to use ${formatTime(fb, { h12: twelveHour() }) || fb}.` : ''),
+    };
   }
 
   function textCtl(s, { area, code, type, font } = {}) {
@@ -839,22 +862,19 @@ function create({ schema, definitions, values, resolved, onChange, mediaList, sa
       list = h('datalist', { id: uid('fonts') });
       input.setAttribute('list', list.id);
     }
-    const seconds = (v) => type === 'time' && typeof v === 'string' && /^\d\d:\d\d:\d\d$/.test(v);
-    const timeless = type === 'date' || type === 'time';
+    const timeless = type === 'date';
     return {
       input,
       marks: [input],
       compose: list ? () => h('div', input, list) : undefined,
       read() {
-        if (input.validity?.badInput) return { bad: type === 'date' ? 'Enter the whole date.' : type === 'time' ? 'Enter the whole time.' : 'Check this value.' };
+        if (input.validity?.badInput) return { bad: type === 'date' ? 'Enter the whole date.' : 'Check this value.' };
         return input.value === '' ? { empty: true } : { value: input.value };
       },
       write(v) {
-        if (seconds(v)) input.step = '1';
         input.value = v === undefined || v === null ? '' : show(v);
       },
       fallback(fb) {
-        if (seconds(fb)) input.step = '1';
         if (list) mount(list, [...new Set([...(typeof fb === 'string' && fb ? [fb] : []), ...FONTS])].map((f) => h('option', { value: f })));
         if (timeless) return;
         input.placeholder = fb !== undefined && fb !== '' ? show(fb) : example(s) || (type === 'url' ? 'https://' : '');
