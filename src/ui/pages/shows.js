@@ -9,6 +9,7 @@
 import * as api from '../api.js';
 import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
 import { followObsCard } from '../obs.js';
+import { timeError, timeInput } from '../time-field.js';
 import { bindingName, fedByForm, fedByWords } from '../streams.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -327,7 +328,7 @@ async function newShow(ctx) {
   const name = h('input', { type: 'text', maxlength: 80, required: true, autocomplete: 'off', placeholder: 'Saturday TAKEOVER' });
   const date = h('input', { type: 'date', value: todayIn(zone), required: true });
   const tz = zoneInput(zone);
-  const goLive = h('input', { type: 'time' });
+  const goLive = timeInput();
   const picker = overlayPicker(overlays);
   const body = h('div',
     field('Name', name, { hint: 'What you call the night.' }),
@@ -480,8 +481,8 @@ export async function detail(view, ctx) {
     const name = h('input', { type: 'text', value: v.name ?? formShow.name, maxlength: 80, required: true, autocomplete: 'off', disabled });
     const date = h('input', { type: 'date', value: v.date ?? formShow.date, required: true, disabled });
     const zone = zoneInput(v.timezone ?? formShow.timezone, { disabled });
-    const boundary = h('input', { type: 'time', value: v.dayBoundary ?? (formShow.dayBoundary || '12:00'), required: true, disabled });
-    const goLive = h('input', { type: 'time', value: v.goLive ?? (formShow.goLive || ''), disabled });
+    const boundary = timeInput({ value: v.dayBoundary ?? (formShow.dayBoundary || '12:00'), required: true, disabled });
+    const goLive = timeInput({ value: v.goLive ?? (formShow.goLive || ''), disabled });
     // The overlays: those that failed to load are the show's own, by name.
     const known = overlays.length ? overlays : (formShow.members || []).map((slug) => ({ slug, show: formShow.name }));
     const serverMembers = [...(formShow.overlays || []), ...(formShow.members || [])];
@@ -660,7 +661,7 @@ export async function detail(view, ctx) {
 
     // When a row plays: the server's instant for a saved time; for a changed one, which day.
     function when(row) {
-      if (!TIME.test(row.time)) return [h('span', 'Set a time.')];
+      if (!TIME.test(row.time)) return [h('span', timeError(row.time) || 'Set a time.')];
       const nextDay = minutesOf(row.time) < minutesOf(b);
       const out = [];
       if (row.orig && row.orig.time === row.time && row.orig.startAt) {
@@ -686,7 +687,7 @@ export async function detail(view, ctx) {
       const whenEl = h('div.small.muted');
       const update = () => mount(whenEl, when(row));
       const label = () => row.name || `act ${i + 1}`;
-      const time = h('input', { type: 'time', value: row.time, required: true, disabled, oninput: (e) => { row.time = e.target.value; update(); touched(); } });
+      const time = timeInput({ value: row.time, inline: false, required: true, disabled, oninput: (e) => { row.time = e.target.value; update(); touched(); } });
       const name = h('input', { type: 'text', value: row.name, maxlength: 80, required: true, autocomplete: 'off', disabled, oninput: (e) => { row.name = e.target.value; touched(); } });
       const b2b = h('input', { type: 'text', value: row.b2b || '', maxlength: 80, autocomplete: 'off', disabled, oninput: (e) => { row.b2b = e.target.value; touched(); } });
       const logoOptions = [{ value: '', label: 'No logo (the name shows)' }, ...images];
@@ -825,7 +826,7 @@ export async function detail(view, ctx) {
       const fixed = a && !KINDS.some((k) => k.type === a.type); // a sequence (or a later kind): not edited here
       const initialAt = cue ? cue.time || hmIn(new Date(cue.at), tz()) : '';
       const b = show.dayBoundary || '12:00';
-      const at = h('input', { type: 'time', value: initialAt, required: true });
+      const at = timeInput({ value: initialAt, required: true });
       const kind = h('select', KINDS.map((k) => h('option', { value: k.type }, k.label)));
       kind.value = a && !fixed ? a.type : 'overlay.action';
       const graphic = choice(cat.actions, a?.type === 'overlay.action' ? a.name : undefined, { placeholder: 'titleCard' });
@@ -1148,7 +1149,7 @@ export async function detail(view, ctx) {
 
     async function addPlan() {
       const date = h('input', { type: 'date', value: addDays(show.date, 7), required: true });
-      const goLive = h('input', { type: 'time', value: show.goLive || '' });
+      const goLive = timeInput({ value: show.goLive || '' });
       const acts = Array.isArray(show.lineup) ? show.lineup.length : 0;
       const copy = toggle(`Copy tonight's lineup (${plural(acts, 'act')})`, false, { disabled: !acts });
       const body = h('div',
