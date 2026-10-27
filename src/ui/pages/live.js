@@ -11,6 +11,11 @@
 //   #/live?overlay=<slug>           an overlay outside a show, on its own: the same overlay panel,
 //                                   with its own scenes
 //
+// An overlay outside a show whose template reads who's on from one (set times, title cards, and its
+// countdown and REC) says so on its card and first in its console, with "Make a show from this
+// overlay" and "Add it to a show" (show-from-overlay.js): its title cards have no act to name until
+// it is in one. A clock that reads only a show's times may have its own, so Live says nothing of it.
+//
 // Everything here is a command (no If-Match, README H16). The streams page polls every 3 s, and at
 // once when a connection's status changes; a show's console polls the show and its cues every 2 s,
 // and updates the page in place, so focus, scroll and loaded previews stay; countdowns tick every
@@ -18,6 +23,7 @@
 import * as api from '../api.js';
 import { badge, clock, confirm, countdown, empty, every, field, h, isPhone, menu, mount, notice, pageHead, preview, run, toast } from '../dom.js';
 import { byObsWords } from '../obs.js';
+import { needsShow, showNotice, showWords } from '../show-from-overlay.js';
 import { isRunning, streamStatus } from '../streams.js';
 import { overlayPanel } from './live-overlay.js';
 
@@ -176,20 +182,44 @@ async function streams(view, ctx) {
   let order = '';
   let lastOk = Date.now();
   let loaded = false;
+  let showsExist = false;
   const grid = h('div.grid');
   const emptyBox = h('div', { hidden: true });
   const problemBox = h('div', { hidden: true });
   const intro = h('p.muted', 'A stream is a show (its overlays run together) or an overlay outside a show. Each is fed by its own connections, so several can be on air at once. Running streams come first.');
 
+  // The pinned template of each overlay outside a show, read once per version: whether it reads a
+  // show (set times, the countdown, title cards) that it isn't in.
+  const manifests = new Map(); // "id@version" → its manifest (null: none)
+  async function learnManifests(overlays) {
+    if (!ctx.can('templates:read')) return;
+    const wanted = new Map();
+    for (const o of overlays) {
+      const key = pinnedKey(o);
+      if (key && !manifests.has(key)) wanted.set(key, o.template);
+    }
+    await Promise.all([...wanted].map(async ([key, t]) => {
+      try {
+        manifests.set(key, (await api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`))?.manifest || null);
+      } catch (err) {
+        if (err?.status === 404) manifests.set(key, null); // not installed: the card says nothing of it
+      }
+    }));
+  }
+
   async function read() {
     const [shows, overlays] = await Promise.all([canShows ? api.all('/api/v1/shows') : [], api.all('/api/v1/overlays')]);
+    const outside = overlays.filter((o) => o && typeof o.slug === 'string' && !o.show);
+    await learnManifests(outside);
+    showsExist = shows.length > 0;
     const all = [
       ...shows.filter((s) => s && typeof s.id === 'string').map((s) => ({
         key: `show:${s.id}`, show: true, name: s.name || 'Show', stream: s.stream, rec: instant(s.recStartedAt) !== undefined,
         overlays: list(s.members).length, href: `#${liveHref({ show: s.id })}`,
       })),
-      ...overlays.filter((o) => o && typeof o.slug === 'string' && !o.show).map((o) => ({
+      ...outside.map((o) => ({
         key: `overlay:${o.id}`, show: false, name: o.slug, stream: o.stream, rec: false, overlays: 1, href: `#${liveHref({ overlay: o.slug })}`,
+        overlay: o, manifest: manifests.get(pinnedKey(o)) || undefined,
       })),
     ];
     return all.map((s, i) => ({ s, i }))
@@ -201,10 +231,21 @@ async function streams(view, ctx) {
     const c = { status: streamStatus({ compact: true }) };
     c.title = h('h2.truncate');
     c.meta = h('p.small.muted');
+    c.needs = h('div.needs-show-slot', { hidden: true });
     c.open = h('a.btn.primary', {}, 'Open');
-    c.el = h('article.card.stream-card', h('div.card-head', c.title), c.meta, c.status.el, h('div.open', c.open));
+    c.el = h('article.card.stream-card', h('div.card-head', c.title), c.meta, c.status.el, c.needs, h('div.open', c.open));
     cards.set(key, c);
     return c;
+  }
+  // An overlay outside a show whose template reads one: the notice, drawn again only when it
+  // changes (a button pressed keeps its focus through the polls).
+  function drawNeeds(c, s) {
+    const on = !s.show && needsShow(s.overlay, s.manifest);
+    const key = on ? JSON.stringify([s.overlay.id, s.overlay.slug, showWords(s.manifest), showsExist]) : '';
+    if (key === c.needsKey) return;
+    c.needsKey = key;
+    c.needs.hidden = !on;
+    mount(c.needs, on ? showNotice(ctx, { overlay: s.overlay, manifest: s.manifest, canAdd: showsExist, compact: true, onAdded: () => refresh() }) : null);
   }
   function draw(all) {
     const keys = new Set(all.map((s) => s.key));
@@ -216,6 +257,7 @@ async function streams(view, ctx) {
       c.open.setAttribute('href', s.href);
       c.open.setAttribute('aria-label', `Open ${s.name}`);
       c.status.update(s.stream, { rec: s.rec });
+      drawNeeds(c, s);
       return c.el;
     });
     // Moved only when the order changed: moving a card takes the focus off its button.
@@ -298,11 +340,18 @@ async function overlayConsole(view, ctx, ref) {
   const status = streamStatus();
   status.update(overlay.stream);
   const alerts = alertsCard(ctx, { queue: overlay.id });
-  const panel = overlayPanel(ctx, { ref: overlay.id, onOverlay: (o) => status.update(o.stream) });
+  // Put in a show from here: its console is the show's now, with this overlay chosen.
+  const panel = overlayPanel(ctx, {
+    ref: overlay.id,
+    onOverlay: (o) => status.update(o.stream),
+    onAdded: (show) => ctx.navigate(liveHref({ show: show.id, overlay: overlay.slug })),
+  });
   mount(view,
     pageHead(overlay.slug, { crumbs: [ALL_STREAMS] }),
     h('div.stack',
       canControl ? null : notice(NO_CONTROL, 'warn'),
+      // Set times, the countdown and title cards need a show: said first (show-from-overlay.js).
+      panel.needs,
       h('section.card', h('h2.sr-only', 'Stream status'), status.el),
       alerts.el,
       panel.el));

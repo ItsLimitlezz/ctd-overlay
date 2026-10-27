@@ -2,7 +2,7 @@
 // scenes, the show state templates read, REC, and the local control API.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import path from 'node:path';
 import { ownHosts, startPlatform } from '../src/app.js';
@@ -11,7 +11,8 @@ import { createShows, LINEUP_BYTES, LIVE_MS, TRIGGER_LEAD_MS } from '../src/show
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
 const MIN = 60000;
-const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+// The TAKEOVER template that ships with the platform, at the version it ships at.
+const TAKEOVER = { id: 'com.dprtmnt.takeover', version: JSON.parse(readFileSync(new URL('../templates/takeover/template.json', import.meta.url), 'utf8')).version };
 
 // A platform with two testbed overlays (a horizontal and a vertical feed) and a third outside any
 // show, every envelope each one's channel sends, and a way to restart on the same data.
@@ -538,6 +539,39 @@ test('REC at go-live is anchored at go-live even when the timer fires late, and 
   assert.equal(shows.get(show.id).live, false, 'the first go-live no longer counts');
   c.advance(10 * MIN);
   assert.equal(shows.get(show.id).recStartedAt, shows.get(show.id).goLiveAt, 'from go-live, not from when the late timer ran');
+});
+
+test('a new show starts on "auto" (v0\'s first scene) when every member has it: the countdown, then live at go-live with no take; else on no scene', async (t) => {
+  const { platform, local } = await setup(t);
+  overlaysFor(platform, ['main-h']);
+  for (const slug of ['tk', 'tk-v', 'tk-late', 'tk-joins', 'tk-bed']) platform.overlays.create({ slug, template: TAKEOVER, settings: {} });
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0));
+  const shows = c.make();
+  const g = utcShow(c.t + 10 * MIN);
+  const night = { date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time };
+  const show = shows.create({ name: 'Countdown', overlays: ['tk', 'tk-v'], ...night });
+  assert.deepEqual([show.scene, show.live], ['auto', false]);
+  for (const slug of ['tk', 'tk-v']) assert.equal(local(slug)['show.scene'], 'auto', 'its members show the countdown');
+  c.advance(10 * MIN);
+  assert.equal(shows.get(show.id).recStartedAt, shows.get(show.id).goLiveAt, 'live at go-live, as v0 was');
+  // Made after its go-live: on "auto" (which shows it live), with no REC it didn't have.
+  const late = shows.create({ name: 'Late', overlays: ['tk-late'], ...night });
+  assert.deepEqual([late.scene, late.live], ['auto', false]);
+  // No overlays yet: no scene; its first ones start it there, still with no REC, even with a
+  // go-live moved into the past in the same change.
+  const empty = shows.create({ name: 'Empty', overlays: [], ...night });
+  assert.equal(empty.scene, undefined);
+  const past = utcShow(c.t - MIN);
+  const joined = shows.update(empty.id, { overlays: ['tk-joins'], date: past.date, goLive: past.time });
+  assert.deepEqual([joined.scene, joined.live], ['auto', false]);
+  assert.equal(local('tk-joins')['show.scene'], 'auto');
+  // A member whose template has no "auto" (the testbed): no scene, each shows its own default;
+  // a show with a scene taken keeps it when overlays change.
+  const mixed = shows.create({ name: 'Mixed', overlays: ['tk-bed', 'main-h'], ...night });
+  assert.equal(mixed.scene, undefined);
+  assert.equal('show.scene' in local('tk-bed'), false);
+  shows.take(mixed.id, 'brb');
+  assert.equal(shows.update(mixed.id, { overlays: ['tk-bed'] }).scene, 'brb');
 });
 
 test('scenes by core (04 §4.2): a take, REC and a timed scene\'s return work across templates; each member gets the name its template knows', async (t) => {

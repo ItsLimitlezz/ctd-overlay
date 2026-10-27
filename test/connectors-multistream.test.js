@@ -52,7 +52,7 @@ test('chat, deletions, alerts and counts reach an overlay bound to every connect
   const state = channel.snapshot().state;
   assert.deepEqual([state['viewers.twitch'], state['viewers.youtube'], state['viewers.total'], 'viewers.instagram' in state], [214, 30, 244, false]);
   // The TAKEOVER look consumes only the total: it gets it, worked out from the platforms' counts.
-  platform.overlays.create({ slug: 'tk', template: { id: 'com.dprtmnt.takeover', version: '1.0.0' }, settings: {} });
+  platform.overlays.create({ slug: 'tk', template: { id: 'com.dprtmnt.takeover', version: '1.1.0' }, settings: {} });
   const tk = platform.overlays.resolve('tk').channel.snapshot().state;
   assert.deepEqual([tk['viewers.total'], 'viewers.twitch' in tk], [244, false]);
   assert.equal(platform.bus.getState('stream.twitch.live'), true);

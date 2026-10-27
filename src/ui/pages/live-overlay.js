@@ -3,13 +3,18 @@
 // canvas sizes, its template's actions, Simulate, what feeds it, and its scenes: its own outside a
 // show; inside one, scenes are the show's (members share them; the API refuses a scene on a member).
 //
-// overlayPanel(ctx, { ref, show, onWholeShow, onOverlay }) → { el, stop }. show: the show's name
-// when the overlay is in one. onOverlay(overlay): each time it is read (every 3 s), for the page's
-// status. Everything here is a command (no If-Match, README H16) but "Fed by", which links to the
-// overlay's settings, where it is edited.
+// overlayPanel(ctx, { ref, show, onWholeShow, onOverlay, onAdded }) → { el, needs, stop }. show:
+// the show's name when the overlay is in one. onOverlay(overlay): each time it is read (every 3 s),
+// for the page's status. needs: outside a show, when its template reads who's on from one (set
+// times, title cards), the notice that says so with "Make a show from this overlay" and "Add it to
+// a show" once there is a show (show-from-overlay.js), for the page to put first; onAdded(show)
+// once it is in one. A template that reads only a show's times (a clock) gets no notice here.
+// Everything here is a command (no If-Match, README H16) but "Fed by", which links to the overlay's
+// settings, where it is edited.
 import * as api from '../api.js';
 import { badge, copyField, empty, every, field, h, mount, notice, preview, run, toast } from '../dom.js';
 import { byObsWords } from '../obs.js';
+import { namesActs, needsShow, showNotice } from '../show-from-overlay.js';
 import { connectionChip, fedByWords } from '../streams.js';
 import { SIMULATIONS } from './overlays.js';
 
@@ -22,30 +27,54 @@ const canvasLabel = (c, manifest) => {
   return c.width ? `${name} · ${c.width} × ${c.height}` : name;
 };
 
-export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
+export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay, onAdded } = {}) {
   const canControl = ctx.can('overlays:control');
   const canPreview = ctx.can('overlays:read');
   const canWrite = ctx.can('overlays:write');
   const el = h('div.stack', h('p.loading', 'Loading…'));
+  const needs = h('div', { hidden: true });
   let stopped = false;
   let box; // the preview
   let stopPoll;
   let overlay;
+  let manifest;
+  let showsExist = false;
+  let drawNoAct = () => {}; // the Actions card's line about title cards, once drawn
 
   async function load() {
     const path = `/api/v1/overlays/${api.seg(ref)}`;
     overlay = await api.get(path);
     const t = overlay.template || {};
-    const [urls, pinned] = await Promise.all([
+    const [urls, pinned, shows] = await Promise.all([
       canPreview ? api.get(`${path}/url`).then((r) => ({ list: list(r?.urls).filter((u) => typeof u?.url === 'string') }), (error) => ({ list: [], error })) : { list: [] },
       typeof t.id === 'string' && typeof t.version === 'string' ? api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`).catch(() => undefined) : undefined,
+      // Outside a show: whether there is one to add it to.
+      !show && !overlay.show && ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
     ]);
-    return { urls, manifest: pinned?.manifest };
+    manifest = pinned?.manifest;
+    showsExist = shows.length > 0;
+    return { urls, manifest };
+  }
+
+  // ---- outside a show, a template that reads one: the notice, until it is in one -------------
+  // Drawn again only when it changes (a button pressed keeps its focus through the polls): when a
+  // show is made meanwhile, it offers "Add it to a show" too.
+  let needsKey;
+  const needsOn = () => !show && needsShow(overlay, manifest);
+  function drawNeeds() {
+    const on = needsOn();
+    const key = on ? JSON.stringify([overlay.id, showsExist]) : '';
+    if (key === needsKey) return;
+    needsKey = key;
+    needs.hidden = !on;
+    mount(needs, on ? showNotice(ctx, { overlay, manifest, canAdd: showsExist, onAdded }) : null);
   }
 
   function gone() {
     box?.unload();
     stopPoll?.();
+    needs.hidden = true;
+    mount(needs);
     mount(el, h('div.card', empty(`There is no overlay "${ref}"`, 'It was renamed or deleted meanwhile.', h('a.btn.primary', { href: '#/live' }, 'All streams'))));
   }
 
@@ -127,11 +156,17 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
             : h('p.muted', 'Its template has no scenes.'));
 
     // ---- actions -----------------------------------------------------------------------------
+    // Fired with no act named ({}): a title card names the act on now, which only a show has. Outside
+    // one, what was sent is said as such, not as on air.
     const actions = list(manifest?.actions).filter((a) => a && typeof a.id === 'string');
+    const noAct = h('p.small.muted', 'This overlay isn\'t in a show, so these have no act to name: a title card shows nothing.');
+    const actless = () => needsOn() && namesActs(manifest);
+    const sent = (label) => () => (actless() ? `${slug}: ${label} sent. It has no act to name until the overlay is in a show.` : `${slug}: ${label} on air`);
     const actionsCard = h('section.card.stack', h('h2', 'Actions'),
       actions.length
-        ? h('div.pad', { role: 'group', 'aria-label': `Actions of ${slug}` }, actions.map((a) => button(a.label || a.id, () => api.post(`${path()}/actions/${api.seg(a.id)}`, {}), `${slug}: ${a.label || a.id} on air`)))
+        ? [h('div.pad', { role: 'group', 'aria-label': `Actions of ${slug}` }, actions.map((a) => button(a.label || a.id, () => api.post(`${path()}/actions/${api.seg(a.id)}`, {}), sent(a.label || a.id)))), noAct]
         : h('p.muted', manifest ? 'Its template has no actions.' : 'Its template isn\'t available, so there are no actions.'));
+    drawNoAct = () => { noAct.hidden = !actless(); };
 
     // ---- simulate (08 §8.5) ------------------------------------------------------------------
     const sims = SIMULATIONS.map((item) => {
@@ -155,13 +190,16 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
 
     drawFed();
     drawObsNote();
+    drawNeeds();
+    drawNoAct();
     mount(el,
       head,
       h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', simCard, h('section.card', h('h2', 'Fed by'), fedBody))),
       obs);
   }
 
-  // Read again every 3 s: what feeds it, and its status for the page.
+  // Read again every 3 s: what feeds it, and its status for the page; while the notice is on,
+  // whether there is a show to add it to now.
   async function refresh() {
     if (stopped) return;
     try {
@@ -171,8 +209,14 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
       return;
     }
     if (stopped) return;
+    if (needsOn() && ctx.can('timeline:read')) {
+      try { showsExist = (await api.all('/api/v1/shows')).length > 0; } catch { /* as it was */ }
+      if (stopped) return;
+    }
     drawFed();
     drawObsNote();
+    drawNeeds();
+    drawNoAct();
     onOverlay?.(overlay);
   }
 
@@ -193,6 +237,7 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
 
   return {
     el,
+    needs,
     stop() {
       stopped = true;
       stopPoll?.();

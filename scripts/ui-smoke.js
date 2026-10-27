@@ -32,7 +32,7 @@ const platform = await startPlatform(config, { log: createLogger({ level: 'error
 const OWNER = { username: 'demo', password: 'stream-kit-demo-night' };
 await platform.auth.createOwner({ code: platform.auth.setupCode, ...OWNER }, { ip: '127.0.0.1' });
 
-const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.1.0' };
 platform.overlays.create({ slug: 'takeover', template: TEMPLATE, settings: {} });
 platform.overlays.create({ slug: 'event', template: TEMPLATE, settings: { look: 'event' } });
 // An overlay outside the show: a stream of its own on Live.

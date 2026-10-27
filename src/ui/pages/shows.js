@@ -2,10 +2,17 @@
 // server runs by itself, and planned dates. Routes: /shows (list) and /shows/:id (detail, by id or
 // name). Every time of a show is in the show's own time zone; the server resolves wall-clock times
 // to instants (09 §9.2) and this page shows the instants it answers with. Edits send If-Match with
-// the show (or cue) as the form read it (H16); destructive actions sit in a menu behind a
+// the show (or cue, or plan) as the form read it (H16); destructive actions sit in a menu behind a
 // confirmation (H20). Details also sets what feeds every overlay of the show at once ("Fed by":
 // one change per overlay, each with its own If-Match), and whether the show follows OBS's scenes
 // ("Follow OBS", obs.js).
+//
+// What v0's one setup did lives on a show here (set times, the countdown, who's on, the
+// timeline), so the list says which overlays are in no show, and a show whose night has passed
+// says so. A weekly show is quick to move on: dates have quick picks (Tonight, This Saturday, Next
+// week), a lineup's names are offered from every lineup (GET /acts, v0's roster), and a plan has a
+// lineup of its own, edited like the show's. Unsaved edits are never dropped without a word: a tab
+// change asks first, and moving the show to its next night keeps them.
 import * as api from '../api.js';
 import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
 import { followObsCard } from '../obs.js';
@@ -31,6 +38,14 @@ const STATUS = {
   missed: ['Missed', 'warn'],
   skipped: ['Skipped', undefined],
 };
+// The cards about an act (timeline.js ACT_CARDS, 09 §9.3): a cue picks the act, or whoever is on.
+const ACT_CARDS = ['titleCard', 'nowPlaying', 'nowPlayingHold'];
+// What a show gives its overlays and an overlay outside one doesn't have (registry.js SHOW_KEYS
+// but the scene, which an overlay has of its own).
+const SHOW_STATE = ['show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.timezone', 'show.goLiveAt', 'show.recStartedAt'];
+// Whether a template reads any of it: a key it consumes by name, or by a prefix ending in ".*".
+const readsShow = (manifest) => (Array.isArray(manifest?.consumes?.state) ? manifest.consumes.state : [])
+  .some((p) => typeof p === 'string' && SHOW_STATE.some((k) => p === k || (p.endsWith('.*') && k.startsWith(p.slice(0, -1)))));
 
 // ---- small helpers ---------------------------------------------------------------------------
 const fail = (message) => { throw new Error(message); };
@@ -47,11 +62,16 @@ function browserZone() {
 // "(America/Toronto time)" when the show's zone isn't this device's.
 const zoneNote = (tz) => (tz && tz !== browserZone() ? ` (${tz.replace(/_/g, ' ')} time)` : '');
 
-// The wall clock of an instant in a zone: { year, month, day, hour, minute } as strings.
+// The wall clock of an instant in a zone: { year, month, day, hour, minute } as strings. A zone's
+// formatter is made once (a timeline asks for hundreds of instants).
+const wallFormats = new Map();
 function partsIn(date, timeZone) {
-  const opts = { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
-  let fmt;
-  try { fmt = new Intl.DateTimeFormat('en-US', { ...opts, timeZone }); } catch { fmt = new Intl.DateTimeFormat('en-US', opts); }
+  let fmt = wallFormats.get(timeZone);
+  if (!fmt) {
+    const opts = { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+    try { fmt = new Intl.DateTimeFormat('en-US', { ...opts, timeZone }); } catch { fmt = new Intl.DateTimeFormat('en-US', opts); }
+    wallFormats.set(timeZone, fmt);
+  }
   const out = {};
   for (const p of fmt.formatToParts(date)) out[p.type] = p.value;
   if (out.hour === '24') out.hour = '00';
@@ -88,7 +108,70 @@ function instantLabel(iso, tz) {
     return new Date(iso).toLocaleString();
   }
 }
-const todayIn = (tz) => ymdIn(new Date(), tz);
+
+// The show's day now, in its zone and with its day boundary (09 §9.2), on the server's clock:
+// before the boundary it is still the night before, so at 1 AM on Sunday a Saturday show's
+// "tonight" is Saturday.
+function showDayNow(tz, boundary = '12:00') {
+  const p = partsIn(new Date(api.serverNow()), tz);
+  const today = `${p.year}-${p.month}-${p.day}`;
+  return minutesOf(`${p.hour}:${p.minute}`) < (minutesOf(boundary) || 0) ? addDays(today, -1) : today;
+}
+const weekdayOf = (ymd) => {
+  const m = DATE.exec(ymd || '');
+  return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay() : NaN;
+};
+const weekdayName = (ymd) => {
+  const m = DATE.exec(ymd || '');
+  return m ? new Intl.DateTimeFormat(undefined, { weekday: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))) : '';
+};
+// The first date on or after `from` that falls on the weekday of `like`.
+const onWeekday = (from, like) => addDays(from, (weekdayOf(like) - weekdayOf(from) + 7) % 7);
+
+// Quick picks under a date field (v0's "This Saturday"), for a weekly show: Tonight, the next night
+// on the date's weekday, and a week after the date; a new show, with no weekday of its own yet, also
+// gets the coming Friday and Saturday (weekdays: 5, 6). Tonight is the show's day now in the zone
+// and with the day boundary the form has (zone(), boundary()). A plan, for a night still to come
+// (future), gets no Tonight: its picks start tomorrow. The date is said in words beside them,
+// weekday and all, which a date field doesn't show. Returns { words, row, refresh }.
+function datePicks(input, { zone, boundary = () => '12:00', weekdays = [], future = false }) {
+  const words = h('span.small', { 'aria-live': 'polite' });
+  const row = h('div.row', { role: 'group', 'aria-label': 'Quick dates' });
+  const pick = (ymd) => {
+    input.value = ymd;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  function refresh() {
+    const v = DATE.test(input.value) ? input.value : '';
+    const tonight = showDayNow(zone(), boundary());
+    const picks = future ? [] : [['Tonight', tonight]];
+    const weekly = (ymd) => {
+      const at = onWeekday(future ? addDays(tonight, 1) : tonight, ymd);
+      if (!picks.some(([, d]) => d === at)) picks.push([`This ${weekdayName(ymd)}`, at]);
+    };
+    // A week's dates from a Sunday (2026-10-18): one for each weekday asked.
+    for (const wd of weekdays) weekly(addDays('2026-10-18', wd));
+    if (v) weekly(v);
+    if (v) picks.push(['Next week', addDays(v, 7)]);
+    mount(row, picks.map(([label, ymd]) => h('button.btn.small', {
+      type: 'button', disabled: input.disabled, 'aria-pressed': String(ymd === v), 'aria-label': `${label}: ${dateLabel(ymd, true)}`, onclick: () => pick(ymd),
+    }, label)));
+    words.textContent = v ? `${dateLabel(v, true)}${v === tonight ? ': tonight' : v < tonight ? ': that night has passed' : ''}` : '';
+  }
+  input.addEventListener('input', refresh);
+  input.addEventListener('change', refresh);
+  refresh();
+  return { words, row, refresh };
+}
+// A date field with its quick picks: the date in words under the field, then the picks.
+function dateField(label, input, { hint, zone, boundary, weekdays, future }) {
+  const picks = datePicks(input, { zone, boundary, weekdays, future });
+  const el = field(label, input, { hint });
+  input.after(picks.words, picks.row);
+  el.refresh = picks.refresh;
+  return el;
+}
 
 // The time zone control: a list of the zones this browser knows, or a text field where it can't
 // list them. The current zone is always an option.
@@ -193,6 +276,128 @@ function cleanSlot(s) {
   return out;
 }
 const lineupOf = (show) => (Array.isArray(show?.lineup) ? show.lineup : []).map(cleanSlot);
+// The uploaded images a logo is picked from.
+const imagesOf = (media) => media.filter((m) => m?.status === 'ready' && m.kind === 'image').map((m) => ({ value: m.url, label: m.name || m.url }));
+// An act's name as names are told apart (timeline.js): letter case and spacing aside.
+const actKey = (name) => String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// The lineup editor, the show's (Lineup) and a plan's own (Plans): a fieldset per act (time, act,
+// B2B, logo, headliner, closer), moved up and down or removed. The act and B2B fields offer the
+// names of every lineup (acts: GET /acts, v0's roster), and a known act's latest logo comes with
+// its name into a row that has none. rows: { time, name, b2b?, headliner?, closer?, logo?, orig? }
+// (orig: the slot as the server resolved it, for the instant it starts), changed in place;
+// night(): { date, boundary, timezone } as they are now; onChange() after each edit.
+let editors = 0;
+function lineupEditor({ rows, night, images, acts = [], disabled, onChange }) {
+  const list = h('div.stack');
+  const names = h('datalist', { id: `acts-${++editors}` }, acts.map((a) => h('option', { value: a.name })));
+  const logos = new Map(acts.filter((a) => a.logo && images.some((i) => i.value === a.logo)).map((a) => [actKey(a.name), a.logo]));
+
+  // When a row plays: the server's instant for a saved time; for a changed one, which day.
+  function when(row) {
+    const { date, boundary, timezone } = night();
+    if (!TIME.test(row.time)) return [h('span', 'Set a time.')];
+    const nextDay = minutesOf(row.time) < minutesOf(boundary);
+    const out = [];
+    if (row.orig && row.orig.time === row.time && row.orig.startAt) {
+      out.push(h('span', `Starts ${instantLabel(row.orig.startAt, timezone)}${nextDay ? ', after midnight' : ''}.`));
+      if (row.orig.clockGap) out.push(notice(`${timeLabel(row.time)} doesn't happen that night (the clocks go forward): it starts at ${clock(row.orig.startAt, timezone)} instead.`, 'warn'));
+      if (row.orig.clockOverlap) out.push(notice(`${timeLabel(row.time)} happens twice that night (the clocks go back): it means the first one.`, 'warn'));
+    } else {
+      out.push(h('span', nextDay ? `After midnight: plays on ${dateLabel(addDays(date, 1))}.` : `Plays on ${dateLabel(date)}.`));
+    }
+    return out;
+  }
+
+  function move(i, by, focusKey) {
+    const j = i + by;
+    if (j < 0 || j >= rows.length) return;
+    [rows[i], rows[j]] = [rows[j], rows[i]];
+    draw();
+    onChange();
+    list.querySelector(`[data-key="${focusKey}-${j}"]`)?.focus();
+  }
+
+  function rowEl(row, i) {
+    const whenEl = h('div.small.muted');
+    const update = () => mount(whenEl, when(row));
+    const label = () => row.name || `act ${i + 1}`;
+    const legend = h('legend');
+    let tools = null;
+    // The row's heading and its buttons' names follow the act as it is typed.
+    const relabel = () => {
+      legend.textContent = `${i + 1}. ${row.name || 'New act'}`;
+      if (!tools) return;
+      tools.querySelector('[data-key^="up-"]').setAttribute('aria-label', `Move ${label()} up`);
+      tools.querySelector('[data-key^="down-"]').setAttribute('aria-label', `Move ${label()} down`);
+      tools.querySelector('summary').setAttribute('aria-label', `More for ${label()}`);
+    };
+    const time = h('input', { type: 'time', value: row.time, required: true, disabled, oninput: (e) => { row.time = e.target.value; update(); onChange(); } });
+    const name = h('input', { type: 'text', value: row.name, maxlength: 80, required: true, autocomplete: 'off', list: names.id, disabled, oninput: (e) => { row.name = e.target.value; relabel(); onChange(); } });
+    const b2b = h('input', { type: 'text', value: row.b2b || '', maxlength: 80, autocomplete: 'off', list: names.id, disabled, oninput: (e) => { row.b2b = e.target.value; onChange(); } });
+    const logoOptions = [{ value: '', label: 'No logo (the name shows)' }, ...images];
+    const logo = choice(logoOptions, row.logo || '', { disabled });
+    logo.addEventListener('change', () => { row.logo = logo.value; onChange(); });
+    // A known act picked or typed: its logo too, where the row has none.
+    name.addEventListener('change', () => {
+      const known = logos.get(actKey(row.name));
+      if (row.logo || !known) return;
+      row.logo = known;
+      logo.value = known;
+      onChange();
+    });
+    update();
+    tools = disabled ? null : h('div.row',
+      h('button.btn.small', { type: 'button', disabled: i === 0, dataset: { key: `up-${i}` }, onclick: () => move(i, -1, 'up') }, '↑ Up'),
+      h('button.btn.small', { type: 'button', disabled: i === rows.length - 1, dataset: { key: `down-${i}` }, onclick: () => move(i, 1, 'down') }, '↓ Down'),
+      menu('More', [{
+        label: 'Remove this act', danger: true, onSelect: () => { rows.splice(i, 1); draw(); onChange(); toast(`Removed ${label()} from the lineup. Save to keep it that way.`); },
+      }], { buttonClass: 'btn small' }));
+    relabel();
+    return h('fieldset',
+      legend,
+      h('div.grid',
+        field('Time', time),
+        field('Act', name, { hint: acts.length ? 'Names from your lineups are offered as you type.' : undefined }),
+        field('B2B with', b2b, { hint: 'Optional: who plays with them.' }),
+        field('Logo', logo, { hint: images.length ? 'An image uploaded in Media. Without one, the name shows.' : 'Upload logos in Media to pick one here. Without one, the name shows.' })),
+      h('div.stack',
+        h('div.row',
+          toggle('Headliner', row.headliner, { disabled, onChange: (on) => { row.headliner = on; onChange(); } }),
+          toggle('Closer', row.closer, { disabled, onChange: (on) => { row.closer = on; onChange(); } })),
+        whenEl,
+        tools));
+  }
+
+  function draw() {
+    if (!rows.length) {
+      mount(list, empty('No acts yet', disabled ? 'The lineup is empty.' : 'Add the night\'s acts with their start times.'));
+      return;
+    }
+    mount(list, rows.map(rowEl));
+  }
+  draw();
+
+  return {
+    el: h('div', names, list),
+    draw,
+    add() {
+      rows.push({ time: '', name: '' });
+      draw();
+      onChange();
+      const sets = list.querySelectorAll('fieldset');
+      sets[sets.length - 1]?.querySelector('input')?.focus();
+    },
+    // In the order of the night: from the day boundary on, so 01:00 comes after 23:00.
+    sort() {
+      const b = night().boundary;
+      const key = (r) => (TIME.test(r.time) ? (minutesOf(r.time) - minutesOf(b) + 1440) % 1440 : Infinity);
+      rows.sort((x, y) => key(x) - key(y));
+      draw();
+      onChange();
+    },
+  };
+}
 
 // The show's fields the Details tab edits, for comparing what changed.
 const detailsOf = (show) => JSON.stringify([show?.name, show?.date, show?.timezone, show?.dayBoundary, show?.goLive || null, [...(show?.overlays || [])].sort()]);
@@ -237,6 +442,16 @@ async function loadCatalog(show, overlays, media) {
   };
 }
 
+// v0's DJ cue (09 §9.3): an act put on, then its card, at one instant, as one cue: a sequence of
+// the act's show.slot and its title card or now-playing. { slot, card }, or undefined.
+function actPair(a) {
+  const steps = a?.type === 'sequence' && Array.isArray(a.steps) && a.steps.length === 2 ? a.steps : undefined;
+  if (!steps || steps.some((s) => s?.offsetMs !== 0)) return undefined;
+  const [on, card] = steps.map((s) => s.action);
+  if (on?.type !== 'show.slot' || typeof on.slot !== 'string' || card?.type !== 'overlay.action' || !ACT_CARDS.includes(card.name) || card.args?.name !== on.slot) return undefined;
+  return { slot: on.slot, card };
+}
+
 // A cue's action in plain words.
 function actionWords(a, cat, show) {
   switch (a?.type) {
@@ -246,6 +461,8 @@ function actionWords(a, cat, show) {
     case 'media.play': return `Play ${cat?.mediaName(a.mediaId) ?? 'a clip'}`;
     case 'media.stop': return a.mediaId ? `Stop ${cat?.mediaName(a.mediaId) ?? 'the clip'}` : 'Stop the clip';
     case 'sequence': {
+      const pair = actPair(a);
+      if (pair) return `${pair.slot} on, then ${cat?.actionLabel(pair.card.name) ?? pair.card.name}`;
       const steps = Array.isArray(a.steps) ? a.steps : [];
       return `${plural(steps.length, 'step')}: ${steps.map((s) => actionWords(s?.action, cat, show)).join(', then ')}`;
     }
@@ -270,26 +487,50 @@ export async function list(view, ctx) {
   ctx.setTitle('Shows');
   const canWrite = ctx.can('timeline:write');
   const body = h('div');
-  const newButton = canWrite ? h('button.btn.primary', { type: 'button', onclick: () => run(newButton, () => newShow(ctx)) }, 'New show') : null;
+  let free = []; // the overlays in no show that read one, as last drawn: New show picks the one
+  const newButton = canWrite ? h('button.btn.primary', { type: 'button', onclick: () => run(newButton, () => newShow(ctx, { loose: free })) }, 'New show') : null;
   mount(view, pageHead('Shows', { actions: newButton ? [newButton] : [] }), body);
 
   let last;
-  const draw = (shows) => {
+  // Overlays in no show whose template reads a show (set times, the countdown, who's on: 02 §2.5)
+  // get none of it: said here, where that is put right. A chat or alerts overlay needs no show.
+  const manifests = new Map(); // "id@version" → its manifest, or null
+  const pin = (o) => `${o.template?.id}@${o.template?.version}`;
+  async function readManifests(overlays) {
+    const wanted = [...new Set(overlays.filter((o) => o?.template?.id && !manifests.has(pin(o))).map(pin))];
+    await Promise.all(wanted.map(async (key) => {
+      const o = overlays.find((x) => pin(x) === key);
+      const v = await api.get(`/api/v1/templates/${api.seg(o.template.id)}/versions/${api.seg(o.template.version)}`).catch(() => undefined);
+      manifests.set(key, v?.manifest || null);
+    }));
+  }
+  const loose = (overlays) => overlays.filter((o) => o?.slug && !o.show && readsShow(manifests.get(pin(o)))).map((o) => o.slug);
+  const draw = (shows, overlays) => {
+    free = loose(overlays);
+    const make = (slug) => h('button.btn', { type: 'button', onclick: (e) => run(e.currentTarget, () => newShow(ctx, { overlay: slug })) }, `New show with ${slug}`);
+    const one = free.length === 1;
+    // Said with no show yet too: the first night is where it matters most.
+    const looseNote = free.length ? notice([
+      `${andList(free)} ${one ? 'is' : 'are'} in no show, so ${one ? 'it shows' : 'they show'} no set times, countdown or who's on. `,
+      canWrite ? (shows.length ? `Add ${one ? 'it' : 'them'} to a show under its Details, or make a new show.` : `Make a show with ${one ? 'it' : 'them'}.`) : 'An operator adds overlays to a show under its Details.',
+      canWrite && one ? h('div.row', make(free[0])) : null,
+    ], 'warn') : null;
     if (!shows.length) {
-      mount(body, empty('No shows yet',
-        'A show is a night: the overlays that change together (like a horizontal and a vertical feed), its lineup, and a timeline that runs by itself.',
-        canWrite ? h('button.btn.primary', { type: 'button', onclick: (e) => run(e.currentTarget, () => newShow(ctx)) }, 'New show') : null));
+      mount(body, looseNote, empty('No shows yet',
+        'A show is a night: the overlays that change together (like a horizontal and a vertical feed), its lineup with the set times, the countdown to going live, and a timeline that runs by itself. An overlay shows none of these until it is in a show.',
+        canWrite ? h('button.btn.primary', { type: 'button', onclick: (e) => run(e.currentTarget, () => newShow(ctx, { loose: free })) }, 'New show') : null));
       return;
     }
     const sorted = [...shows].sort((a, b) => (b.live === true) - (a.live === true) || String(b.date).localeCompare(String(a.date)) || String(a.name).localeCompare(String(b.name)));
-    mount(body, h('div.grid', sorted.map((s) => showCard(s))));
+    mount(body, looseNote, h('div.grid', sorted.map((s) => showCard(s))));
   };
   const refresh = async () => {
-    const shows = await api.all('/api/v1/shows');
-    const key = JSON.stringify(shows);
+    const [shows, overlays] = await Promise.all([api.all('/api/v1/shows'), loadAll('/api/v1/overlays')]);
+    await readManifests(overlays);
+    const key = JSON.stringify([shows, loose(overlays)]);
     if (key === last) return;
     last = key;
-    draw(shows);
+    draw(shows, overlays);
   };
   await refresh();
   // Live badges stay current while the page is open.
@@ -321,17 +562,24 @@ function showCard(s) {
     h('div.row', h('a.btn', { href }, 'Open')));
 }
 
-async function newShow(ctx) {
+// opts.overlay: an overlay's slug to pick; without it, the one overlay in no show whose template
+// reads a show (opts.loose: their slugs, as the list has them), if there is just one: a chat or a
+// viewer count in no show needs none.
+async function newShow(ctx, { overlay, loose = [] } = {}) {
   const overlays = await loadAll('/api/v1/overlays');
   const zone = browserZone();
+  const free = overlays.filter((o) => o?.slug && !o.show && loose.includes(o.slug));
+  const picked = overlays.find((o) => o?.slug === overlay && !o.show) || (free.length === 1 ? free[0] : undefined);
   const name = h('input', { type: 'text', maxlength: 80, required: true, autocomplete: 'off', placeholder: 'Saturday TAKEOVER' });
-  const date = h('input', { type: 'date', value: todayIn(zone), required: true });
+  const date = h('input', { type: 'date', value: showDayNow(zone), required: true });
   const tz = zoneInput(zone);
   const goLive = h('input', { type: 'time' });
-  const picker = overlayPicker(overlays);
+  const picker = overlayPicker(overlays, { members: picked ? [picked.id] : [] });
+  const dateEl = dateField('Date', date, { hint: 'The night of the show. Acts after midnight still belong to this date.', zone: () => tz.value.trim() || zone, weekdays: [5, 6] });
+  tz.addEventListener('change', () => dateEl.refresh());
   const body = h('div',
     field('Name', name, { hint: 'What you call the night.' }),
-    field('Date', date, { hint: 'The night of the show. Acts after midnight still belong to this date.' }),
+    dateEl,
     field('Time zone', tz, { hint: 'Where the show happens. Its times are in this zone, wherever your phone is.' }),
     field('Goes live at', goLive, { hint: 'When the countdown ends and the show goes on air. Optional.' }),
     picker.el);
@@ -355,8 +603,9 @@ async function newShow(ctx) {
     },
   });
   if (!created?.id) return;
-  toast(`Created the show "${created.name}"`);
-  ctx.navigate(`/shows/${api.seg(created.id)}`);
+  // Next: the acts and their set times.
+  toast(`Created the show "${created.name}". Next: its lineup.`);
+  ctx.navigate(`/shows/${api.seg(created.id)}?tab=lineup`);
 }
 
 // ---- one show --------------------------------------------------------------------------------
@@ -388,6 +637,17 @@ export async function detail(view, ctx) {
   let gone = false;
   let tabsEl; // the tabs, and the poll of the head: set at the end
   let stop;
+  // Set by the open tab as it draws: reshow() draws it again for the show as it is now, keeping
+  // what is being edited (else it is drawn afresh); unsaved() says what a tab change would lose
+  // ('' when nothing), which is asked about first.
+  let reshow;
+  let unsaved;
+  let leaving = false; // a tab change already agreed to (or one that loses nothing)
+  function reopen() {
+    leaving = true;
+    try { tabsEl?.querySelector('[role=tab][aria-selected="true"]')?.click(); } finally { leaving = false; }
+  }
+  const redrawTab = () => (reshow ? reshow() : reopen());
 
   // The show as the server has it now (forms keep the copy they were made from, for If-Match).
   async function fresh(force = false) {
@@ -405,8 +665,12 @@ export async function detail(view, ctx) {
   function drawHead() {
     const members = Array.isArray(show.members) ? show.members : [];
     const acts = Array.isArray(show.lineup) ? show.lineup.length : 0;
+    // A night that has passed (and isn't on air past its day): the countdown and set times are
+    // that night's, which a weekly show left as it was shows without a word.
+    const tonight = showDayNow(tz(), show.dayBoundary);
+    const passed = !show.live && DATE.test(show.date || '') && show.date < tonight;
     // Redrawn only when what it shows changed, and never under its open menu.
-    const key = JSON.stringify([show.name, show.live, show.date, show.goLiveAt, show.timezone, members, acts]);
+    const key = JSON.stringify([show.name, show.live, show.date, show.goLiveAt, show.timezone, members, acts, passed && tonight]);
     if (key === headKey || head.querySelector('details.menu[open]')) return;
     headKey = key;
     ctx.setTitle(show.name);
@@ -423,7 +687,38 @@ export async function detail(view, ctx) {
         h('span.muted', `· ${plural(acts, 'act')}`)),
       members.length
         ? h('div.chips', { 'aria-label': 'Overlays in this show' }, members.map((m) => h('a.chip', { href: `#/overlays/${api.seg(m)}` }, m)))
-        : notice('This show has no overlays yet: pick them under Details, so its scenes, lineup and timeline reach the stream.', 'warn'));
+        : notice('This show has no overlays yet: pick them under Details, so its scenes, lineup and timeline reach the stream.', 'warn'),
+      passed ? passedNotice(tonight) : null);
+  }
+
+  // The show's night has passed: one tap moves it to its next night on the same weekday (an edit,
+  // with If-Match); plans do it by themselves.
+  function passedNotice(tonight) {
+    const next = onWeekday(tonight, show.date);
+    const move = canWrite ? h('button.btn.small', { type: 'button', onclick: (e) => run(e.currentTarget, () => moveTo(next)) }, `Move it to ${dateLabel(next)}`) : null;
+    return notice([
+      `Its night, ${dateLabel(show.date, true)}, has passed: the countdown and set times are still that night's. `,
+      canWrite ? `Move it to its next ${weekdayName(show.date)}, or plan the coming nights under Plans.` : 'An operator moves it to its next night under Details.',
+      move ? h('div.row', move) : null,
+    ], 'warn');
+  }
+  async function moveTo(date) {
+    try {
+      show = await api.patch(base(), { date }, { ifMatch: show });
+    } catch (err) {
+      if (err.status === 404) { showGone({ changing: true }); return; }
+      if (err.status !== 412) throw err;
+      await fresh(true);
+      toast('The show changed since you opened it: this is the latest. Move it again if you still want to.', { kind: 'error', ms: 10000 });
+      redrawTab();
+      return;
+    }
+    readAt = Date.now();
+    toast(`"${show.name}" is on ${dateLabel(date, true)} now: its set times and cues moved with it.`);
+    drawHead();
+    // The tab open shows the new night (its forms are made from the show as read), with what is
+    // being edited kept.
+    redrawTab();
   }
 
   // Deleted elsewhere (a change found it gone, or a read did): say so in the page, not with the
@@ -470,7 +765,7 @@ export async function detail(view, ctx) {
       if (err.status === 404) showGone();
       else mount(panel, notice(err.message, 'danger'));
     });
-    return () => { alive = false; };
+    return () => { alive = false; reshow = undefined; unsaved = undefined; };
   }
 
   function drawDetails(panel, overlays, kept) {
@@ -488,7 +783,24 @@ export async function detail(view, ctx) {
     const initialMembers = known.filter((o) => serverMembers.includes(o.id) || serverMembers.includes(o.slug)).map(overlayRef);
     const picker = overlayPicker(known, { members: v.overlays || serverMembers, showName: formShow.name, disabled }); // kept: ids, as values() gives them
     const b = formShow.dayBoundary || '12:00';
+    // The quick dates follow the zone and the day boundary as this form has them.
+    const dateEl = dateField('Date', date, { hint: 'The night of the show. Acts after midnight still belong to it.', zone: () => zone.value.trim() || formShow.timezone, boundary: () => (TIME.test(boundary.value) ? boundary.value : b) });
+    zone.addEventListener('change', () => dateEl.refresh());
+    boundary.addEventListener('input', () => dateEl.refresh());
     const save = h('button.btn.primary', { type: 'button' }, 'Save details');
+    // What the form has, and what the show it was made from has: different is unsaved.
+    const values = () => ({ name: name.value, date: date.value, timezone: zone.value, dayBoundary: boundary.value, goLive: goLive.value, overlays: [...picker.values()].sort() });
+    const saved = JSON.stringify({ name: formShow.name, date: formShow.date, timezone: formShow.timezone, dayBoundary: b, goLive: formShow.goLive || '', overlays: [...initialMembers].sort() });
+    unsaved = () => (!disabled && JSON.stringify(values()) !== saved ? 'Your changes to the details are lost; the show stays as it was saved.' : '');
+    // The show moved to another night (or changed elsewhere): edits made on details that are as
+    // they were, the date aside, stay (on the new date, unless it was changed here); otherwise
+    // the form stays as it is, and saving says what changed (H16).
+    reshow = () => {
+      if (!unsaved()) { drawDetails(panel, overlays); return; }
+      if (detailsOf({ ...show, date: formShow.date }) !== detailsOf(formShow)) return;
+      const { date: d, ...rest } = values();
+      drawDetails(panel, overlays, { ...rest, overlays: picker.values(), ...(d !== formShow.date ? { date: d } : {}) });
+    };
 
     save.addEventListener('click', () => run(save, async () => {
       const patch = {};
@@ -542,10 +854,10 @@ export async function detail(view, ctx) {
       disabled ? notice('You can look at this show; changing it needs an operator or a higher role.') : null,
       h('div.grid',
         field('Name', name),
-        field('Date', date, { hint: 'The night of the show. Acts after midnight still belong to it.' }),
+        dateEl,
         field('Time zone', zone, { hint: 'Where the show happens. Every time of the show is in this zone, wherever your phone is.' }),
         field('Day boundary', boundary, { hint: `When the show's day starts. ${boundaryWords(b, formShow.date)} An afternoon show sets it earlier, like ${timeLabel('06:00')}.` }),
-        field('Goes live at', goLive, { hint: formShow.goLiveAt ? `Now: ${instantLabel(formShow.goLiveAt, formShow.timezone)}${zoneNote(formShow.timezone)}. Leave empty for no countdown.` : 'When the countdown ends and the show goes on air. Leave empty for no countdown.' })),
+        field('Goes live at', goLive, { hint: formShow.goLiveAt ? `When the countdown ends: ${instantLabel(formShow.goLiveAt, formShow.timezone)}${zoneNote(formShow.timezone)}. Leave empty for no go-live time.` : 'When the countdown ends and the show goes on air. Leave empty for no go-live time.' })),
       picker.el,
       canWrite ? h('div.form-actions', save) : null), fedBox, followBox));
   }
@@ -630,19 +942,18 @@ export async function detail(view, ctx) {
   function lineupTab(panel) {
     let alive = true;
     mount(panel, h('p.loading', 'Loading…'));
-    Promise.all([fresh(), loadAll('/api/v1/media')]).then(([, media]) => {
+    Promise.all([fresh(), loadAll('/api/v1/media'), loadAll('/api/v1/acts')]).then(([, media, acts]) => {
       if (!alive) return;
-      const images = media.filter((m) => m?.status === 'ready' && m.kind === 'image').map((m) => ({ value: m.url, label: m.name || m.url }));
-      drawLineup(panel, images);
+      drawLineup(panel, imagesOf(media), acts);
     }).catch((err) => {
       if (!alive) return;
       if (err.status === 404) showGone();
       else mount(panel, notice(err.message, 'danger'));
     });
-    return () => { alive = false; };
+    return () => { alive = false; reshow = undefined; unsaved = undefined; };
   }
 
-  function drawLineup(panel, images, keptRows) {
+  function drawLineup(panel, images, acts, keptRows) {
     const formShow = show;
     const disabled = !canWrite;
     const saved = Array.isArray(formShow.lineup) ? formShow.lineup : [];
@@ -650,93 +961,27 @@ export async function detail(view, ctx) {
     const b = formShow.dayBoundary || '12:00';
     const original = JSON.stringify(lineupOf(formShow));
     const status = h('span.small.muted', { 'aria-live': 'polite' });
-    const list = h('div.stack');
     const dirty = () => JSON.stringify(rows.map(cleanSlot)) !== original;
     const touched = () => {
       const changed = dirty();
       status.textContent = changed ? 'Unsaved changes' : '';
       undo.disabled = !changed;
     };
-
-    // When a row plays: the server's instant for a saved time; for a changed one, which day.
-    function when(row) {
-      if (!TIME.test(row.time)) return [h('span', 'Set a time.')];
-      const nextDay = minutesOf(row.time) < minutesOf(b);
-      const out = [];
-      if (row.orig && row.orig.time === row.time && row.orig.startAt) {
-        out.push(h('span', `Starts ${instantLabel(row.orig.startAt, formShow.timezone)}${nextDay ? ', after midnight' : ''}.`));
-        if (row.orig.clockGap) out.push(notice(`${timeLabel(row.time)} doesn't happen that night (the clocks go forward): it starts at ${clock(row.orig.startAt, formShow.timezone)} instead.`, 'warn'));
-        if (row.orig.clockOverlap) out.push(notice(`${timeLabel(row.time)} happens twice that night (the clocks go back): it means the first one.`, 'warn'));
-      } else {
-        out.push(h('span', nextDay ? `After midnight: plays on ${dateLabel(addDays(formShow.date, 1))}.` : `Plays on ${dateLabel(formShow.date)}.`));
+    unsaved = () => (dirty() ? 'Your changes to the lineup are lost; it stays as it was saved.' : '');
+    // The show moved to another night (or changed elsewhere): edits made on the lineup as it still
+    // is stay, on the show as it is now (its If-Match too), each act with the instant it starts on
+    // the new night; otherwise the form stays as it is, and saving says what changed (H16).
+    reshow = () => {
+      if (!dirty()) drawLineup(panel, images, acts);
+      else if (JSON.stringify(lineupOf(show)) === original) {
+        const now = Array.isArray(show.lineup) ? show.lineup : [];
+        drawLineup(panel, images, acts, rows.map((r) => ({ ...r, orig: r.orig && now.find((s) => s.time === r.orig.time && s.name === r.orig.name) })));
       }
-      return out;
-    }
-
-    function move(i, by, focusKey) {
-      const j = i + by;
-      if (j < 0 || j >= rows.length) return;
-      [rows[i], rows[j]] = [rows[j], rows[i]];
-      drawRows();
-      touched();
-      list.querySelector(`[data-key="${focusKey}-${j}"]`)?.focus();
-    }
-
-    function rowEl(row, i) {
-      const whenEl = h('div.small.muted');
-      const update = () => mount(whenEl, when(row));
-      const label = () => row.name || `act ${i + 1}`;
-      const time = h('input', { type: 'time', value: row.time, required: true, disabled, oninput: (e) => { row.time = e.target.value; update(); touched(); } });
-      const name = h('input', { type: 'text', value: row.name, maxlength: 80, required: true, autocomplete: 'off', disabled, oninput: (e) => { row.name = e.target.value; touched(); } });
-      const b2b = h('input', { type: 'text', value: row.b2b || '', maxlength: 80, autocomplete: 'off', disabled, oninput: (e) => { row.b2b = e.target.value; touched(); } });
-      const logoOptions = [{ value: '', label: 'No logo (the name shows)' }, ...images];
-      const logo = choice(logoOptions, row.logo || '', { disabled });
-      logo.addEventListener('change', () => { row.logo = logo.value; touched(); });
-      update();
-      const tools = canWrite ? h('div.row',
-        h('button.btn.small', { type: 'button', disabled: i === 0, 'aria-label': `Move ${label()} up`, dataset: { key: `up-${i}` }, onclick: () => move(i, -1, 'up') }, '↑ Up'),
-        h('button.btn.small', { type: 'button', disabled: i === rows.length - 1, 'aria-label': `Move ${label()} down`, dataset: { key: `down-${i}` }, onclick: () => move(i, 1, 'down') }, '↓ Down'),
-        menu('More', [{
-          label: 'Remove this act', danger: true, onSelect: () => { rows.splice(i, 1); drawRows(); touched(); toast(`Removed ${label()} from the lineup. Save to keep it that way.`); },
-        }], { buttonClass: 'btn small', ariaLabel: `More for ${label()}` })) : null;
-      return h('fieldset',
-        h('legend', `${i + 1}. ${row.name || 'New act'}`),
-        h('div.grid',
-          field('Time', time),
-          field('Act', name),
-          field('B2B with', b2b, { hint: 'Optional: who plays with them.' }),
-          field('Logo', logo, { hint: images.length ? 'An image uploaded in Media. Without one, the name shows.' : 'Upload logos in Media to pick one here. Without one, the name shows.' })),
-        h('div.stack',
-          h('div.row',
-            toggle('Headliner', row.headliner, { disabled, onChange: (on) => { row.headliner = on; touched(); } }),
-            toggle('Closer', row.closer, { disabled, onChange: (on) => { row.closer = on; touched(); } })),
-          whenEl,
-          tools));
-    }
-
-    function drawRows() {
-      if (!rows.length) {
-        mount(list, empty('No acts yet', canWrite ? 'Add the night\'s acts with their start times.' : 'The lineup is empty.'));
-        return;
-      }
-      mount(list, rows.map(rowEl));
-    }
-
-    const add = h('button.btn', { type: 'button', onclick: () => {
-      rows.push({ time: '', name: '' });
-      drawRows();
-      touched();
-      const sets = list.querySelectorAll('fieldset');
-      sets[sets.length - 1]?.querySelector('input')?.focus();
-    } }, 'Add an act');
-    const sort = h('button.btn', { type: 'button', onclick: () => {
-      // In the order of the night: from the day boundary on, so 01:00 comes after 23:00.
-      const key = (r) => (TIME.test(r.time) ? (minutesOf(r.time) - minutesOf(b) + 1440) % 1440 : Infinity);
-      rows.sort((x, y) => key(x) - key(y));
-      drawRows();
-      touched();
-    } }, 'Sort by time');
-    const undo = h('button.btn.ghost', { type: 'button', onclick: () => drawLineup(panel, images) }, 'Undo changes');
+    };
+    const editor = lineupEditor({ rows, night: () => ({ date: formShow.date, boundary: b, timezone: formShow.timezone }), images, acts, disabled, onChange: () => touched() });
+    const add = h('button.btn', { type: 'button', onclick: () => editor.add() }, 'Add an act');
+    const sort = h('button.btn', { type: 'button', onclick: () => editor.sort() }, 'Sort by time');
+    const undo = h('button.btn.ghost', { type: 'button', onclick: () => drawLineup(panel, images, acts) }, 'Undo changes');
     const save = h('button.btn.primary', { type: 'button' }, 'Save lineup');
     save.addEventListener('click', () => run(save, async () => {
       const lineup = rows.map(cleanSlot);
@@ -759,23 +1004,22 @@ export async function detail(view, ctx) {
         toast(same
           ? 'The show was edited since you opened it, but not its lineup. Your changes are still here: save again.'
           : 'The lineup changed since you opened it: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
-        drawLineup(panel, images, same ? rows : undefined);
+        drawLineup(panel, images, acts, same ? rows : undefined);
         return;
       }
       readAt = Date.now();
       const heads = lineup.filter((s) => s.headliner).length;
       toast(`Lineup saved: ${plural(lineup.length, 'act')}${show.recipe ? '; the timeline follows it' : ''}.${heads > 1 ? ' More than one act is the headliner: templates use the first.' : ''}`);
       drawHead();
-      drawLineup(panel, images);
+      drawLineup(panel, images, await loadAll('/api/v1/acts'));
     }));
 
-    drawRows();
     mount(panel, h('div.card',
       h('div.card-head', h('h2', 'Lineup'), canWrite ? h('div.actions', sort) : null),
       notice(`${boundaryWords(b, formShow.date)} The day boundary is set in Details.`),
       h('p.small.muted', 'Headliner and closer are different things: the headliner is the billed act (the Starting Soon card and the headliner intro use it); the closer is whoever plays last. Flag each where it belongs, even when it\'s the same act.'),
       disabled ? notice('You can look at the lineup; changing it needs an operator or a higher role.') : null,
-      list,
+      editor.el,
       canWrite ? h('div.form-actions', status, undo, add, save) : null));
     touched();
   }
@@ -821,7 +1065,8 @@ export async function detail(view, ctx) {
     const ready = async () => { if (!cat) cat = await catalog(); };
 
     function cueForm(cue) {
-      const a = cue?.action;
+      const pair = actPair(cue?.action); // an act put on, then its card: edited as that card
+      const a = pair ? pair.card : cue?.action;
       const fixed = a && !KINDS.some((k) => k.type === a.type); // a sequence (or a later kind): not edited here
       const initialAt = cue ? cue.time || hmIn(new Date(cue.at), tz()) : '';
       const b = show.dayBoundary || '12:00';
@@ -829,6 +1074,14 @@ export async function detail(view, ctx) {
       const kind = h('select', KINDS.map((k) => h('option', { value: k.type }, k.label)));
       kind.value = a && !fixed ? a.type : 'overlay.action';
       const graphic = choice(cat.actions, a?.type === 'overlay.action' ? a.name : undefined, { placeholder: 'titleCard' });
+      // A title card or now-playing is about an act: one of the lineup, or whoever is on when it
+      // fires; and it may put that act on as it shows (v0's DJ title card), as one cue.
+      const lineupNames = [...new Set((Array.isArray(show.lineup) ? show.lineup : []).map((s) => s?.name).filter(Boolean))];
+      const act = choice([{ value: '', label: 'Whoever is on then' }, ...lineupNames.map((n) => ({ value: n, label: n }))], a?.type === 'overlay.action' ? a.args?.name || '' : '');
+      let putTouched = !!cue;
+      const putOn = toggle('Put them on as it shows', !!pair, { onChange: () => { putTouched = true; } });
+      const actField = field('Act', act, { hint: lineupNames.length ? 'The card shows this act. "Whoever is on then" follows who\'s on when it fires.' : 'The lineup is empty, so the card shows whoever is on. Add acts under Lineup to pick one.' });
+      const putField = h('div.field', h('div.row', putOn), h('span.hint', 'Who\'s on changes to this act, then the card shows: like a set starting.'));
       const scene = choice(cat.scenes, a?.type === 'show.scene' ? a.scene : undefined, { placeholder: 'brb' });
       const transition = choice([{ value: 'fade', label: 'Fade' }, { value: 'cut', label: 'Cut' }], a?.type === 'show.scene' ? a.transition || 'fade' : 'fade');
       const acts = (Array.isArray(show.lineup) ? show.lineup : []).map((s) => s?.name).filter(Boolean);
@@ -846,13 +1099,24 @@ export async function detail(view, ctx) {
         'media.play': [field('Clip', clip, { hint: cat.clips.length ? 'Plays on every overlay of the show.' : 'Upload a video or audio clip in Media first.' })],
         'media.stop': [field('Clip to stop', stopClip)],
       };
-      const sync = () => { for (const [type, els] of Object.entries(groups)) for (const el of els) el.hidden = fixed || kind.value !== type; };
-      kind.addEventListener('change', sync);
+      const isCard = () => !fixed && kind.value === 'overlay.action' && ACT_CARDS.includes(graphic.value.trim());
+      const sync = () => {
+        for (const [type, els] of Object.entries(groups)) for (const el of els) el.hidden = fixed || kind.value !== type;
+        // A new cue's title card puts its act on unless the operator says otherwise; a now-playing doesn't.
+        if (!putTouched) putOn.input.checked = graphic.value.trim() === 'titleCard';
+        actField.hidden = !isCard();
+        putField.hidden = !isCard() || !act.value;
+      };
+      for (const el of [kind, graphic, act]) {
+        el.addEventListener('change', sync);
+        el.addEventListener('input', sync);
+      }
       sync();
       const body = h('div',
         field('At', at, { hint: `A time of the show${zoneNote(tz())}. Times before ${timeLabel(b)} are the next day, after midnight.` }),
         fixed ? h('p', `It does: ${actionWords(a, cat, show)}. That can't be changed here; its time and name can.`) : field('It does', kind),
-        Object.values(groups).flat(),
+        groups['overlay.action'], actField, putField,
+        Object.entries(groups).filter(([type]) => type !== 'overlay.action').flatMap(([, els]) => els),
         field('Name', label, { hint: 'Optional: how the cue shows in the list and on Live.' }));
       return {
         body,
@@ -867,7 +1131,16 @@ export async function detail(view, ctx) {
             if (type === 'overlay.action') {
               const name = graphic.value.trim();
               if (!name) fail('Pick the graphic to show.');
-              action = { type, name, ...(a?.type === type && a.name === name && a.args ? { args: a.args } : {}) };
+              // The args the cue had for this graphic stay (they are its template's); a card's act is the form's.
+              const args = a?.type === type && a.name === name && a.args ? { ...a.args } : {};
+              const who = ACT_CARDS.includes(name) ? act.value : '';
+              if (ACT_CARDS.includes(name)) {
+                if (who !== args.name) delete args.b2b;
+                delete args.name;
+                if (who) args.name = who;
+              }
+              action = { type, name, ...(Object.keys(args).length ? { args } : {}) };
+              if (who && putOn.input.checked) action = { type: 'sequence', steps: [{ offsetMs: 0, action: { type: 'show.slot', slot: who } }, { offsetMs: 0, action }] };
             } else if (type === 'show.scene') {
               if (!scene.value.trim()) fail('Pick the scene.');
               action = { type, scene: scene.value.trim(), transition: transition.value || 'fade' };
@@ -993,6 +1266,9 @@ export async function detail(view, ctx) {
           ? 'Cues it made before that are still to come are replaced. Cues you added or changed yourself stay as they are, one you deleted stays deleted, and nothing that already happened fires again.'
           : 'It adds to the cues already here; cues you added yourself stay as they are. From now on, changing the lineup updates these cues by itself.'),
         acts ? null : notice('The lineup is empty, so no cues are made yet: they come as you add acts.', 'warn'),
+        // A night that has passed (a weekly show left on last week's date): nothing would be made.
+        acts && show.lineup.every((s) => Date.parse(s?.startAt) < api.serverNow())
+          ? notice(`Every act's time has passed (the show is on ${dateLabel(show.date, true)}), so no cue is made for them. Move the show to its next night under Details first, or build now: its cues follow when the date changes.`, 'warn') : null,
         h('div.field', h('div.row', titleCard, headliner), h('span.hint', 'The headliner gets its intro in place of the title card, which would cover it.')),
         h('div.grid',
           field('Event Intro, minutes into each set', intro, { hint: 'Empty for none.' }),
@@ -1011,7 +1287,9 @@ export async function detail(view, ctx) {
       });
       if (!out) return;
       const made = (out.items || []).filter((c) => c.generated).length;
-      toast(`Timeline built from the lineup: ${plural(made, 'cue')} from it.`);
+      const toCome = (out.items || []).filter((c) => c.generated && c.status === 'armed').length;
+      if (acts && !toCome) toast(`Built from the lineup, but every act's time has passed: no cue is still to come. Move the show to its next night under Details, and its cues come with it.`, { kind: 'error', ms: 10000 });
+      else toast(`Timeline built from the lineup: ${plural(made, 'cue')} from it.`);
       await fresh(true).catch(() => {});
       drawRecipe();
       reload();
@@ -1035,13 +1313,43 @@ export async function detail(view, ctx) {
       reload();
     }
 
+    // Re-arm all (v0's "Re-arm"): the cues still to come that were skipped or fired early fire
+    // again at their time; what has passed stays as it is (09 §9.4).
+    async function rearmAll() {
+      const now = api.serverNow();
+      const n = cues.filter((c) => c.status !== 'armed' && Date.parse(c.at) > now).length;
+      if (!n) {
+        toast('Nothing to re-arm: every cue still to come is armed.');
+        return;
+      }
+      const ok = await confirm({
+        title: `Re-arm ${plural(n, 'cue')} still to come?`,
+        consequence: `${n === 1 ? 'The cue still to come that was skipped or fired early fires' : `The ${n} cues still to come that were skipped or fired early fire`} again at ${n === 1 ? 'its' : 'their'} time, with whatever they show. Cues whose time has passed stay as they are: re-arm one of those from its own menu.`,
+        confirmLabel: n === 1 ? 'Re-arm it' : `Re-arm ${n} cues`,
+        danger: false,
+      });
+      if (!ok) return;
+      try {
+        const out = await api.post(`${base()}/cues/rearm`, {});
+        const k = Array.isArray(out?.items) ? out.items.length : 0;
+        toast(k ? `Re-armed ${plural(k, 'cue')}: ${k === 1 ? 'it fires at its' : 'they fire at their'} time.` : 'Nothing to re-arm: every cue still to come is armed.');
+      } catch (err) {
+        toast(err);
+      }
+      reload();
+    }
+
     function drawRecipe() {
       recipeEl.textContent = recipeWords(show.recipe);
       const items = [];
       const addBtn = h('button.btn', { type: 'button', onclick: addCue }, 'Add a cue');
       const buildBtn = h('button.btn.primary', { type: 'button', onclick: build }, 'Build from lineup');
       if (canWrite) items.push(addBtn, buildBtn);
-      if (canWrite && show.recipe) items.push(menu('More', [{ label: 'Stop building from the lineup', danger: true, onSelect: stopBuilding }]));
+      const more = [
+        canControl ? { label: 'Re-arm all cues still to come', onSelect: rearmAll } : null,
+        canWrite && show.recipe ? { label: 'Stop building from the lineup', danger: true, onSelect: stopBuilding } : null,
+      ].filter(Boolean);
+      if (more.length) items.push(menu('More', more, { ariaLabel: 'More for the timeline' }));
       mount(actions, items);
     }
 
@@ -1061,12 +1369,19 @@ export async function detail(view, ctx) {
         if (!days.has(day)) days.set(day, []);
         days.get(day).push(c);
       }
+      // The hour the clocks go back happens twice (a 1:00 AM, then another): an instant in the
+      // second one reads on the clock as the instant an hour (or half an hour) before it did.
+      const wallOf = (t) => { const p = partsIn(new Date(t), tz()); return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`; };
+      const again = (c) => {
+        const t = Date.parse(c.at);
+        return [60, 30].some((min) => wallOf(t - min * 60000) === wallOf(t));
+      };
       mount(listEl, [...days].map(([day, items]) => h('section',
         h('h3', dateLabel(day, true)),
-        h('ul.list', items.map((c) => cueRow(c, c === next))))));
+        h('ul.list', items.map((c) => cueRow(c, c === next, again(c)))))));
     }
 
-    function cueRow(c, isNext) {
+    function cueRow(c, isNext, second) {
       const words = actionWords(c.action, cat, show);
       const [stateText, stateKind] = STATUS[c.status] || [c.status || 'Unknown', undefined];
       const name = c.label || words;
@@ -1086,6 +1401,7 @@ export async function detail(view, ctx) {
           detail ? h('div.small.muted', detail.charAt(0).toUpperCase() + detail.slice(1)) : null,
           c.clockGap ? h('div.small', `The clocks go forward at ${timeLabel(c.time)} that night: it fires at ${clock(c.at, tz())}.`) : null,
           c.clockOverlap ? h('div.small', `${timeLabel(c.time)} happens twice that night (the clocks go back): it fires at the first.`) : null,
+          second ? h('div.small', `The second ${clock(c.at, tz())} that night, after the clocks go back.`) : null,
           c.error ? h('div.small', `Note: ${c.error}`) : null),
         items.length ? menu('⋯', items, { buttonClass: 'btn small', ariaLabel: `More for ${name}` }) : null);
     }
@@ -1104,38 +1420,63 @@ export async function detail(view, ctx) {
   }
 
   // ---- Plans ---------------------------------------------------------------------------------
+  // Planned dates (09 §9.6): the list, and a plan's editor in the tab, as a lineup is too long for
+  // a dialog: its date with quick picks, its go-live, and a lineup of its own (edited like the
+  // show's) or the show's as it is that day. A plan is saved whole (PUT, with its If-Match); one
+  // can also become the show now (v0's "Load now").
   function plansTab(panel) {
     let alive = true;
+    let plans = [];
     const listEl = h('div', h('p.loading', 'Loading…'));
-    const addButton = canWrite ? h('button.btn.primary', { type: 'button', onclick: () => addPlan() }, 'Plan a date') : null;
+    const addButton = canWrite ? h('button.btn.primary', { type: 'button', onclick: (e) => run(e.currentTarget, () => edit()) }, 'Plan a date') : null;
+    const listCard = h('div.card',
+      h('div.card-head', h('h2', 'Planned dates'), addButton ? h('div.actions', addButton) : null),
+      h('p.muted', 'Save the show for a future night, with its own lineup and go-live: at the start of that day, the platform makes it the show with no browser open. A plan never changes a show that is live; it waits until the show ends.'),
+      listEl);
 
+    // The plans, and the show as it is now (whether it is live says what a plan can do).
     async function load() {
       try {
-        const plans = await api.all(`${base()}/plans`);
-        if (alive) draw(plans);
+        [plans] = await Promise.all([api.all(`${base()}/plans`), fresh(true).catch(() => {})]);
+        if (alive) draw();
       } catch (err) {
         if (alive) mount(listEl, notice(err.message, 'danger'));
       }
     }
+    function showList() {
+      if (!alive) return;
+      reshow = undefined;
+      unsaved = undefined;
+      mount(panel, listCard);
+      load();
+    }
 
-    function draw(plans) {
+    function draw() {
       if (!plans.length) {
         mount(listEl, empty('No planned dates',
-          'Plan the show for another night: at the start of that day, it becomes the show by itself.',
-          canWrite ? h('button.btn', { type: 'button', onclick: () => addPlan() }, 'Plan a date') : null));
+          'Plan the show for another night, with its lineup: at the start of that day, it becomes the show by itself.',
+          canWrite ? h('button.btn', { type: 'button', onclick: (e) => run(e.currentTarget, () => edit()) }, 'Plan a date') : null));
         return;
       }
       mount(listEl, h('ul.list', plans.map(planRow)));
     }
 
     function planRow(p) {
-      const lines = [];
-      lines.push(p.goLive ? `Goes live at ${timeLabel(p.goLive)}` : 'Keeps the show\'s go-live time');
-      lines.push(Array.isArray(p.lineup) ? `Its own lineup: ${plural(p.lineup.length, 'act')}` : 'Keeps the show\'s lineup');
+      const names = Array.isArray(p.lineup) ? p.lineup.map((s) => s?.name).filter(Boolean) : [];
+      const lines = [
+        p.goLive === null ? 'No go-live time that night' : p.goLive ? `Goes live at ${timeLabel(p.goLive)}` : 'Keeps the show\'s go-live time',
+        Array.isArray(p.lineup) ? `Its own lineup: ${names.length > 6 ? `${names.slice(0, 5).join(', ')} and ${names.length - 5} more` : andList(names) || 'no acts'}` : 'Keeps the show\'s lineup',
+      ];
       if (p.dayBoundary) lines.push(`Day boundary ${timeLabel(p.dayBoundary)}`);
       if (p.overlaySettings) lines.push(`Overlay settings for ${andList(Object.keys(p.overlaySettings))}`);
       const state = p.error ? badge('Not applied', 'danger') : p.activatedAt ? badge('Done', 'ok') : badge('Planned');
-      const items = canWrite ? [{ label: 'Delete plan', danger: true, onSelect: () => deletePlan(p) }] : [];
+      const open = canWrite && !p.activatedAt;
+      const items = [
+        open ? { label: 'Change', onSelect: () => edit(p) } : null,
+        // A plan never changes a show on air: offered once it isn't.
+        open ? (show.live ? { label: 'Make it the show now (not while live)', disabled: true } : { label: 'Make it the show now', onSelect: () => applyNow(p) }) : null,
+        canWrite ? { label: 'Delete plan', danger: true, onSelect: () => deletePlan(p) } : null,
+      ].filter(Boolean);
       return h('li',
         h('div.grow',
           h('div', h('strong', dateLabel(p.date, true)), ' ', state),
@@ -1146,34 +1487,176 @@ export async function detail(view, ctx) {
         items.length ? menu('⋯', items, { buttonClass: 'btn small', ariaLabel: `More for the plan of ${dateLabel(p.date, true)}` }) : null);
     }
 
-    async function addPlan() {
-      const date = h('input', { type: 'date', value: addDays(show.date, 7), required: true });
-      const goLive = h('input', { type: 'time', value: show.goLive || '' });
-      const acts = Array.isArray(show.lineup) ? show.lineup.length : 0;
-      const copy = toggle(`Copy tonight's lineup (${plural(acts, 'act')})`, false, { disabled: !acts });
-      const body = h('div',
-        h('p.muted', `At the start of that day (the day boundary, ${timeLabel(show.dayBoundary || '12:00')}), the platform makes it the show: its date, and what you set here. A show that is live then isn't changed until it ends.`),
-        field('Date', date),
-        field('Goes live at', goLive, { hint: 'Empty: the show keeps its go-live time.' }),
-        copy,
-        h('p.small.muted', 'Without the lineup, the show keeps the lineup it has on that day.'));
-      const plan = await formDialog({
-        title: 'Plan a date',
-        body,
-        submitLabel: 'Save plan',
-        focus: date,
-        submit: () => {
-          if (!DATE.test(date.value)) fail('Pick the date.');
-          if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30, or leave it empty.');
-          return api.post(`${base()}/plans`, {
-            date: date.value,
-            ...(goLive.value ? { goLive: goLive.value } : {}),
-            ...(copy.input.checked ? { lineup: lineupOf(show) } : {}),
+    // A new plan's date: the show's next night on its weekday that is still to come and not planned.
+    function nextNight() {
+      const tonight = showDayNow(tz(), show.dayBoundary);
+      let d = addDays(show.date, 7);
+      for (let i = 0; i < 520 && (d < tonight || plans.some((p) => p.date === d && !p.activatedAt)); i++) d = addDays(d, 7);
+      return d;
+    }
+
+    // The editor, for a new plan (none) or one to change: the uploaded images and every lineup's
+    // names (the acts) first, as the Lineup tab has them.
+    async function edit(plan) {
+      const [media, acts] = await Promise.all([loadAll('/api/v1/media'), loadAll('/api/v1/acts')]);
+      try {
+        await fresh();
+      } catch (err) {
+        if (err.status === 404) showGone();
+        else toast(err);
+        return;
+      }
+      if (alive) drawPlan(plan, imagesOf(media), acts);
+    }
+
+    function drawPlan(plan, images, acts) {
+      const isNew = !plan;
+      const b = plan?.dayBoundary || show.dayBoundary || '12:00';
+      const date = h('input', { type: 'date', value: plan?.date || nextNight(), required: true });
+      const goLive = h('input', { type: 'time', value: plan?.goLive || '' });
+      // A plan with no go-live that night (set from the command line) stays so until a time is set.
+      let noGoLive = plan?.goLive === null;
+      const rows = (Array.isArray(plan?.lineup) ? plan.lineup : []).map(cleanSlot);
+      const night = () => ({ date: DATE.test(date.value) ? date.value : show.date, boundary: b, timezone: show.timezone });
+      const editor = lineupEditor({ rows, night, images, acts, onChange: () => touched() });
+      const own = toggle('A lineup of its own', Array.isArray(plan?.lineup), { onChange: () => { drawOwn(); touched(); } });
+      const showActs = lineupOf(show);
+      const copy = h('button.btn', { type: 'button', disabled: !showActs.length, onclick: () => copyShow() }, `Copy the show's lineup (${plural(showActs.length, 'act')})`);
+      const add = h('button.btn', { type: 'button', onclick: () => editor.add() }, 'Add an act');
+      const sort = h('button.btn', { type: 'button', onclick: () => editor.sort() }, 'Sort by time');
+      const ownBox = h('div');
+      function drawOwn() {
+        mount(ownBox, own.input.checked
+          ? [editor.el, h('div.row', add, sort, copy)]
+          : h('p.muted', 'On that day the show keeps the lineup it has then.'));
+      }
+      async function copyShow() {
+        if (rows.length && !(await confirm({
+          title: 'Replace this plan\'s lineup?',
+          consequence: `Its ${plural(rows.length, 'act')} give way to the show's ${plural(showActs.length, 'act')}, as the show has them now.`,
+          confirmLabel: 'Replace lineup',
+        }))) return;
+        rows.splice(0, rows.length, ...showActs.map((s) => ({ ...s })));
+        editor.draw();
+        touched();
+      }
+
+      const state = () => JSON.stringify([date.value, goLive.value, noGoLive, own.input.checked, own.input.checked ? rows.map(cleanSlot) : []]);
+      const initial = state();
+      const status = h('span.small.muted', { 'aria-live': 'polite' });
+      const touched = () => { status.textContent = state() !== initial ? 'Unsaved changes' : ''; };
+      date.addEventListener('input', () => { editor.draw(); touched(); });
+      goLive.addEventListener('input', () => { noGoLive = false; touched(); });
+      // Another tab asks first, as Cancel does; the show moving to another night changes nothing here.
+      unsaved = () => (state() === initial ? '' : isNew ? 'This plan isn\'t saved: what you set here is lost.' : 'Your changes are lost; the plan stays as it was saved.');
+      reshow = () => {};
+
+      async function leave() {
+        const lost = unsaved();
+        if (lost && !(await confirm({ title: 'Leave without saving?', consequence: lost, confirmLabel: 'Leave' }))) return;
+        showList();
+      }
+      const cancel = h('button.btn.ghost', { type: 'button', onclick: () => leave() }, 'Cancel');
+      const save = h('button.btn.primary', { type: 'button' }, isNew ? 'Save plan' : 'Save changes');
+      save.addEventListener('click', () => run(save, async () => {
+        if (!DATE.test(date.value)) fail('Pick the date.');
+        if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30, or leave it empty.');
+        if (!isNew && state() === initial) {
+          toast('Nothing to save: the plan is as it was.');
+          showList();
+          return;
+        }
+        const body = { date: date.value };
+        if (goLive.value) body.goLive = goLive.value;
+        else if (noGoLive) body.goLive = null;
+        if (own.input.checked) {
+          const lineup = rows.map(cleanSlot);
+          if (!lineup.length) fail('Add the night\'s acts, or turn off "A lineup of its own" to keep the show\'s.');
+          const bad = lineup.findIndex((s) => !TIME.test(s.time) || !s.name);
+          if (bad >= 0) fail(`Act ${bad + 1} needs a start time and a name.`);
+          body.lineup = lineup;
+        }
+        // What this form doesn't change, as it was read: a plan is saved whole.
+        if (plan?.dayBoundary) body.dayBoundary = plan.dayBoundary;
+        if (plan?.overlaySettings) body.overlaySettings = plan.overlaySettings;
+        // Its night has begun: saved, the plan is the show at once (as "Make it the show now"), or
+        // as soon as REC ends while the show is live. Asked first.
+        if (date.value === showDayNow(tz(), b)) {
+          await fresh(true).catch(() => {});
+          const ok = await confirm(show.live ? {
+            title: `Plan ${dateLabel(date.value, true)} while the show is live?`,
+            consequence: 'That night has begun: the plan waits while the show is live, and becomes the show as soon as REC ends.',
+            confirmLabel: 'Save plan',
+            danger: false,
+          } : {
+            title: 'Make it the show now?',
+            consequence: `${dateLabel(date.value, true)} has begun, so the plan becomes the show as soon as it is saved: "${show.name}" takes ${andList(['its date', own.input.checked ? 'its lineup' : '', body.goLive !== undefined ? 'its go-live' : ''].filter(Boolean))} now. REC and who's on go back to before the show, and its cues follow the new night.`,
+            confirmLabel: 'Save and make it the show',
           });
-        },
+          if (!ok) return;
+        }
+        let saved;
+        try {
+          saved = isNew ? await api.post(`${base()}/plans`, body) : await api.put(`${base()}/plans/${api.seg(plan.id)}`, body, { ifMatch: plan });
+        } catch (err) {
+          if (err.code === 'plan-exists') fail(`There is already a plan for ${dateLabel(date.value, true)}: change that one (in its ⋯ menu), or delete it first.`);
+          if (isNew || ![404, 409, 412].includes(err.status) || (err.status === 409 && err.code !== 'applied')) throw err;
+          // Changed (H16), applied or deleted meanwhile: said, and shown as it is now.
+          const latest = await api.get(`${base()}/plans/${api.seg(plan.id)}`).catch(() => undefined);
+          if (!latest) {
+            const showThere = await fresh(true).then(() => true, (e) => e.status !== 404);
+            if (!showThere) { showGone({ changing: true }); return; }
+          }
+          toast(!latest ? 'This plan was deleted meanwhile: nothing was saved.'
+            : latest.activatedAt ? 'This plan became the show meanwhile: nothing was saved. Plan that date again to change it.'
+              : 'This plan changed since you opened it: this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
+          if (latest && !latest.activatedAt) drawPlan(latest, images, acts);
+          else showList();
+          return;
+        }
+        await fresh(true).catch(() => {}); // its day may have begun: then it is the show now
+        toast(saved.activatedAt ? `The plan for ${dateLabel(saved.date, true)} is the show now: its day has begun.`
+          : `${isNew ? 'Planned' : 'Saved the plan'} for ${dateLabel(saved.date, true)}: it becomes the show ${instantLabel(saved.activateAt, tz())}.`);
+        showList();
+      }));
+
+      const heading = h('h2', { tabindex: '-1' }, isNew ? 'Plan a date' : `The plan for ${dateLabel(plan.date, true)}`);
+      drawOwn();
+      mount(panel, h('div.card',
+        heading,
+        h('p.muted', `At the start of that day (the day boundary, ${timeLabel(b)}${zoneNote(tz())}), the platform makes it the show: its date, and what you set here. A show that is live then isn't changed until it ends.`),
+        h('div.grid',
+          dateField('Date', date, { hint: 'A night still to come.', zone: tz, boundary: () => b, future: true }),
+          field('Goes live at', goLive, { hint: noGoLive ? 'No go-live time that night, so no countdown: set one here, or leave it so.' : `Empty: the show keeps its go-live time${show.goLive ? ` (${timeLabel(show.goLive)})` : ''}.` })),
+        h('div.field', h('div.row', own), h('span.hint', 'Its own acts and set times for that night; without, the show keeps its lineup as it is then.')),
+        ownBox,
+        plan?.overlaySettings ? h('p.small.muted', `It also sets the settings of ${andList(Object.keys(plan.overlaySettings))} on that day; those stay as they are.`) : null,
+        h('div.form-actions', status, cancel, save)));
+      heading.focus({ preventScroll: false });
+    }
+
+    // v0's "Load now": the plan is the show now, as at its day boundary (never while live).
+    async function applyNow(p) {
+      await fresh(true).catch(() => {});
+      if (show.live) {
+        toast('The show is live: a plan never changes a show on air. Make it the show once REC is reset, or let it come on its day.', { kind: 'error', ms: 10000 });
+        load();
+        return;
+      }
+      const ok = await confirm({
+        title: `Make the plan for ${dateLabel(p.date, true)} the show now?`,
+        consequence: `"${show.name}" becomes the night of ${dateLabel(p.date, true)} now${Array.isArray(p.lineup) ? ', with the plan\'s lineup in place of the one it has' : ''}${p.goLive !== undefined ? ' and the plan\'s go-live' : ''}. REC and who's on go back to before the show, its cues follow the new date, and the plan won't change the show again on its day.`,
+        confirmLabel: 'Make it the show',
       });
-      if (!plan?.id) return;
-      toast(`Planned for ${dateLabel(plan.date, true)}: it becomes the show ${instantLabel(plan.activateAt, tz())}.`);
+      if (!ok) return;
+      try {
+        const out = await api.post(`${base()}/plans/${api.seg(p.id)}/apply`, {});
+        await fresh(true).catch(() => {});
+        if (out?.error) toast(`The plan wasn't applied: ${out.error}`, { kind: 'error', ms: 10000 });
+        else toast(`"${show.name}" is the night of ${dateLabel(p.date, true)} now.`);
+      } catch (err) {
+        toast(err);
+      }
       load();
     }
 
@@ -1195,12 +1678,8 @@ export async function detail(view, ctx) {
       load();
     }
 
-    mount(panel, h('div.card',
-      h('div.card-head', h('h2', 'Planned dates'), addButton ? h('div.actions', addButton) : null),
-      h('p.muted', 'Save the show for a future night: at the start of that day, the platform makes it the show — date, lineup and go-live — with no browser open. A plan never changes a show that is live; it waits until the show ends.'),
-      listEl));
-    load();
-    return () => { alive = false; };
+    showList();
+    return () => { alive = false; reshow = undefined; unsaved = undefined; };
   }
 
   // ---- the page ------------------------------------------------------------------------------
@@ -1217,6 +1696,26 @@ export async function detail(view, ctx) {
     // once the user has gone to another page while this one loaded: the address is theirs.
     onChange: (id) => { if (!gone && ctx.alive()) history.replaceState(null, '', `#/shows/${api.seg(show.id)}?tab=${id}`); },
   });
+  // A tab change (a click, or the arrow keys) that would lose unsaved edits asks first, as the plan
+  // editor's Cancel does; the tab itself again too, as that draws it afresh.
+  const bar = tabsEl.querySelector('[role=tablist]');
+  function guard(e, tab) {
+    const lost = !leaving && tab && unsaved?.();
+    if (!lost) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    confirm({ title: 'Leave without saving?', consequence: lost, confirmLabel: 'Leave' }).then((ok) => {
+      if (!ok || gone) return;
+      leaving = true;
+      try { tab.focus(); tab.click(); } finally { leaving = false; }
+    });
+  }
+  bar.addEventListener('click', (e) => guard(e, e.target.closest('[role=tab]')), true);
+  bar.addEventListener('keydown', (e) => {
+    const btns = [...bar.children];
+    const i = btns.indexOf(document.activeElement);
+    if (i >= 0 && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) guard(e, btns[(i + (e.key === 'ArrowRight' ? 1 : btns.length - 1)) % btns.length]);
+  }, true);
   mount(view, head, tabsEl);
 
   // The head (live or not, the name) stays current; a show deleted elsewhere says so.

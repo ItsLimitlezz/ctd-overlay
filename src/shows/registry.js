@@ -19,7 +19,9 @@
 // automatic template upgrades wait for (04 §4.13).
 //
 // A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
-// button work across templates: each member gets the name its own template knows.
+// button work across templates: each member gets the name its own template knows. A new show
+// starts on "auto" (the countdown to go-live, then live: v0's first scene) when every member's
+// template has it; otherwise on no scene, each template's own default.
 //
 // Follow OBS (09 §9.7, src/obs/follow.js): a show's `followObs` maps the OBS program scene to one of
 // its scenes; a take OBS made says so on the show (sceneByObs) until the next take.
@@ -285,11 +287,19 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }
   }
 
+  // Where a show with no scene taken yet starts (v0's "auto"): the members' countdown to go-live,
+  // then live, when every member's template has a scene "auto" (by id or core); else none, so each
+  // shows its template's default. It anchors no REC: "auto" does that at go-live (arm).
+  function startScene(d) {
+    const list = members(d);
+    return list.length && list.every((m) => resolveScene(m.manifest, 'auto')) ? 'auto' : undefined;
+  }
+
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
     if (data.followObs === null) delete data.followObs;
-    const doc = store.put('shows', newId('show'), { ...data, scene: undefined, actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
+    const doc = store.put('shows', newId('show'), { ...data, scene: startScene(data), actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
     publish(doc);
     arm(doc);
     log.info('show created', { show: doc.id, name: data.name, overlays: data.overlays.length });
@@ -315,12 +325,19 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       else next.currentSlot = at;
     }
     if (Number.isInteger(next.currentSlot) && next.currentSlot >= next.lineup.length) delete next.currentSlot;
+    // Its first overlays, and no scene taken yet: it starts where a new show does.
+    let started = false;
+    if (next.scene === undefined && !doc.data.overlays.length && next.overlays.length) {
+      next.scene = startScene(next);
+      started = next.scene !== undefined;
+    }
     checkPublishable(next);
     const saved = store.put('shows', doc.id, next, { ifRev: doc.rev });
     for (const left of doc.data.overlays.filter((o) => !next.overlays.includes(o))) release(left);
     publish(saved);
-    // A go-live moved into the past while "auto" is on air counts from then.
-    arm(saved, { catchUp: ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
+    // A go-live moved into the past while "auto" is on air counts from then (not when "auto" has
+    // only just started: that is no go-live of the show's).
+    arm(saved, { catchUp: !started && ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
     notify(doc.id);
     return view(store.get('shows', doc.id) || saved);
   }
@@ -334,11 +351,14 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return data;
   }
 
-  // Checks a change without making it (a planned show's, 09 §9.6): throws as update() would, and
-  // returns the change as update() would store it.
-  function validate(ref, patch) {
+  // Checks a change without making it (a planned show's, 09 §9.6, on its date): throws as update()
+  // would, a show too large to send to its members included, and returns the change as update()
+  // would store it.
+  function validate(ref, patch, { date } = {}) {
     const doc = get(ref);
-    return clean(patch || {}, { partial: true, id: doc.id });
+    const data = clean(patch || {}, { partial: true, id: doc.id });
+    checkPublishable({ ...doc.data, ...data, ...(date ? { date } : {}) });
+    return data;
   }
 
   function remove(ref) {

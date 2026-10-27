@@ -207,6 +207,60 @@ test('mapV0 tolerates every wrong type and broken file: each is skipped with a w
   assert.ok(map.notImported.some((n) => /typed viewer number \("1,284"\).*H6/.test(n)));
 });
 
+// A setup as v0's kit page saved it, with the timings and switches given, and a plan like it.
+const timed = (kit, live) => {
+  const setup = { golive: '22:00', event: 'vikstarr', lineup: [{ name: 'Vik Starr', time: '00:30' }], ...kit };
+  return {
+    dir: 'x', found: ['kit.json', 'live.json', 'shows.json'], uploads: [], crashLog: false, warnings: [], live,
+    kit: { date: '2026-10-17', ...setup },
+    shows: { byDate: { '2026-10-24': { setup: { date: '2026-10-24', ...setup } } } },
+  };
+};
+const NEW_IN_1_1 = ['cardSec', 'npSec', 'autoCard', 'autoCardSec', 'scheduleChips', 'nowPlayingBar'];
+
+test('mapV0: v0\'s hold times, its title card\'s delay, the event look\'s chip and now-playing switches and the REC switch become the overlay\'s settings', () => {
+  const read = timed({ cardSec: 9, npSec: 30, delaySec: 120, evOpts: { sched: 0, np: 0 } }, { showRec: false });
+  const map = mapV0(read, { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.deepEqual(map.overlay.saved, { look: 'event', viewers: false, cardSec: 9, npSec: 30, autoCardSec: 120, scheduleChips: false, nowPlayingBar: false, rec: false });
+  // v0 showed its title card by itself on standalone links only (the bus, which a show is, had the
+  // operator and the rundown): the switch stays off, the delay is there for when it is turned on.
+  assert.equal(map.overlay.saved.autoCard, undefined);
+  // What the switches turn off isn't made as cues either.
+  assert.equal(map.recipe.nowPlayingEveryMin, null);
+  // A plan carries them for its night, the REC switch included.
+  assert.deepEqual(map.plans[0].saved, map.overlay.saved);
+  assert.deepEqual(map.warnings, []);
+
+  // v0's own defaults are the template's: nothing to save. A hold of 0 was v0's default too.
+  const plain = mapV0(timed({ cardSec: 0, npSec: 22, delaySec: 210, evOpts: { sched: 1, np: 1 } }, { showRec: true }), { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.deepEqual(plain.overlay.saved, { look: 'event', viewers: false });
+  assert.deepEqual(plain.warnings, []);
+  // Still given: an existing overlay that had others goes back to these.
+  for (const key of ['cardSec', 'npSec', 'autoCardSec', 'scheduleChips', 'nowPlayingBar', 'rec']) assert.ok(plain.overlay.considered.has(key), key);
+  assert.equal(plain.overlay.considered.has('autoCard'), false, 'v0 has no word on it: the operator\'s switch stays');
+  // Without live.json, v0 left no word on REC either.
+  assert.equal(mapV0(timed({}), { timezone: ZONE, now: NOW, manifest: MANIFEST }).overlay.considered.has('rec'), false);
+  // Out of the template's bounds, or not whole seconds: the nearest it takes, said.
+  const odd = mapV0(timed({ cardSec: 500, npSec: 1.4, delaySec: -5 }), { timezone: ZONE, now: NOW, manifest: MANIFEST });
+  assert.deepEqual([odd.overlay.saved.cardSec, odd.overlay.saved.npSec, odd.overlay.saved.autoCardSec], [60, 3, 0]);
+  for (const w of [/the overlay: cardSec 500 becomes 60 \(whole seconds, 2 to 60\)/, /the overlay: npSec 1\.4 becomes 3 \(whole seconds, 3 to 120\)/, /the overlay: delaySec -5 becomes 0 \(whole seconds, 0 to 3600\)/]) {
+    assert.ok(odd.warnings.some((x) => w.test(x)), `warning: ${w}`);
+  }
+});
+
+test('an overlay still on TAKEOVER 1.0.0 keeps what it can take; the rest says to upgrade it first', () => {
+  const old = structuredClone(MANIFEST);
+  old.version = '1.0.0';
+  for (const key of NEW_IN_1_1) delete old.definitions.settings.properties[key];
+  const map = mapV0(timed({ cardSec: 9, delaySec: 210, evOpts: { sched: 0 } }, { showRec: false }), { timezone: ZONE, now: NOW, manifest: old });
+  assert.deepEqual(map.overlay.saved, { look: 'event', viewers: false, rec: false });
+  assert.ok(map.warnings.some((w) => /^the overlay: cardSec = 9 is a setting of a newer D\/PRTMNT TAKEOVER than 1\.0\.0; upgrade the overlay, then import again to bring it\.$/.test(w)), map.warnings.join('\n'));
+  assert.ok(map.warnings.some((w) => /^the overlay: scheduleChips = false is a setting of a newer/.test(w)));
+  // What equals v0's default (the delay, Now playing's hold and switch here) is what 1.0.0 does
+  // anyway, so it says nothing.
+  assert.ok(!map.warnings.some((w) => /autoCardSec|npSec|nowPlayingBar/.test(w)), map.warnings.join('\n'));
+});
+
 test('a directory with nothing to import is refused, as is one that isn\'t there', async (t) => {
   const { root, env } = dirs(t);
   const empty = path.join(root, 'empty');
@@ -232,7 +286,7 @@ test('skp import v0 --dry-run says what it would do and changes nothing, not eve
   assert.equal(res.code, 0, res.stderr);
   assert.match(res.stdout, /^A dry run: importing v0's data from .*full \(the setup from kit\.json\) would do this\./);
   assert.match(res.stdout, /Lineup: 4 acts: 22:30 Trapment, 23:30 BIA b2b DOLF, 00:30 Vik Starr \(headliner\), 02:00 UNDERCOVER \(closer\)\./);
-  assert.match(res.stdout, /Overlay "takeover": would be made, from com\.dprtmnt\.takeover@1\.0\.0, in the headliner event look/);
+  assert.ok(res.stdout.includes(`Overlay "takeover": would be made, from com.dprtmnt.takeover@${MANIFEST.version}, in the headliner event look`), res.stdout);
   assert.match(res.stdout, /Twitch and Kick credentials would be kept, encrypted, for when connections arrive/);
   assert.match(res.stdout, /Nothing changed \(--dry-run\)\./);
   assert.equal(existsSync(env.SKP_DATA_DIR), false);
@@ -383,7 +437,7 @@ test('an overlay with the slug on another template, or in another show, is never
   const { env, config } = dirs(t);
   await inspect(config, (data) => {
     data.overlays.create({ slug: 'diag', template: DIAG, settings: {} });
-    data.overlays.create({ slug: 'theirs', template: { id: 'com.dprtmnt.takeover', version: '1.0.0' }, settings: {} });
+    data.overlays.create({ slug: 'theirs', template: { id: 'com.dprtmnt.takeover', version: MANIFEST.version }, settings: {} });
     data.shows.create({ name: 'Another night', overlays: ['theirs'], date: '2026-10-17', timezone: ZONE });
   });
   const other = await cli([...IMPORT, '--slug', 'diag', '--json'], env);
@@ -414,6 +468,46 @@ test('--json: what was made, the clip converted when ffmpeg is there, and never 
   assert.deepEqual(out.urls.map((u) => u.canvas), ['h', 'v']);
   assert.equal(out.pastPlans, 2);
   noSecrets(res.stdout, res.stderr);
+});
+
+test('skp import v0 puts v0\'s hold times and switches on the overlay, and leaves out the chip cues they turned off', async (t) => {
+  const { env, config } = dirs(t);
+  const dir = copyOf(t, FULL);
+  editJson(path.join(dir, 'kit.json'), (kit) => ({ ...kit, cardSec: 12, npSec: 40, delaySec: 90, evOpts: { ...kit.evOpts, sched: 0 } }));
+  editJson(path.join(dir, 'live.json'), (live) => ({ ...live, showRec: false }));
+  const res = await cli(['import', 'v0', dir, '--timezone', ZONE], env);
+  assert.equal(res.code, 0, res.stderr);
+  const differ = /Settings that differ from the template's: (.*)\./.exec(res.stdout)[1].split(', ');
+  for (const key of ['cardSec', 'npSec', 'autoCardSec', 'scheduleChips', 'rec']) assert.ok(differ.includes(key), `${key} in ${differ}`);
+  assert.match(res.stdout, /"Opening chip" at 22:55: the opening and on-at chips were off in v0's event look/);
+  await inspect(config, (data) => {
+    const overlay = data.overlays.resolve('takeover');
+    assert.deepEqual([overlay.settings.cardSec, overlay.settings.npSec, overlay.settings.autoCard, overlay.settings.autoCardSec, overlay.settings.scheduleChips, overlay.settings.rec], [12, 40, false, 90, false, false]);
+    assert.equal(overlay.doc.data.template.version, MANIFEST.version);
+  });
+});
+
+test('importing again once v0 is back at its defaults puts the hold times, the chips and REC back too, on the overlay and its plans', async (t) => {
+  const { env, config } = dirs(t);
+  const dir = copyOf(t, FULL);
+  editJson(path.join(dir, 'kit.json'), (kit) => ({ ...kit, cardSec: 12, evOpts: { ...kit.evOpts, sched: 0 } }));
+  editJson(path.join(dir, 'live.json'), (live) => ({ ...live, showRec: false }));
+  assert.equal((await cli(['import', 'v0', dir, '--timezone', ZONE], env)).code, 0);
+  await inspect(config, (data) => data.overlays.updateSettings('takeover', { ...data.overlays.resolve('takeover').doc.data.settings, autoCard: true }));
+  editJson(path.join(dir, 'kit.json'), (kit) => ({ ...kit, cardSec: 7, evOpts: { ...kit.evOpts, sched: 1 } }));
+  editJson(path.join(dir, 'live.json'), (live) => ({ ...live, showRec: true }));
+  const again = await cli(['import', 'v0', dir, '--timezone', ZONE, '--replace'], env, { now: NOW + 60000 });
+  assert.equal(again.code, 0, again.stderr);
+  await inspect(config, (data) => {
+    const overlay = data.overlays.resolve('takeover');
+    for (const key of ['cardSec', 'scheduleChips', 'rec']) assert.ok(!Object.hasOwn(overlay.doc.data.settings, key), `${key} is the template's again`);
+    assert.deepEqual([overlay.settings.cardSec, overlay.settings.scheduleChips, overlay.settings.rec], [7, true, true]);
+    // v0 has no word on the card by itself on a show: the operator's switch stays.
+    assert.equal(overlay.settings.autoCard, true);
+    const plans = data.timeline.plans.list(data.shows.get(SHOW).id);
+    for (const p of plans) for (const key of ['cardSec', 'rec']) assert.ok(!Object.hasOwn(p.overlaySettings.takeover, key), `${p.date}: ${key}`);
+    assert.deepEqual(plans.find((p) => p.date === '2026-10-31').overlaySettings.takeover, overlay.doc.data.settings);
+  });
 });
 
 test('without --timezone the show takes TZ (or this computer\'s zone), and says which; a clip path out of uploads/ is never followed', async (t) => {

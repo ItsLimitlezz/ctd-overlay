@@ -37,6 +37,8 @@ function dirs(t) {
 const ID = 'dev.skp.sample';
 // The templates that ship with the platform, as `template list` sorts them.
 const BUNDLED = ['com.ctd.text-clock', 'com.dprtmnt.alerts', 'com.dprtmnt.chat', 'com.dprtmnt.takeover', 'dev.skp.diagnostic', 'dev.skp.viewers'];
+// Each at the version it ships: id@version.
+const shipped = (id) => `${id}@${id === 'com.dprtmnt.takeover' ? JSON.parse(readFileSync(new URL('../templates/takeover/template.json', import.meta.url), 'utf8')).version : '1.0.0'}`;
 const V1 = {
   type: 'object',
   properties: {
@@ -114,7 +116,7 @@ test('install, list and uninstall, in the data directory the server would use', 
   assert.match(installed.stdout, /Templates are code/);
   assert.match((await cli(['template', 'install', file], env)).stdout, /already installed/);
   const list = JSON.parse((await cli(['template', 'list', '--json'], env)).stdout);
-  assert.deepEqual(list.map((r) => `${r.id}@${r.version} ${r.source} ${r.overlays}`), [...BUNDLED.map((id) => `${id}@1.0.0 bundled 0`), 'dev.skp.sample@1.0.0 installed 0'].sort());
+  assert.deepEqual(list.map((r) => `${r.id}@${r.version} ${r.source} ${r.overlays}`), [...BUNDLED.map((id) => `${shipped(id)} bundled 0`), 'dev.skp.sample@1.0.0 installed 0'].sort());
   const removed = await cli(['template', 'uninstall', 'dev.skp.sample@1.0.0'], env);
   assert.equal(removed.code, 0, removed.stderr);
   assert.equal((await cli(['template', 'uninstall', 'dev.skp.sample@1.0.0'], env)).code, 1);
@@ -206,7 +208,7 @@ test('template list counts the overlays on each version, and uninstall refuses a
   const { env, config } = await withSample(t, [{ version: '1.0.0' }], {});
   const list = await cli(['template', 'list', '--json'], env);
   assert.equal(list.code, 0, list.stderr);
-  assert.deepEqual(JSON.parse(list.stdout).map((r) => `${r.id}@${r.version} ${r.overlays}`), [...BUNDLED.map((id) => `${id}@1.0.0 0`), 'dev.skp.sample@1.0.0 1'].sort());
+  assert.deepEqual(JSON.parse(list.stdout).map((r) => `${r.id}@${r.version} ${r.overlays}`), [...BUNDLED.map((id) => `${shipped(id)} 0`), 'dev.skp.sample@1.0.0 1'].sort());
   assert.match((await cli(['template', 'list'], env)).stdout, /^dev\.skp\.sample@1\.0\.0 .* 1 overlay$/m);
   for (const ref of ['dev.skp.sample@1.0.0', 'dev.skp.sample']) {
     const refused = await cli(['template', 'uninstall', ref], env);
@@ -231,7 +233,7 @@ test('a bundled template an overlay retained is still the platform\'s: listed as
   const copy = path.join(config.dataDir, 'templates', DIAG.id);
   assert.equal(readdirSync(copy).length, 1, 'the overlay kept a copy in the data directory');
   const rows = JSON.parse((await cli(['template', 'list', '--json'], env)).stdout);
-  assert.deepEqual(rows.map((r) => `${r.id}@${r.version} ${r.source} ${r.overlays}`), [...BUNDLED.filter((id) => id !== DIAG.id).map((id) => `${id}@1.0.0 bundled 0`), 'dev.skp.diagnostic@1.0.0 bundled 1', 'dev.skp.testbed@1.0.0 bundled 1'].sort());
+  assert.deepEqual(rows.map((r) => `${r.id}@${r.version} ${r.source} ${r.overlays}`), [...BUNDLED.filter((id) => id !== DIAG.id).map((id) => `${shipped(id)} bundled 0`), 'dev.skp.diagnostic@1.0.0 bundled 1', 'dev.skp.testbed@1.0.0 bundled 1'].sort());
   assert.match((await cli(['template', 'list'], env)).stdout, /^dev\.skp\.diagnostic@1\.0\.0 +[0-9a-f]{16} {2}bundled /m);
   // With no overlay on it any more, the copy is still a version the platform ships.
   const again = openData(config, { log: memoryLogger().log });

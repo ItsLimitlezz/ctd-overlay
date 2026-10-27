@@ -34,7 +34,7 @@ const platform = await startPlatform(config, { log: createLogger({ level: 'warn'
 const DEMO_OWNER = { username: 'demo', password: 'stream-kit-demo-night' };
 await platform.auth.createOwner({ code: platform.auth.setupCode, ...DEMO_OWNER }, { ip: '127.0.0.1' });
 
-const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+const TEMPLATE = { id: 'com.dprtmnt.takeover', version: '1.1.0' };
 for (const [slug, settings] of [['takeover', {}], ['event', { look: 'event', address: '473 ADELAIDE ST W · TORONTO' }]]) {
   platform.overlays.create({ slug, template: TEMPLATE, settings });
 }

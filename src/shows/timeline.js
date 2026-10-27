@@ -10,10 +10,10 @@
 // Scheduler rules (09 §9.4): it ticks every second and fires each armed cue whose time has come;
 // a cue more than five minutes late is marked missed, never fired, so a wrong date or a restart
 // after downtime can't replay a night's graphics at once; a cue is written as fired before its
-// effect is published, so a crash can't fire it twice; the operator can fire now, skip or re-arm,
-// and each of those goes to the audit log (07 §7.12). What fell due while the platform was down
-// waits a few seconds after startup, so the overlays' pages are back to see it, and its lateness
-// is judged as of startup.
+// effect is published, so a crash can't fire it twice; the operator can fire now, skip or re-arm
+// (one cue, or every cue still to come at once), and each of those goes to the audit log
+// (07 §7.12). What fell due while the platform was down waits a few seconds after startup, so the
+// overlays' pages are back to see it, and its lateness is judged as of startup.
 //
 // One rule above the others: nothing that happened fires again by itself. A cue set at a time of
 // the show ("01:00") belongs to the show's night: it moves when the show's date, zone or day
@@ -32,12 +32,19 @@
 // is generated: an action, or a timed scene played as one, which plays only while the show is on
 // its program (it would take the operator off a BRB otherwise; fired by hand, it plays anyway).
 // What the templates offer is read when the show changes or is built: after changing a member's
-// template, build again.
+// template, build again. A cue made by hand does the same with an act: a title card or now-playing
+// names it (args.name), and, to put the act on as it shows (v0's DJ cues), it is a sequence of the
+// act's show.slot and then its card, at the same instant.
 //
 // A planned show (09 §9.6) is activated at the day boundary of its date, in the show's zone and
 // with its boundary as they are then: its lineup and times become the show's, overlay settings it
 // carries are applied to the show's members, and the timeline rebuilds. A plan never changes a
-// show on air: it waits. Plans more than 14 days past are pruned, with the cues of past nights.
+// show on air: it waits. Plans more than 14 days past are pruned, with the cues of past nights. A
+// plan not yet applied can be replaced whole, or applied by hand before its day (v0's "Load now");
+// one the show couldn't take (a lineup too large to send) is refused when saved, and by hand.
+//
+// The acts of every lineup, the shows' and their plans', are the names a lineup is offered (v0's
+// roster), worked out on each read.
 import { newId } from '../ids.js';
 import { mediaUrl } from '../media/library.js';
 import { jsonBytes, SAVED_BYTES, validateSettings } from '../templates/settings.js';
@@ -60,6 +67,12 @@ const LATER = { webhook: 'step 20, with webhooks' };
 // nothing else: an unknown field is refused, never dropped (03 §3.1, 07 §7.11), so a misspelt
 // "transiton" isn't a cue that quietly fades.
 const ACTION_FIELDS = { 'show.scene': ['scene', 'transition'], 'overlay.action': ['name', 'args'], 'show.slot': ['slot'], 'media.play': ['mediaId'], 'media.stop': ['mediaId'], 'connector.action': ['connection', 'connector', 'name', 'args'], sequence: ['steps'] };
+// The cards about an act (09 §9.3, the recipe's of §9.5, and now-playing held until hidden): a cue
+// names the act in args.name (and who plays with them in args.b2b), as the recipe does; without
+// it, the card is about whoever is on when it fires. An act is named as a lineup's is (at most 80
+// characters); one not in the lineup shows by that name.
+export const ACT_CARDS = ['titleCard', 'nowPlaying', 'nowPlayingHold'];
+const ACT_CHARS = 80;
 const CONNECTOR_ACTION = /^[A-Za-z][A-Za-z0-9_.-]{0,39}$/;
 const STEP_FIELDS = ['offsetMs', 'action'];
 const ACTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
@@ -69,6 +82,11 @@ const CUE_ID = /^cue_[0-9A-Z]{26}$/;
 const OVERLAY_ID = /^ovl_[0-9A-Z]{26}$/;
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
 const MAX_DELAY = 2 ** 31 - 1;
+
+// An act's name as names are told apart (letter case and spacing aside), and an act's place in the
+// list of acts (GET /acts): latest night first (each digit of its date turned around), then by name.
+const actName = (name) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+export const actKey = (a) => `${a.date.replace(/\d/g, (d) => String(9 - Number(d)))}|${actName(a.name)}`;
 
 // connectors: the connector host (connectors/host.js), which checks and runs connector.action cues.
 export function createTimeline({ store, shows, overlays, media, connectors, log, now = Date.now, timers = { setInterval, clearInterval, setTimeout, clearTimeout }, record = () => {} }) {
@@ -91,6 +109,8 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     }
   }
   const cuesOf = (showId) => [...list('cues')].filter((c) => c.data.showId === showId);
+  // Cues in time order: at one instant, by their order (a slot before its title card), then made first.
+  const inOrder = (a, b) => a.data.at - b.data.at || (a.data.order || 0) - (b.data.order || 0) || (a.id < b.id ? -1 : 1);
   const bad = (msg) => { throw new ShowError(msg, 'invalid'); };
   // The API's own refusal of an unknown field (http/api.js), for a field of a fixed shape.
   const known = (value, fields, what, whose) => {
@@ -153,7 +173,8 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
         let size = Infinity;
         try { size = Buffer.byteLength(JSON.stringify(args)); } catch { /* too deep to measure: too large */ }
         if (!args || typeof args !== 'object' || Array.isArray(args) || size > 4096) bad('"args" must be an object of at most 4096 bytes.');
-        return { type, name: action.name, ...(Object.keys(args).length ? { args } : {}) };
+        const kept = ACT_CARDS.includes(action.name) ? actArgs(args) : args;
+        return { type, name: action.name, ...(Object.keys(kept).length ? { args: kept } : {}) };
       }
       case 'show.slot':
         // A position, or an act's name (which follows the act through lineup edits).
@@ -198,6 +219,22 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
       default:
         return bad(`"action.type" must be one of show.scene, overlay.action, show.slot, media.play, media.stop, connector.action or sequence (${Object.keys(LATER).join(' and ')} comes later).`);
     }
+  }
+
+  // A card's act: its name and partner as text, trimmed; empty (or null) is whoever is on. Other
+  // args are the template's, as they are.
+  function actArgs(args) {
+    const out = { ...args };
+    for (const [key, what] of [['name', 'the act\'s name'], ['b2b', 'who plays with them']]) {
+      if (out[key] === undefined || out[key] === null || (typeof out[key] === 'string' && !out[key].trim())) {
+        delete out[key];
+        continue;
+      }
+      if (typeof out[key] !== 'string' || out[key].length > ACT_CHARS) bad(`"args.${key}" is ${what}: text, at most ${ACT_CHARS} characters.`);
+      out[key] = out[key].trim();
+    }
+    if (out.b2b && !out.name) bad('"args.b2b" goes with "args.name": who plays with that act.');
+    return out;
   }
 
   function cleanLabel(label) {
@@ -298,6 +335,27 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     log.info(`cue ${op === 'fire' ? 'fired by hand' : op === 'skip' ? 'skipped' : 're-armed'}`, { show: show.id, cue: doc.id, actor });
     record(`cue.${op}`, { actor, target: doc.id, show: show.id, type: doc.data.action.type });
     return result;
+  }
+
+  // Re-arm all (v0's "re-arm"), one override for the night: every cue still to come that isn't
+  // armed (skipped, or fired early by hand) is armed again. A cue whose time has passed stays as
+  // it is: armed, it would be missed, or fire at once within the grace window, so that is re-armed
+  // one by one. Another night's generated cues are its history, and stay so.
+  function rearmAll(showRef, { actor = 'operator' } = {}) {
+    const show = shows.get(showRef);
+    const t = now();
+    const done = [];
+    for (const doc of cuesOf(show.id)) {
+      const d = doc.data;
+      if (d.removed || d.status === 'armed' || d.at <= t || (d.generated && d.night !== show.date)) continue;
+      const next = { ...d, status: 'armed' };
+      for (const k of ['firedAt', 'error', 'stepsDone']) delete next[k];
+      stopSteps(doc.id);
+      done.push(save(doc.id, next));
+    }
+    log.info('cues re-armed', { show: show.id, cues: done.length, actor });
+    record('cue.rearm-all', { actor, target: show.id, show: show.id, cues: done.length });
+    return done.sort(inOrder).map(view);
   }
 
   // Fires a cue: written as fired first (durable before visible), then its effect.
@@ -581,7 +639,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
 
   function listCues(showRef) {
     const show = shows.get(showRef);
-    return cuesOf(show.id).filter((c) => !c.data.removed).sort((a, b) => a.data.at - b.data.at || (a.data.order || 0) - (b.data.order || 0) || (a.id < b.id ? -1 : 1)).map(view);
+    return cuesOf(show.id).filter((c) => !c.data.removed).sort(inOrder).map(view);
   }
 
   // ---- planned shows (09 §9.6) ---------------------------------------------------------------
@@ -618,17 +676,23 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     };
   }
 
-  function addPlan(showRef, input) {
-    const show = shows.get(showRef);
+  // A plan as it is saved, from what a client sends (a new one, or one replaced whole: was), checked
+  // as the show would check the change (a lineup too large to send to its overlays included), its
+  // day still to come and no other plan for its date.
+  function cleanPlan(show, input, { was } = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || !isDate(input.date)) bad('A plan needs "date", YYYY-MM-DD.');
     const unknown = Object.keys(input).filter((k) => k !== 'date' && k !== 'overlaySettings' && !PLAN_FIELDS.includes(k));
     if (unknown.length) bad(`A plan carries ${PLAN_FIELDS.join(', ')} and overlaySettings; not ${unknown.join(', ')}.`);
     const picked = {};
     for (const k of PLAN_FIELDS) if (input[k] !== undefined) picked[k] = input[k];
-    const changes = shows.validate(show.id, picked); // refused as the show would refuse it
+    const changes = shows.validate(show.id, picked, { date: input.date }); // refused as the show would refuse it
     let overlaySettings;
     let overlaySlugs;
-    if (input.overlaySettings !== undefined) {
+    // The settings as they were read, sent back with the rest of a plan: kept as they are, so one
+    // for an overlay that has left the show since doesn't stop the lineup being changed.
+    if (was?.data.overlaySettings && input.overlaySettings !== undefined && JSON.stringify(input.overlaySettings) === JSON.stringify(planView(was).overlaySettings)) {
+      ({ overlaySettings, overlaySlugs } = was.data);
+    } else if (input.overlaySettings !== undefined) {
       if (!input.overlaySettings || typeof input.overlaySettings !== 'object' || Array.isArray(input.overlaySettings)) bad('"overlaySettings" maps overlay slugs to their settings.');
       overlaySettings = {};
       overlaySlugs = {};
@@ -647,12 +711,52 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     const day = dayOf(plan, show);
     if (day.end <= now()) bad('That date is over; a plan is for a show still to come.');
     if (day.start - now() > PLAN_AHEAD_DAYS * DAY_MS) bad('A plan is for the next three years at most.');
-    const clash = [...list('show_plans')].find((p) => p.data.showId === show.id && p.data.date === input.date && !p.data.activatedAt);
-    if (clash) throw new ShowError(`The show already has a plan for ${input.date}; delete it first.`, 'plan-exists', 409);
-    const doc = store.put('show_plans', newId('plan'), { ...plan, activateAt: day.start }, { ifRev: 0 });
-    log.info('show planned', { show: show.id, plan: doc.id, date: input.date, activateAt: new Date(day.start).toISOString() });
+    const clash = [...list('show_plans')].find((p) => p.id !== was?.id && p.data.showId === show.id && p.data.date === input.date && !p.data.activatedAt);
+    if (clash) throw new ShowError(`The show already has a plan for ${input.date}: change that one, or delete it first.`, 'plan-exists', 409);
+    return { ...plan, activateAt: day.start };
+  }
+
+  function addPlan(showRef, input) {
+    const show = shows.get(showRef);
+    const doc = store.put('show_plans', newId('plan'), cleanPlan(show, input), { ifRev: 0 });
+    log.info('show planned', { show: show.id, plan: doc.id, date: doc.data.date, activateAt: new Date(doc.data.activateAt).toISOString() });
     armPlan(doc);
     return planView(store.get('show_plans', doc.id) || doc);
+  }
+
+  function planOf(showRef, planId) {
+    const show = shows.get(showRef);
+    const doc = typeof planId === 'string' && /^plan_[0-9A-Z]{26}$/.test(planId) ? store.get('show_plans', planId) : undefined;
+    if (!doc || doc.data.showId !== show.id) throw new ShowError(`The show has no plan "${planId}".`, 'not-found', 404);
+    return { show, doc };
+  }
+
+  // A plan replaced whole (PUT, If-Match): what it carries is what is sent; what is left out the
+  // show keeps of its own on that day. One already applied is history: plan the date again.
+  function replacePlan(showRef, planId, input) {
+    const { show, doc } = planOf(showRef, planId);
+    if (doc.data.activatedAt) throw new ShowError(`The plan for ${doc.data.date} has been applied already: plan that date again to change it.`, 'applied', 409);
+    const saved = store.put('show_plans', doc.id, cleanPlan(show, input, { was: doc }), { ifRev: doc.rev });
+    log.info('show plan changed', { show: show.id, plan: doc.id, date: saved.data.date, activateAt: new Date(saved.data.activateAt).toISOString() });
+    armPlan(saved);
+    return planView(store.get('show_plans', doc.id) || saved);
+  }
+
+  // A plan made the show now, before its day (v0's "Load now"), as its day boundary would: never
+  // while the show is live, and recorded (07 §7.12). One the show can't take as it is now (a
+  // lineup too large to send) is refused first and stays as it was, to change or apply later.
+  function applyPlan(showRef, planId, { actor = 'operator' } = {}) {
+    const { show, doc } = planOf(showRef, planId);
+    if (doc.data.activatedAt) throw new ShowError(`The plan for ${doc.data.date} has been applied already.`, 'applied', 409);
+    if (show.live) throw new ShowError('The show is live: a plan never changes a show on air. Apply it once REC is reset or the show has ended.', 'live', 409);
+    shows.validate(show.id, doc.data.changes, { date: doc.data.date });
+    timers.clearTimeout(planTimers.get(doc.id));
+    planTimers.delete(doc.id);
+    activate(doc.id);
+    const done = store.get('show_plans', doc.id);
+    log.info('planned show applied by hand', { show: show.id, plan: doc.id, date: doc.data.date, actor, ...(done.data.error ? { err: done.data.error } : {}) });
+    record('plan.apply', { actor, target: doc.id, show: show.id, date: doc.data.date, ...(done.data.error ? { error: done.data.error } : {}) });
+    return planView(done);
   }
 
   function listPlans(showRef) {
@@ -667,9 +771,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
   }
 
   function removePlan(showRef, planId) {
-    const show = shows.get(showRef);
-    const doc = typeof planId === 'string' && /^plan_[0-9A-Z]{26}$/.test(planId) ? store.get('show_plans', planId) : undefined;
-    if (!doc || doc.data.showId !== show.id) throw new ShowError(`The show has no plan "${planId}".`, 'not-found', 404);
+    const { doc } = planOf(showRef, planId);
     dropPlan(doc.id);
     return { id: doc.id };
   }
@@ -695,6 +797,9 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     const marked = store.put('show_plans', planId, { ...d, activatedAt: now() });
     const warnings = [];
     try {
+      // The show's change checked before anything changes: a plan the show can't take leaves its
+      // settings, REC and who's on as they were.
+      shows.validate(d.showId, d.changes, { date: d.date });
       for (const [key, settings] of Object.entries(d.overlaySettings || {})) {
         const id = OVERLAY_ID.test(key) ? key : overlays.resolve(key)?.doc.id;
         const slug = slugOf(key, d.overlaySlugs);
@@ -768,6 +873,33 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     }
   }
 
+  // ---- acts (v0's roster) ---------------------------------------------------------------------
+  // The names to suggest for a lineup: every act of the shows' lineups and their plans, partners
+  // too, kept nowhere of its own. One entry per name (letter case and spacing aside), spelled as on
+  // its latest night, with that night's date and the latest logo the act had; latest night first.
+  function acts() {
+    const byName = new Map();
+    const note = (name, date, logo) => {
+      if (typeof name !== 'string' || !name.trim()) return;
+      const key = actName(name);
+      const was = byName.get(key);
+      const entry = !was || date > was.date ? { name: name.trim(), date, logo: was?.logo, logoDate: was?.logoDate } : was;
+      if (logo && !(entry.logoDate > date)) Object.assign(entry, { logo, logoDate: date });
+      byName.set(key, entry);
+    };
+    const nights = [
+      ...shows.list().map((s) => ({ date: s.date, lineup: s.lineup })),
+      ...[...list('show_plans')].map((p) => ({ date: p.data.date, lineup: p.data.changes?.lineup })),
+    ];
+    for (const { date, lineup } of nights) {
+      for (const s of Array.isArray(lineup) ? lineup : []) {
+        note(s.name, date, s.logo);
+        note(s.b2b, date);
+      }
+    }
+    return [...byName.values()].map(({ name, date, logo }) => ({ name, date, ...(logo ? { logo } : {}) })).sort((a, b) => (actKey(a) < actKey(b) ? -1 : 1));
+  }
+
   // ---- startup -------------------------------------------------------------------------------
   for (const c of list('cues')) if (c.data.status === 'armed' && !c.data.removed) arm(c);
   const unlisten = shows.onChanged((showId, { removed } = {}) => {
@@ -787,8 +919,10 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     update,
     remove,
     override,
+    rearmAll,
     build,
-    plans: { list: listPlans, add: addPlan, remove: removePlan },
+    plans: { list: listPlans, get: (showRef, planId) => planView(planOf(showRef, planId).doc), add: addPlan, replace: replacePlan, apply: applyPlan, remove: removePlan },
+    acts,
     // How late a step or cue still plays after a restart (H5): media still has a use until then.
     graceMs: GRACE_MS,
     tick,

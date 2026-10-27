@@ -10,7 +10,7 @@ import { browserSkip, launchBrowser } from './cdp.js';
 import { defer, startWithOverlay } from './helpers.js';
 
 const DIR = fileURLToPath(new URL('../templates/takeover/', import.meta.url));
-const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.1.0' };
 const VIEWERS = { id: 'dev.skp.viewers', version: '1.0.0' };
 const SCENES = ['auto', 'starting', 'program', 'brb', 'lineup', 'outro', 'bg', 'intro', 'headliner', 'line', 'pov'];
 const MIN = 60000;
@@ -19,13 +19,21 @@ const FILE_ID = '0123456789abcdef0123456789abcdef';
 describe('what the port had to fix (docs/PLAN.md)', () => {
   const read = (name) => readFileSync(path.join(DIR, name), 'utf8');
 
-  test('the package validates, with every core scene, The Line, POV and the four actions', () => {
+  test('the package validates, with every core scene, The Line, POV and v0\'s operator actions', () => {
     const result = validateTemplate(DIR);
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.warnings, []);
     const manifest = JSON.parse(read('template.json'));
+    assert.equal(manifest.version, TAKEOVER.version);
     assert.deepEqual(manifest.scenes.map((s) => s.id), SCENES);
-    assert.deepEqual(manifest.actions.map((a) => a.id), ['titleCard', 'nowPlaying', 'chipOpening', 'chipOnAt']);
+    assert.deepEqual(manifest.actions.map((a) => a.id), ['titleCard', 'nowPlaying', 'nowPlayingHold', 'hideCards', 'chipOpening', 'chipOnAt', 'linePlay', 'lineStop']);
+    // What has no end on a clock declares no duration: the templates page shows none for it, and the
+    // runtime still lets a late trigger in for the platform's default window.
+    assert.deepEqual(manifest.actions.filter((a) => a.durationMs === undefined).map((a) => a.id), ['nowPlayingHold', 'hideCards', 'linePlay', 'lineStop']);
+    // The hold times' defaults are v0's, and the actions' durations say the same.
+    const props = manifest.definitions.settings.properties;
+    assert.deepEqual([props.cardSec.default * 1000, props.npSec.default * 1000], manifest.actions.slice(0, 2).map((a) => a.durationMs));
+    assert.equal(props.autoCard.default, false, 'off: a timeline built from the lineup shows each title card already');
     assert.deepEqual(manifest.canvases.map((c) => `${c.id} ${c.width}x${c.height}`), ['h 1920x1080', 'v 1080x1920']);
   });
 
@@ -342,10 +350,10 @@ describe('TAKEOVER on air', () => {
     trigger('nowPlaying', { durationMs: 7000 });
     await page.waitFor('!!document.querySelector("[data-kind=np]")', 3000);
     await page.eval('document.querySelector("[data-kind=np]").dataset.mark = "1"');
-    // Marking the next act current doesn't touch the live scene at all.
+    // Marking the next act current doesn't rebuild the live scene: the card names them in place.
     platform.bus.setState('show.currentSlot', 3);
-    await sleep(400);
-    assert.equal(await page.eval('document.querySelector("[data-kind=np]") && document.querySelector("[data-kind=np]").dataset.mark'), '1', 'the same card, not rebuilt');
+    await page.waitFor('document.querySelector("[data-kind=np] .name") && document.querySelector("[data-kind=np] .name").textContent === "BIA"', 1500);
+    assert.equal(await page.eval('document.querySelector("[data-kind=np]").dataset.mark'), '1', 'the same card, not rebuilt');
     // A lineup edit and a settings edit rebuild the scene; the card comes back where it was.
     platform.bus.setState('show.lineup', [...state['show.lineup'], { time: '05:00', startAt: Date.now() + 300 * MIN, name: 'LATE ADD' }]);
     await sleep(300);
@@ -412,7 +420,9 @@ describe('TAKEOVER on air', () => {
     const { page, take, platform, overlay } = await open(t, { settings: { lineClip: `/media/${FILE_ID}/line.mp4` }, query: { lite: '1' } });
     await take('line');
     platform.bus.publish('media.play', { mediaId: 'med_x', url: `/media/${FILE_ID}/s.webm` }, { target: overlay.id });
-    await sleep(400);
+    await take('program');
+    platform.shows.fireOverlay('tk', 'linePlay');
+    await sleep(700);
     assert.equal(await page.eval('document.querySelectorAll("video").length'), 0);
   });
 
@@ -473,6 +483,238 @@ describe('TAKEOVER on air', () => {
   test('performers\' logos are fetched before an action first shows them', opts, async (t) => {
     const { page } = await open(t, { state: night() });
     await page.waitFor('performance.getEntriesByType("resource").some((e) => e.name.endsWith("/vikkstar.png"))', 3000);
+  });
+});
+
+// What each page put on screen and took off, on this machine's clock (both pages share it): an
+// action's graphic as it is mounted, with the act it names, and as it is removed.
+const RECORD = `(() => {
+  window.__seen = [];
+  const name = (n) => ((n.querySelector('.djname, .t-name, .name, .who') || {}).textContent || '').trim();
+  new MutationObserver((list) => {
+    for (const m of list) {
+      for (const n of m.addedNodes) if (n.nodeType === 1 && n.hasAttribute('data-kind')) window.__seen.push({ kind: n.getAttribute('data-kind'), name: name(n), at: Date.now() });
+      for (const n of m.removedNodes) if (n.nodeType === 1 && n.hasAttribute('data-kind')) window.__seen.push({ kind: n.getAttribute('data-kind'), gone: Date.now() });
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+  return true;
+})()`;
+const seen = (page) => page.eval('window.__seen');
+const near = (value, want, within, what) => assert.ok(Math.abs(value - want) <= within, `${what}: ${Math.round(value - want)} ms off`);
+
+describe('v0\'s operator controls', () => {
+  // The vertical page in a browser of its own, as each OBS source is: a browser's tab behind
+  // another has its timers held back, which no source on air has.
+  let second;
+  const otherBrowser = async () => (second ??= await launchBrowser());
+  after(async () => { if (second) await second.close(); });
+
+  // On the night: one overlay for the horizontal canvas and one for the vertical, members of one
+  // show, each page with its own envelope for every change the show makes.
+  async function showPair(t, settings) {
+    const ctx = await startWithOverlay(t, { slug: 'tk', template: TAKEOVER, settings });
+    const { platform } = ctx;
+    platform.overlays.create({ slug: 'tk-v', template: TAKEOVER, settings });
+    platform.overlays.setKeyRequired('tk-v', false);
+    const lineup = [{ time: '22:00', name: 'Trapment' }, { time: '23:00', name: 'BIA', b2b: 'DOLF' }, { time: '00:30', name: 'VIKKSTAR', headliner: true }];
+    const show = platform.shows.create({ name: 'Saturday', overlays: ['tk', 'tk-v'], date: '2026-10-17', timezone: 'America/Toronto', lineup });
+    platform.shows.setSlot(show.id, 0);
+    platform.shows.take(show.id, 'program', { transition: 'cut' });
+    const load = async (url, size, from = browser) => {
+      const page = await from.open(url, size);
+      defer(t, () => page.close().catch(() => {}));
+      await page.waitFor('window.SK && SK.scene === "program" && !!document.querySelector("[data-skp-scene-root] .program")', 10000);
+      await page.eval(RECORD);
+      return page;
+    };
+    const h = await load(ctx.base, { width: 1920, height: 1080 });
+    const v = await load(`${platform.url}/o/tk-v?canvas=v`, { width: 1080, height: 1920 }, await otherBrowser());
+    return { ...ctx, show, h, v, load };
+  }
+
+  test('the title card and Now playing stay as long as the settings say, longer or shorter than the action\'s default', opts, async (t) => {
+    const { page, take, platform } = await open(t, { settings: { cardSec: 9, npSec: 3 }, state: night() });
+    await take('program');
+    await page.eval(RECORD);
+    // As the Live page and a cue fire them: the platform's trigger carries template.json's 7 s and 22 s.
+    platform.shows.fireOverlay('tk', 'titleCard');
+    platform.shows.fireOverlay('tk', 'nowPlaying');
+    await page.waitFor('window.__seen.filter((s) => s.gone).length === 2', 12000);
+    const list = await seen(page);
+    const span = (kind) => list.find((s) => s.kind === kind && s.gone).gone - list.find((s) => s.kind === kind && s.at).at;
+    near(span('np'), 3050, 400, 'Now playing for npSec, not 22 s');
+    near(span('title'), 9050, 400, 'the title card for cardSec, past the action\'s 7 s');
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('Now playing (hold) stays until Hide, through a rebuild; Hide takes the title card with it', opts, async (t) => {
+    const { page, take, platform } = await open(t, { settings: { npSec: 3 }, state: night() });
+    await take('program');
+    platform.shows.fireOverlay('tk', 'nowPlayingHold');
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 3000);
+    assert.equal(await page.eval('document.querySelector("[data-kind=np] .name").textContent'), 'Trapment');
+    await sleep(4000); // past npSec, and past the 7 s a trigger without a duration of its own is given
+    platform.overlays.updateSettings('tk', { npSec: 3, tagline: 'REBUILT' });
+    await sleep(3500);
+    assert.equal(await page.eval('!!document.querySelector("[data-kind=np]")'), true, 'held');
+    platform.shows.fireOverlay('tk', 'titleCard');
+    await page.waitFor('!!document.querySelector("[data-kind=title]")', 3000);
+    const t0 = Date.now();
+    platform.shows.fireOverlay('tk', 'hideCards');
+    await page.waitFor('!document.querySelector("[data-kind=np], [data-kind=title]")', 3000);
+    assert.ok(Date.now() - t0 < 1500, 'at once');
+    // A timed Now playing after a hold is timed again.
+    platform.shows.fireOverlay('tk', 'nowPlayingHold');
+    await page.waitFor('!!document.querySelector("[data-kind=np]")', 3000);
+    platform.shows.fireOverlay('tk', 'nowPlaying');
+    await sleep(600);
+    await page.waitFor('!document.querySelector("[data-kind=np]")', 4500);
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('a held Now playing and a title card from its button follow who\'s on, in place, on both canvases; one a cue names stays theirs', opts, async (t) => {
+    const { platform, show, h, v } = await showPair(t, { cardSec: 30 });
+    const names = '[...document.querySelectorAll("[data-kind=np] .name, [data-kind=title] .djname")].map((e) => e.textContent).join()';
+    platform.shows.trigger(show.id, 'nowPlayingHold');
+    platform.shows.trigger(show.id, 'titleCard');
+    for (const page of [h, v]) await page.waitFor(`${names} === "Trapment,Trapment"`, 3000);
+    // v0's Hold: pick who's on, and the card on air names them. No Hide, and no new entrance.
+    platform.shows.setSlot(show.id, 1);
+    for (const page of [h, v]) {
+      await page.waitFor(`${names} === "BIA,BIA"`, 1500);
+      assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-kind=np] .b2b, [data-kind=title] .djb2b")].map((e) => e.textContent)'), ['B2B DOLF', 'B2B DOLF']);
+      assert.equal((await seen(page)).filter((s) => s.at).length, 2, 'each card came on once');
+    }
+    platform.shows.trigger(show.id, 'titleCard', { args: { name: 'Trapment' } });
+    await h.waitFor('document.querySelectorAll("[data-kind=title]").length === 1 && document.querySelector("[data-kind=title] .djname").textContent === "Trapment"', 3000);
+    platform.shows.setSlot(show.id, 2);
+    await h.waitFor('document.querySelector("[data-kind=np] .name").textContent === "VIKKSTAR"', 1500);
+    assert.equal(await h.eval('document.querySelector("[data-kind=title] .djname").textContent'), 'Trapment');
+    assert.deepEqual([...problems(h), ...problems(v)], []);
+  });
+
+  test('the title card by itself: on both canvases on the same frame, timed from the server\'s change, then Now playing; a reload replays nothing', opts, async (t) => {
+    const { platform, show, h, v, load } = await showPair(t, { autoCard: true, autoCardSec: 3, cardSec: 2, npSec: 3 });
+    // The vertical page is busy when the act changes, so it hears of it 1.5 s late (a slow OBS, a
+    // poll): timed from when it heard, its card would come 1.5 s after the other's.
+    const busy = v.eval('(() => { const end = Date.now() + 1500; while (Date.now() < end) {} return true; })()');
+    await sleep(100);
+    const t0 = Date.now();
+    platform.shows.setSlot(show.id, 1);
+    await busy;
+    for (const page of [h, v]) await page.waitFor('window.__seen.some((s) => s.kind === "np")', 8000);
+    const [hs, vs] = [await seen(h), await seen(v)];
+    const first = (list, kind) => list.find((s) => s.kind === kind && s.at);
+    for (const [list, canvas] of [[hs, 'h'], [vs, 'v']]) {
+      assert.deepEqual([first(list, 'title').name, first(list, 'np').name], ['BIA', 'BIA'], canvas);
+      near(first(list, 'title').at, t0 + 3000, 500, `${canvas}: the title card autoCardSec after the change`);
+      near(first(list, 'np').at, t0 + 5000, 500, `${canvas}: Now playing as the card ends`);
+    }
+    near(first(hs, 'title').at, first(vs, 'title').at, 250, 'the same frame on both canvases');
+    // A page loaded afterwards doesn't know when BIA came on: it shows nothing for them.
+    await h.close();
+    const again = await load(`${platform.url}/o/tk`, { width: 1920, height: 1080 });
+    await sleep(5000);
+    assert.deepEqual(await seen(again), []);
+    assert.equal((await seen(v)).filter((s) => s.at).length, 2, 'and the other page nothing again');
+    assert.deepEqual([...problems(again), ...problems(v)], []);
+  });
+
+  test('with nobody picked, the clock\'s act gets theirs: their set\'s start plus the delay, on both canvases', opts, async (t) => {
+    const state = night();
+    delete state['show.currentSlot'];
+    const { page, take, platform, base } = await open(t, { settings: { autoCard: true, autoCardSec: 2, cardSec: 2 }, state });
+    const v = await (await otherBrowser()).open(`${base}?canvas=v`, { width: 1080, height: 1920 });
+    defer(t, () => v.close().catch(() => {}));
+    await take('program');
+    await v.waitFor('SK.scene === "program" && !!document.querySelector("[data-skp-scene-root] .program")');
+    for (const p of [page, v]) await p.eval(RECORD);
+    const startAt = Date.now() + 1500;
+    platform.bus.setState('show.lineup', state['show.lineup'].map((s) => (s.name === 'BIA' ? { ...s, startAt } : s)));
+    for (const p of [page, v]) await p.waitFor('window.__seen.some((s) => s.kind === "title")', 6000);
+    for (const p of [page, v]) {
+      const card = (await seen(p)).find((s) => s.kind === 'title');
+      assert.equal(card.name, 'BIA');
+      near(card.at, startAt + 2000, 500, 'the set\'s start plus autoCardSec');
+    }
+    assert.deepEqual([...problems(page), ...problems(v)], []);
+  });
+
+  test('the automatic card isn\'t shown twice: a title card for that act since they came on (the timeline\'s) stands for it, with no delay too; off, nothing shows', opts, async (t) => {
+    const { platform, show, h, v } = await showPair(t, { autoCard: true, autoCardSec: 0, cardSec: 2, npSec: 3 });
+    const shown = async (page) => (await seen(page)).filter((s) => s.at).map((s) => [s.kind, s.name]);
+    const settings = async (values) => {
+      for (const slug of ['tk', 'tk-v']) platform.overlays.updateSettings(slug, values);
+      for (const page of [h, v]) await page.waitFor(`SK.settings.autoCard === ${values.autoCard === true} && SK.settings.autoCardSec === ${values.autoCardSec}`);
+    };
+    // What "Build from lineup" fires at a set's start: who's on, then their title card, which
+    // starts a moment after the change. With no delay, the card by itself still waits for it.
+    platform.shows.setSlot(show.id, 'BIA');
+    platform.shows.trigger(show.id, 'titleCard', { args: { name: 'BIA' } });
+    await sleep(4500);
+    for (const page of [h, v]) assert.deepEqual(await shown(page), [['title', 'BIA']], 'one title card, and no Now playing after it');
+    await settings({ autoCard: true, autoCardSec: 2, cardSec: 2, npSec: 3 });
+    platform.shows.setSlot(show.id, 'VIKKSTAR');
+    platform.shows.trigger(show.id, 'titleCard', { args: { name: 'VIKKSTAR' } });
+    await sleep(5500);
+    assert.deepEqual(await shown(h), [['title', 'BIA'], ['title', 'VIKKSTAR']]);
+    // Switched off (the default), a pick brings nothing.
+    await settings({ autoCardSec: 2, cardSec: 2, npSec: 3 });
+    platform.shows.setSlot(show.id, 'Trapment');
+    await sleep(3500);
+    assert.equal((await shown(h)).length, 2);
+    assert.deepEqual([...problems(h), ...problems(v)], []);
+  });
+
+  test('Play The Line\'s clip shows it under every scene until Stop, one video throughout; The Line itself plays on', opts, async (t) => {
+    const clip = `/media/${FILE_ID}/line.mp4`;
+    const { page, take, platform } = await open(t, { state: night() });
+    const layer = 'document.querySelector("[data-clip]")';
+    await take('program');
+    platform.shows.fireOverlay('tk', 'linePlay');
+    await sleep(500);
+    assert.equal(await page.eval(`${layer}.classList.contains("hide") && !${layer}.querySelector("video")`), true, 'no clip set: nothing');
+    platform.overlays.updateSettings('tk', { lineClip: clip });
+    await page.waitFor(`SK.settings.lineClip === ${JSON.stringify(clip)}`);
+    platform.shows.fireOverlay('tk', 'linePlay');
+    await page.waitFor(`!${layer}.classList.contains("hide") && !!${layer}.querySelector("video")`, 3000);
+    await page.eval(`window.__clip = ${layer}.querySelector("video"); true`);
+    assert.equal(await page.eval('window.__clip.getAttribute("src")'), clip);
+    assert.equal(await page.eval('window.__clip.loop'), true);
+    // Taking The Line keeps it where it is (no restart, no dip in the crossfade).
+    await take('line');
+    assert.equal(await page.eval(`window.__clip.parentNode === ${layer} && !document.querySelector(".line .clip video")`), true);
+    // Stop on The Line: the scene's own clip plays on, as in v0: the same video, moved in.
+    platform.shows.fireOverlay('tk', 'lineStop');
+    await page.waitFor(`${layer}.classList.contains("hide") && document.querySelector(".line .clip video") === window.__clip`, 3000);
+    await take('program');
+    assert.equal(await page.eval(`${layer}.classList.contains("hide")`), true);
+    // Play again: the same video back in the layer; Stop pauses it there.
+    platform.shows.fireOverlay('tk', 'linePlay');
+    await page.waitFor(`!${layer}.classList.contains("hide") && ${layer}.querySelector("video") === window.__clip`, 3000);
+    platform.shows.fireOverlay('tk', 'lineStop');
+    await page.waitFor(`${layer}.classList.contains("hide") && window.__clip.paused`, 3000);
+    // The Line's clip played as media (a v0 cue imported) is the same Play, and media.stop its Stop.
+    const send = (type, data) => platform.bus.publish(type, data, { target: platform.overlays.resolve('tk').doc.id });
+    send('media.play', { mediaId: 'med_x', url: clip });
+    await page.waitFor(`!${layer}.classList.contains("hide") && ${layer}.querySelectorAll("video").length === 1 && ${layer}.querySelector("video") === window.__clip`, 3000);
+    send('media.stop', {});
+    await page.waitFor(`${layer}.classList.contains("hide")`, 3000);
+    assert.deepEqual(problems(page), []);
+  });
+
+  test('the event look\'s switches: the opening and on-at chips, and Now playing', opts, async (t) => {
+    const { page, take, platform } = await open(t, { settings: { look: 'event', scheduleChips: false, nowPlayingBar: false }, state: night() });
+    await take('program');
+    for (const name of ['chipOpening', 'nowPlaying', 'titleCard']) platform.shows.fireOverlay('tk', name);
+    await page.waitFor('!!document.querySelector("[data-kind=title]")', 3000);
+    await sleep(400);
+    assert.equal(await page.eval('!!document.querySelector("[data-kind=chip], [data-kind=np]")'), false, 'both off; the title card still shows');
+    platform.overlays.updateSettings('tk', { look: 'event' });
+    await page.waitFor('SK.settings.scheduleChips === true && SK.settings.nowPlayingBar === true');
+    for (const name of ['chipOpening', 'nowPlaying']) platform.shows.fireOverlay('tk', name);
+    await page.waitFor('!!document.querySelector("[data-kind=chip]") && !!document.querySelector("[data-kind=np]")', 3000);
+    assert.deepEqual(problems(page), []);
   });
 });
 

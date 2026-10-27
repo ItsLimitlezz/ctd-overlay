@@ -223,3 +223,51 @@ connection's version changes and nobody is editing it.
 Owners and admins only (`connections:read`/`write`); operators get each connection's status
 from `GET /api/v1/system/health`. Delete and Sign out are in a menu, behind a confirmation that
 names the consequence.
+
+## An overlay that reads a show (show-from-overlay.js)
+
+Set times, who's on, the countdown, REC and title cards live on a show; its members read them as
+`show.*` state. A template that reads who's on (`readsLineup(manifest)`: `consumes.state` matching
+`show.lineup`, `show.currentSlot` or `show.headliner`) gets none of it on an overlay outside a
+show, so the UI says so: `showParts(manifest)` / `showWords(manifest)` name what it reads ("Set
+times, the countdown, REC and title cards come from a show."), `needsShow(overlay, manifest)` is
+true outside a show, and `showNotice(ctx, { overlay, manifest, canAdd, compact, times, onAdded })`
+is the notice with **Make a show from this overlay** and (`canAdd`: there are shows) **Add it to
+a show**. It is first on the overlay's page (above the previews), on its Live card (`compact`),
+and first in its Live console (`overlayPanel(…).needs`, which reads the shows again while it is
+on, so a show made meanwhile brings **Add it to a show**), whose Actions add why a title card
+shows nothing (actions outside a show fire with no act named, and say "sent", not "on air").
+
+A template that reads only a show's times (`show.goLiveAt`, `show.recStartedAt`: a clock) may have
+a time of its own: `wantsShowTimes(overlay, manifest)`, and `showNotice(…, { times: true })` is a
+quiet line instead (`.show-times`: "With no time of its own, the countdown runs to a show's
+go-live…", the same two buttons, not primary), on the overlay's page only. `sampleWords(manifest)`
+is what Sample data makes up of a show, for the preview's note.
+
+`makeShow(ctx, overlay, { manifest })` is a form dialog like Shows' New show (name: the template's,
+free among the shows; date: the show's night now in the zone chosen, as New show has it, from
+`show-day.js`: before the 12:00 day boundary, the night before; in words with the quick picks;
+following the zone until picked; time zone: this device's; go-live: optional) with the template's
+other overlays in no show ticked; `POST /api/v1/shows`, then `#/shows/<id>?tab=lineup`.
+`addToShow(ctx, overlay, { manifest })` picks a show (the one an overlay of the same template is
+in first; the same twins ticked) and `PATCH`es its `overlays` with the show as listed for
+If-Match; a 412 or 404 keeps the dialog open, says so, and lists the shows again. In both, a 409
+`in-other-show` (a twin put in another show meanwhile) reads the overlays again, unticks and greys
+that twin ("in "Sneaky" now") and says so in plain words. Both open at their top (the focus on
+the first field without scrolling), never touch `connections` (a show is fed by what feeds its
+members), and say what feeds them.
+
+`show-day.js` is Shows' show-day rules for a dialog outside Shows: `browserZone()`,
+`showDayNow(zone, boundary)`, `dateLabel(ymd, long)`, `dateField(label, input, { hint, zone,
+boundary, weekdays })` (the date in words and its quick picks, `.refresh()` after the zone changes)
+and `zoneInput(value)`. shows.js still has its own copy of them.
+
+On the overlay page, sample data on such an overlay says what it makes up; an overlay in a show
+links its show's Lineup and Details. Settings are each overlay's own: after a save, the settings
+that changed (compared key by key) are offered to the other overlays of the same template in the
+show it is in now (`overlay.show` from the save's answer, not the page's first read) that hold
+something else (`.also-change`: "Also change: takeover-v"), read fresh for the offer, and only
+the keys each one's own version has (its pinned manifest; one on an older version is told what it
+lacks and that upgrading gives it); taking it PATCHes each with its own If-Match and only those
+keys, says what was refused and why in plain words, and offers the refused ones again as they are
+now, but not one refused with a 422 (its version can't take the value).

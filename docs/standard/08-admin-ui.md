@@ -45,6 +45,39 @@ The path a non-technical user takes: **browse → preview → use → copy into 
 - The URL, with **Copy**, **Add to OBS** (when OBS is connected, creates the browser source at
   the right size), and the exact browser-source size to set.
 - A clear note that the URL never changes when settings, theme or template version change.
+- A template that reads who's on from a show (`show.lineup`, `show.currentSlot` or
+  `show.headliner` in its `consumes`, a pattern such as `show.*` included: set times, the
+  countdown, REC, title cards, 02 §2.5) gets none of it on an overlay outside a show. The page
+  **MUST** say so first, in plain words (*"Set times, the countdown, REC and title cards come from
+  a show. This overlay isn't in one yet."*), with **Make a show from this overlay** and, when
+  there are shows, **Add it to a show**:
+  - *Make a show* asks for a name (the template's), the date (the show's night now in the zone
+    chosen, as New show has it: before noon, the default day boundary, it is still the night
+    before; said in words, with the same quick picks), the time zone (this device's), an
+    optional go-live time, and which of the template's other overlays in no show come along (its
+    vertical twin), ticked; it lands on the new show's Lineup. A twin put in another show
+    meanwhile is left out and said in plain words; pressing again makes the show with the rest.
+  - *Add it to a show* picks a show, the one an overlay of the same template is in first (they
+    change scenes together only in the same show), with the same twins ticked, and changes the
+    show's overlays with the show's If-Match: a show changed meanwhile is said, shown as it is
+    now, and nothing is added until it is done again.
+  - Neither changes what feeds the overlays: a show is fed by what feeds its members (§8.4).
+- A template that reads only a show's times (`show.goLiveAt`, `show.recStartedAt`: a clock's
+  countdown to the go-live and count-up since) may have a time of its own, so outside a show its
+  page says so quietly (*"With no time of its own, the countdown runs to a show's go-live…"*),
+  with the same two actions, and Live says nothing of it.
+- With sample data on (§8.5), the preview of an overlay outside a show says what of a show it
+  makes up, from what its template reads (*"Sample data makes up set times, the countdown, REC
+  and title cards here."*). An overlay in a show says where they are edited: the show's Lineup
+  and Details.
+- Settings are each overlay's own, the copy too (a tagline is set on the landscape and on the
+  vertical overlay). After a save, the other overlays of the same template in the show it is in
+  now (read again: it may have moved since the page was read) that hold something else in what
+  changed are offered the same change (*"Also change: takeover-v"*): only the settings that
+  changed and that their own version of the template has (one on an older version is told what
+  it lacks, and that upgrading it gives it), one change per overlay, each with its own If-Match.
+  One refused is named with the reason in plain words, and offered again as it is now; not one
+  whose version can't take the value, which would be refused the same way again.
 
 ## 8.4 Live console
 
@@ -62,6 +95,12 @@ CTD Relay servers, say) are two streams.
   (below) or **one member**: its preview, its URLs for OBS with their sizes, its actions,
   **Simulate**, what feeds it, and a link to its settings. Scenes stay the show's. The choice is
   kept in the address. An overlay outside a show opens the same panel on its own, with its scenes.
+- An overlay outside a show whose template reads who's on from one (§8.3) says so on its card
+  and first in its console, with the same **Make a show from this overlay** and, once there is a
+  show (one made while the console is open too), **Add it to a show**; added from its console,
+  Live opens the show's console with it chosen. Its actions fire with no act named, so its
+  Actions say why a title card shows nothing until it is in a show, and one fired is said to be
+  sent with no act to name, not to be on air.
 - Previews of the show's overlays (H and V).
 - Scene buttons for the show's scenes, labelled with the template's names for them, with the
   active one highlighted. Template extras (e.g. Headliner Intro) appear only when the active
@@ -80,7 +119,9 @@ Templates are designed and checked without going live.
 
 - `?mock=1` makes the runtime feed an overlay realistic sample data: a lineup, a chat stream
   with every role, emotes, a long name, a deleted message; one alert of every kind including a
-  gift burst; a track with progress; viewer counts that change.
+  gift burst; a track with progress; viewer counts that change. Sample data never passes for the
+  real thing: on an overlay outside a show, what it makes up of a show (set times, the countdown,
+  REC, title cards, or a clock's show times) is said to be so (§8.3).
 - The overlay page has a **Simulate** panel that injects individual events into that overlay
   only (`POST /overlays/{id}/simulate`): "Send chat message", "Follow", "Gift 25 subs", "Raid",
   "Change track", "Drop viewers to absent" — so a template author can watch each state.

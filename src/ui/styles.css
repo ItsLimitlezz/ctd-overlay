@@ -396,6 +396,21 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
 .stream-card > .open { margin-top: auto; padding-top: var(--gap); }
 .overlay-preview { max-width: 720px; }
 
+/* ---- an overlay that reads a show but is in none (show-from-overlay.js) ------------------ */
+/* The notice's sentences and its buttons packed tight (and the overlay page's "Also change"
+   offer, made the same way); on a stream card, under the status. */
+.needs-show > p, .also-change > p { margin: 0 0 8px; }
+.needs-show > .row, .also-change > .row { margin-top: 4px; }
+.needs-show > :last-child, .also-change > :last-child { margin-bottom: 0; }
+.stream-card > .needs-show-slot { margin-top: 12px; }
+.stream-card .needs-show { margin-bottom: 0; }
+.also-box:not(:empty) { margin-top: var(--gap); }
+.also-box > .notice:last-child { margin-bottom: 0; }
+.also-box > p { margin: 0; }
+/* A template that reads only a show's times (a clock): a quiet line under the overlay's name. */
+.show-times { margin-bottom: var(--gap); }
+.show-times > p { margin: 0 0 8px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }

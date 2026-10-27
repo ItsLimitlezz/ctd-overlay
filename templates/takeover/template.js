@@ -7,6 +7,10 @@
 // show.headliner (through the "headliner" setting's binding), show.goLiveAt, show.date,
 // show.recStartedAt, viewers.total, viewers.stale. Anything absent is hidden, never shown as a
 // placeholder (H6).
+//
+// v0's operator controls are here too: the title card's and Now playing's hold times (settings, as
+// v0's cardSec and npSec), Now playing held until Hide, the title card that shows by itself some
+// time after an act comes on (v0's delaySec), and Play / Stop for The Line's clip.
 (() => {
   'use strict';
   const html = document.documentElement;
@@ -26,11 +30,16 @@
   function ordered() {
     return slots().slice().sort((a, b) => (Number(a.startAt) || 0) - (Number(b.startAt) || 0));
   }
-  // Who's on: the operator's pick (show.currentSlot), else the slot the clock is in.
-  function current() {
+  // The operator's pick (show.currentSlot), if it names an act.
+  function picked() {
     const raw = SK.state('show.lineup');
     const i = SK.state('show.currentSlot');
-    if (Array.isArray(raw) && Number.isInteger(i) && raw[i] && typeof raw[i].name === 'string' && raw[i].name.trim()) return raw[i];
+    return Array.isArray(raw) && Number.isInteger(i) && raw[i] && typeof raw[i].name === 'string' && raw[i].name.trim() ? raw[i] : undefined;
+  }
+  // Who's on: the operator's pick, else the slot the clock is in.
+  function current() {
+    const pick = picked();
+    if (pick) return pick;
     const now = SK.clock.now();
     let cur;
     for (const s of ordered()) if (typeof s.startAt === 'number' && s.startAt <= now) cur = s;
@@ -52,6 +61,10 @@
     const y = loose(b);
     return x || y ? x === y : String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase() && String(a || '').trim() !== '';
   }
+  // An act, the same through lineup edits: its name and B2B, loosely. A set moved to another time
+  // is the same act.
+  const looseOr = (v) => loose(v) || String(v || '').trim().toLowerCase();
+  const actOf = (s) => (s ? `${looseOr(s.name)}|${looseOr(s.b2b)}` : '');
   // The billed act (09 §9.1: the slot flagged headliner, which is not the closer). The setting is
   // bound to show.headliner, so it follows the lineup unless the operator typed a name.
   function headliner() {
@@ -337,7 +350,7 @@
     return [s, slots(), SK.state('show.date'), SK.state('show.headliner')];
   }
   const builtFrom = new Map(); // scene id → inputsOf(id) when it was last built
-  const active = new Map(); // action kind → { trigger, make, el }: actions inside their window
+  const active = new Map(); // action kind → { trigger, make, end, el }: actions inside their window
   let lineVideo = null; // The Line's clip, kept across rebuilds (lineClipInto)
 
   function build(id, ctx) {
@@ -366,6 +379,7 @@
   // ---- video: The Line's clip and the operator's (media.play) --------------------------------------
   // A clip gets its black backing only once it has a picture: one that can't load (missing,
   // refused) leaves the camera showing, never a black frame. Lite mode (phone previews) plays none.
+  const clipLayer = document.querySelector('[data-clip]');
   function makeVideo(url) {
     const v = document.createElement('video');
     v.muted = true;
@@ -382,15 +396,72 @@
     const p = v.play();
     if (p && p.catch) p.catch(() => {});
   }
-  // The Line's clip: one <video> for as long as the setting names the same file, moved into each
-  // rebuild of the scene so it neither restarts nor flashes black.
+  // Moves a video, and its black backing with it. Moving pauses it: play() follows.
+  function moveVideo(v, into) {
+    if (v.parentNode === into) return;
+    if (v.parentNode) v.parentNode.classList.remove('ready');
+    into.appendChild(v);
+    into.classList.toggle('ready', v.readyState >= 2);
+  }
+
+  // The Line's clip: one <video> for as long as the setting names the same file, so a rebuild or a
+  // take neither restarts it nor flashes black. On The Line it plays in the scene. The operator's
+  // Play (v0's Play Clip) moves it to the clip layer, under every scene's chrome, until Stop; The
+  // Line shows it there too meanwhile, so taking The Line never dips it in the crossfade.
+  let lineOn = false;
+  function lineClip() {
+    const url = !SK.env.lite && videoUrl(S().lineClip);
+    if (!url) return null;
+    if (!lineVideo || lineVideo.getAttribute('src') !== url) lineVideo = makeVideo(url);
+    return lineVideo;
+  }
   function lineClipInto(el) {
     const holder = el.querySelector('[data-line-clip]');
-    if (!holder) return;
-    const url = videoUrl(S().lineClip);
-    if (!lineVideo || lineVideo.getAttribute('src') !== url) lineVideo = makeVideo(url);
-    holder.appendChild(lineVideo);
-    holder.classList.toggle('ready', lineVideo.readyState >= 2);
+    const v = holder && !lineOn ? lineClip() : null;
+    if (v) moveVideo(v, holder);
+  }
+  // The Line's own holder on screen, while The Line is the scene.
+  const lineHolder = () => (SK.scene === 'line' ? document.querySelector('[data-skp-scene-root="line"]:not([data-skp-state="exit"]) [data-line-clip]') : null);
+
+  // Play: from the start unless it is on screen already, looping, until Stop. It doesn't take The
+  // Line, as v0's didn't.
+  function linePlay() {
+    const v = clipLayer && lineClip();
+    if (!v) return;
+    const showing = lineOn || (!!v.parentNode && v.parentNode === lineHolder());
+    for (const other of clipLayer.querySelectorAll('video')) if (other !== v) other.remove(); // the operator's other clip
+    lineOn = true;
+    moveVideo(v, clipLayer);
+    if (!showing) {
+      try { v.currentTime = 0; } catch (err) { /* not seekable yet */ }
+    }
+    clipLayer.classList.remove('hide');
+    play(v);
+  }
+  // Stop. On The Line the clip plays on in the scene, as in v0.
+  function lineStop() {
+    if (!lineOn) return;
+    lineOn = false;
+    if (!lineVideo || lineVideo.parentNode !== clipLayer) return;
+    clipLayer.classList.add('hide');
+    const holder = lineHolder();
+    if (holder) {
+      moveVideo(lineVideo, holder);
+      play(lineVideo);
+    } else {
+      lineVideo.pause(); // kept loaded: the next Play doesn't flash black
+    }
+  }
+  // Another clip named while Play is on plays in its place, from the start; none, and Play ends.
+  function lineSettings() {
+    if (!lineOn || !clipLayer) return;
+    const old = lineVideo;
+    const v = lineClip();
+    if (v && v === old && v.parentNode === clipLayer) return;
+    if (old && old !== v && old.parentNode === clipLayer) old.remove();
+    lineOn = false;
+    if (v) linePlay();
+    else clipLayer.classList.add('hide');
   }
 
   // ---- what changes every moment: countdown, REC, viewers, who's on ------------------------------
@@ -427,7 +498,11 @@
       el.classList.toggle('hide', !cur);
     }
   }
-  setInterval(() => paint(), 250);
+  setInterval(() => {
+    paint();
+    followAct();
+    watchClock();
+  }, 250);
   SK.onState('viewers.total', () => paint());
 
   // A change to what the scene on screen is built from rebuilds it; scenes not on screen are built
@@ -438,11 +513,17 @@
     if (!id || id === 'intro' || id === 'headliner' || builtFrom.get(id) === JSON.stringify(inputsOf(id))) return;
     SK.defineScene(id, (ctx) => build(id, ctx));
   }
-  SK.onSettings(refresh);
+  SK.onSettings(() => {
+    refresh();
+    lineSettings();
+  });
   SK.onState('show.*', (key) => {
+    if (key === 'show.lineup' || key === 'show.currentSlot') actMayChange();
     if (key === 'show.lineup') preloadLogos();
-    if (key === 'show.currentSlot') paint();
-    else if (/^show\.(lineup|date|headliner|goLiveAt)$/.test(key)) refresh();
+    if (key === 'show.currentSlot') {
+      paint();
+      followAct();
+    } else if (/^show\.(lineup|date|headliner|goLiveAt)$/.test(key)) refresh();
   });
 
   // Performers' logos are decoded before an action first reveals them (05 §5.8).
@@ -459,10 +540,21 @@
   }
 
   // ---- triggered graphics (actions, 04 §4.6) ------------------------------------------------------
-  // Shown on the live scene ("program", or "auto" once it is live), from startAt until startAt +
-  // durationMs on server time. An action stays active for its whole window: when the live scene
-  // is rebuilt (new data, a setting) or taken again within it, the graphic comes back at the point
-  // it had reached.
+  // Shown on the live scene ("program", or "auto" once it is live), from startAt until its end on
+  // server time. An action stays active for its whole window: when the live scene is rebuilt (new
+  // data, a setting) or taken again within it, the graphic comes back at the point it had reached.
+  // The title card and Now playing stay as long as the overlay's settings say (v0's cardSec and
+  // npSec). A trigger from the platform carries the action's durationMs from template.json, which
+  // is only the default of those settings, so the setting replaces it; a trigger that asks for its
+  // own duration gets it. Held, Now playing has no end: it stays until Hide, or the next one. Only
+  // the pages that saw the trigger have it: a source that reloads meanwhile (an OBS refresh) comes
+  // back without it, as no show state carries a hold (nor Play The Line's clip).
+  const seconds = (v, fallback, min, max) => (typeof v === 'number' && isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : fallback);
+  // As the settings bound them (template.json).
+  const cardMs = () => seconds(S().cardSec, 7, 2, 60) * 1000;
+  const npMs = () => seconds(S().npSec, 22, 3, 120) * 1000;
+  const declared = (name) => ((SK.meta.actions || []).find((a) => a.id === name) || {}).durationMs;
+  const endOf = (t, name, setting) => t.startAt + (t.durationMs === declared(name) ? setting() : t.durationMs);
   function liveRoot() {
     if (SK.scene !== 'program' && SK.scene !== 'auto') return null;
     const root = document.querySelector(`[data-skp-scene-root="${SK.scene}"]:not([data-skp-state="exit"]) .scene`);
@@ -473,43 +565,80 @@
     const lockup = root && root.querySelector('[data-lockup]');
     if (lockup) lockup.classList.toggle('dim', !!root.querySelector('[data-kind="np"], [data-kind="title"]'));
   }
-  function present(kind, trigger, make) {
-    active.set(kind, { trigger, make, el: null });
+  // end: the server time it goes (Infinity: held).
+  function present(kind, trigger, make, end = trigger.startAt + trigger.durationMs) {
+    active.set(kind, { trigger, make, end, el: null });
     show(kind);
   }
   function show(kind) {
     const a = active.get(kind);
     if (!a) return;
-    const end = a.trigger.startAt + a.trigger.durationMs;
-    if (SK.clock.now() >= end) {
+    if (SK.clock.now() >= a.end) {
       active.delete(kind);
       return;
     }
     const root = liveRoot();
     if (!root || (a.el && root.contains(a.el))) return;
     const el = a.make(a.trigger.args || {});
+    a.who = whoOf(current());
     if (!el) return;
     for (const old of root.querySelectorAll(`[data-kind="${kind}"]`)) SK.unmount(old).then(dimLockup);
     el.setAttribute('data-kind', kind);
     a.el = el;
     SK.mount(el, { parent: root, offsetMs: Math.max(0, SK.clock.now() - a.trigger.startAt) });
     dimLockup();
+    if (a.end === Infinity) return;
     const exitMs = parseFloat(getComputedStyle(el).getPropertyValue('--skp-exit-ms')) || 500;
-    SK.clock.at(end - exitMs, () => {
+    SK.clock.at(a.end - exitMs, () => {
       if (active.get(kind) === a) active.delete(kind);
       if (el.isConnected) SK.unmount(el).then(dimLockup);
     });
   }
-  // The slot a trigger is about: its args (a cue can name one), else who's on.
-  function slotFor(args) {
-    if (args && typeof args.name === 'string' && args.name.trim()) {
-      return slots().find((s) => sameAct(s.name, args.name)) || { name: args.name, b2b: args.b2b };
+  // Hide (v0's Hide): the title card and Now playing go at once, held or not. An automatic title
+  // card on screen takes the Now playing it brings with it.
+  function hideCards() {
+    for (const kind of ['title', 'np']) {
+      active.delete(kind);
+      for (const el of document.querySelectorAll(`[data-kind="${kind}"]`)) SK.unmount(el).then(dimLockup);
     }
+    if (npDue) npDue();
+    npDue = null;
+  }
+  // Whether a trigger names its act (a cue can); one that doesn't is about who's on.
+  function named(args) {
+    return !!args && typeof args.name === 'string' && !!args.name.trim();
+  }
+  // The slot a trigger is about: the act it names, else who's on.
+  function slotFor(args) {
+    if (named(args)) return slots().find((s) => sameAct(s.name, args.name)) || { name: args.name, b2b: args.b2b };
     return current();
+  }
+  // A title card or Now playing that names no act follows who's on, as v0's did: picking the next
+  // act (or the clock reaching their set) changes the card already up, held or not, in place, with
+  // no new entrance. With nobody on, it goes, and comes back with the next act while it lasts.
+  const whoOf = (s) => (s ? `${s.startAt}|${s.name}|${s.b2b || ''}|${logoOf(s)}` : '');
+  function followAct() {
+    const who = whoOf(current());
+    for (const kind of ['title', 'np']) {
+      const a = active.get(kind);
+      if (!a || a.who === who || named(a.trigger.args)) continue;
+      if (!a.el || !a.el.isConnected) {
+        show(kind);
+        continue;
+      }
+      a.who = who;
+      const fresh = a.make(a.trigger.args || {});
+      if (fresh) {
+        if (fresh.innerHTML !== a.el.innerHTML) a.el.innerHTML = fresh.innerHTML;
+      } else {
+        SK.unmount(a.el).then(dimLockup);
+        a.el = null;
+      }
+    }
   }
   const div = (cls, inner) => Object.assign(document.createElement('div'), { className: cls, innerHTML: inner });
 
-  SK.action('titleCard', (t) => present('title', t, (args) => {
+  function titleCard(args) {
     const s = slotFor(args);
     if (!s) return null;
     const logo = logoOf(s);
@@ -520,11 +649,11 @@
     }
     return div('card title', `<div class="pre">NOW PLAYING</div>${logo ? `<img class="djlogo" src="${esc(logo)}" alt="">` : ''}
       <div class="djname">${esc(s.name)}</div>${s.b2b ? `<div class="djb2b">B2B ${esc(s.b2b)}</div>` : ''}<div class="post">${esc(S().tagline)}</div>`);
-  }));
-
-  SK.action('nowPlaying', (t) => present('np', t, (args) => {
+  }
+  function nowPlaying(args) {
     const s = slotFor(args);
-    if (!s) return null;
+    // The event look's own switch (v0's evOpts.np).
+    if (!s || (isEvent() && S().nowPlayingBar === false)) return null;
     const logo = logoOf(s);
     if (isEvent()) {
       return div('vk-np', `<div class="eyebrow">NOW PLAYING</div>${logo ? `<img class="logo" src="${esc(logo)}" alt="">` : ''}
@@ -536,25 +665,126 @@
       : (next ? `<div class="next"><span class="k">NEXT</span><span class="v">${esc(next.name)} — ${esc(time12(next.time))}</span></div>` : '');
     return div('np', `<div class="eyebrow"><span class="dot"></span><span class="label">NOW PLAYING</span></div>
       ${logo ? `<img class="logo" src="${esc(logo)}" alt="">` : ''}<div class="name">${esc(s.name)}</div>${s.b2b ? `<div class="b2b">B2B ${esc(s.b2b)}</div>` : ''}${tail}`);
-  }));
+  }
 
-  // The event look's schedule chips: who opens, and when the headliner is on.
+  SK.action('titleCard', (t) => {
+    const s = slotFor(t.args);
+    if (s) titled.set(actOf(s), t.startAt);
+    present('title', t, titleCard, endOf(t, 'titleCard', cardMs));
+  });
+  SK.action('nowPlaying', (t) => present('np', t, nowPlaying, endOf(t, 'nowPlaying', npMs)));
+  SK.action('nowPlayingHold', (t) => present('np', t, nowPlaying, Infinity));
+  SK.action('hideCards', hideCards);
+
+  // The event look's schedule chips: who opens, and when the headliner is on (v0's evOpts.sched
+  // switches them off).
+  const chips = () => isEvent() && S().scheduleChips !== false;
   SK.action('chipOpening', (t) => present('chip', t, () => {
     const first = ordered()[0];
-    if (!isEvent() || !first) return null;
+    if (!chips() || !first) return null;
     return div('vk-br', `<div class="k">OPENING</div><div class="v">${esc(first.name)}</div>`);
   }));
   SK.action('chipOnAt', (t) => present('chip', t, () => {
     const h = headliner();
-    if (!isEvent() || !h || !h.time) return null;
+    if (!chips() || !h || !h.time) return null;
     return div('vk-br', `<div class="k">${esc(h.name)}</div><div class="v">ON AT <em>${esc(time12(h.time))}</em></div>`);
   }));
 
+  SK.action('linePlay', linePlay);
+  SK.action('lineStop', lineStop);
+
+  // ---- the title card by itself (v0's delaySec) ----------------------------------------------------
+  // When the act on changes, their title card shows autoCardSec later, then Now playing, as v0's
+  // clock-run links did. It counts from when the act came on, on the server's clock, so both
+  // canvases and every overlay of the show show it on the same frame: a pick from the moment the
+  // server made it, the clock's own change from the slot's start. A page loaded with an act
+  // already picked doesn't know when that was, so it shows nothing for them (a reload replays
+  // nothing); the clock's act it does know, and it keeps time with the others. An act whose title
+  // card already showed since they came on (a timeline cue, the button, the headliner's intro)
+  // doesn't get a second one, so turning it on beside a timeline built from the lineup is safe.
+  // A cue that puts an act on and shows their card does both at once, and the card starts a moment
+  // after the change (the server's lead on a trigger): the card by itself never starts sooner than
+  // LEAD_MS after the change, so with no delay it still sees that one. The same on every page.
+  const LEAD_MS = 1000;
+  const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+  const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  // When the change being taken in reached the server. An envelope's id on this platform is a
+  // ULID (02 §2.1 recommends one): its first ten characters are the server time it was made, the
+  // same on every member. Any other id (mock data), or a time that can't be this change's, is now.
+  function changedAt() {
+    const now = SK.clock.now();
+    const id = SK.transport.cursor;
+    if (typeof id !== 'string' || !ULID.test(id)) return now;
+    let t = 0;
+    for (const c of id.slice(0, 10)) t = t * 32 + B32.indexOf(c);
+    return t <= now + 2000 && t >= now - 60000 ? t : now;
+  }
+  const titled = new Map(); // act (actOf) → when its latest title card started
+  let actOn; // the act on (actOf), undefined until the page has looked
+  let settling = null; // a show change being taken in: its keys arrive one by one
+  let changeAt = 0; // when its latest key reached the server
+  let cardDue = null; // cancels the title card still to come
+  let npDue = null; // cancels the Now playing that follows it
+
+  // Show state changed: a lineup edit moves who's on (lineup, then currentSlot), so the act is
+  // read once the change has settled, timed from its latest key (taken as it arrives: a page held
+  // up runs the wait late, never with an older change's time).
+  function actMayChange() {
+    changeAt = changedAt();
+    if (settling) return;
+    settling = setTimeout(() => {
+      settling = null;
+      checkAct(changeAt);
+    }, 150);
+  }
+  // The clock reached the next act's slot (nobody picked).
+  function watchClock() {
+    if (!settling && actOn !== undefined) checkAct();
+  }
+  // at: when the change came, on server time (undefined: the clock's own, or the first look).
+  function checkAct(at) {
+    const cur = current();
+    const key = actOf(cur);
+    if (key === actOn) return;
+    const first = actOn === undefined;
+    actOn = key;
+    for (const cancel of [cardDue, npDue]) if (cancel) cancel();
+    cardDue = npDue = null;
+    if (!cur) return;
+    const byClock = !picked() && typeof cur.startAt === 'number' && at === undefined;
+    if (first && !byClock) return;
+    const since = byClock ? cur.startAt : at === undefined ? SK.clock.now() : at;
+    const startAt = since + Math.max(LEAD_MS, seconds(S().autoCardSec, 210, 0, 3600) * 1000);
+    const args = { name: cur.name };
+    // Armed whatever the setting: switched on meanwhile, it still shows; off, it doesn't.
+    cardDue = SK.clock.at(startAt, () => {
+      cardDue = null;
+      if (S().autoCard !== true || actOf(current()) !== key || (titled.get(key) ?? -Infinity) >= since - 5000) return;
+      const card = cardMs();
+      titled.set(key, startAt);
+      present('title', { startAt, durationMs: card, args }, titleCard);
+      npDue = SK.clock.at(startAt + card, () => {
+        npDue = null;
+        if (actOf(current()) === key) present('np', { startAt: startAt + card, durationMs: npMs(), args }, nowPlaying);
+      });
+    });
+  }
+  // The headliner's own intro is their title card.
+  SK.onScene((id) => {
+    const h = id === 'headliner' && headliner();
+    if (h) titled.set(actOf(h), SK.clock.now());
+  });
+
   // ---- the operator's clip (media.play / media.stop) ----------------------------------------------
-  const clipLayer = document.querySelector('[data-clip]');
   SK.on('media.play', (env) => {
     const url = videoUrl(env.data && env.data.url);
     if (!clipLayer || !url || SK.env.lite) return;
+    // The Line's own clip plays as Play The Line's clip does: the same one video.
+    if (url === videoUrl(S().lineClip)) {
+      linePlay();
+      return;
+    }
+    lineStop();
     let video = clipLayer.querySelector('video');
     if (!video || video.getAttribute('src') !== url) {
       clipLayer.classList.remove('ready');
@@ -569,6 +799,7 @@
   });
   SK.on('media.stop', () => {
     if (!clipLayer) return;
+    lineStop();
     clipLayer.classList.add('hide');
     const video = clipLayer.querySelector('video');
     if (video) video.pause(); // kept loaded: the next play doesn't flash black
@@ -583,6 +814,7 @@
       preloadLogos();
     }
     paint();
+    checkAct();
   });
   applyLook();
 })();

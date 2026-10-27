@@ -3,7 +3,7 @@
 // with its clock set ahead, through both daylight-saving nights.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
@@ -15,7 +15,8 @@ import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } fr
 const SEC = 1000;
 const MIN = 60 * SEC;
 const HOUR = 60 * MIN;
-const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+// The TAKEOVER template that ships with the platform, at the version it ships at.
+const TAKEOVER = { id: 'com.dprtmnt.takeover', version: JSON.parse(readFileSync(new URL('../templates/takeover/template.json', import.meta.url), 'utf8')).version };
 // Saturday 17 October 2026 in Toronto (EDT, UTC-4): a club night past midnight.
 const T0 = Date.UTC(2026, 9, 18, 2, 0); // 22:00
 const LINEUP = [
@@ -819,4 +820,220 @@ test('refusals: a media id that isn\'t one, a date that doesn\'t exist, a plan f
   platform.shows.update(show.id, { date: '2026-03-07' });
   const gap = timeline.add(show.id, { at: '02:30', action: ok });
   assert.deepEqual([gap.at, gap.clockGap], ['2026-03-08T07:30:00.000Z', true]);
+});
+
+// ---- v0 parity: re-arm all, a cue's act, the acts roster, a plan's own lineup -------------------
+// A request with headers of its own (If-Match), over the API as a token.
+const send = (platform, method, url, body, headers = {}) => fetch(`${platform.url}/api/v1${url}`, {
+  method,
+  headers: signedIn(platform, { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers }),
+  body: body === undefined ? undefined : JSON.stringify(body),
+}).then(async (res) => ({ status: res.status, etag: res.headers.get('etag'), body: await res.json().catch(() => null) }));
+
+test('re-arm all (v0\'s "re-arm"): every cue still to come that was skipped or fired early is armed again; what has passed stays; one override, recorded', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api, cue, watch, got, local } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  watch('main-h');
+  timeline.build(show.id);
+  const title = (name) => ({ type: 'overlay.action', name: 'titleCard', args: { name } });
+  const past = timeline.add(show.id, { at: '22:01', action: title('Past') });
+  const early = timeline.add(show.id, { at: '23:00', action: title('Early') });
+  const skipped = timeline.add(show.id, { at: '23:30', action: title('Skipped') });
+  const armed = timeline.add(show.id, { at: '23:45', action: title('Armed') });
+  const seq = timeline.add(show.id, { at: '23:50', action: { type: 'sequence', steps: [{ offsetMs: 0, action: { type: 'show.scene', scene: 'brb' } }, { offsetMs: 30 * SEC, action: { type: 'show.scene', scene: 'outro' } }] } });
+  clock.to(Date.UTC(2026, 9, 18, 2, 2)); // 22:02: the first has fired at its time
+  timeline.override(show.id, early.id, 'fire');
+  timeline.override(show.id, skipped.id, 'skip');
+  timeline.override(show.id, seq.id, 'fire'); // BRB now; its outro would come 30 s later
+  // A command, like the other overrides: no If-Match, an empty body.
+  const res = await api('POST', `/shows/${show.id}/cues/rearm`, {});
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body.items.map((c) => c.id), [early.id, skipped.id, seq.id], 'the cues it re-armed, in time order');
+  assert.ok(res.body.items.every((c) => c.status === 'armed' && !c.firedAt && c.stepsDone === undefined && Number.isInteger(c.rev)));
+  assert.equal(cue(past.id).status, 'fired', 'its time has passed: it stays as it is');
+  assert.equal(platform.store.get('cues', armed.id).rev, 1, 'an armed cue isn\'t touched');
+  clock.advance(MIN);
+  assert.equal(local('main-h')['show.scene'], 'brb', 'the sequence fired early stops where it was');
+  clock.to(Date.UTC(2026, 9, 18, 3, 30));
+  assert.deepEqual(of(got['main-h'], 'show.trigger').map((e) => e.data.args.name).filter((n) => n !== 'Manzone'), ['Past', 'Early', 'Early', 'Skipped'], 'fired early, then again at its time; the skipped one at its time');
+  // Nothing left to re-arm: an empty list. Another night's generated cues stay its history.
+  platform.shows.update(show.id, { date: '2026-10-24' });
+  const history = timeline.list(show.id).filter((c) => c.generated && c.status === 'fired' && c.at.startsWith('2026-10-18'));
+  assert.ok(history.length);
+  assert.deepEqual((await api('POST', `/shows/${show.id}/cues/rearm`, {})).body.items, []);
+  assert.ok(history.every((c) => cue(c.id).status === 'fired'));
+  // Recorded (07 §7.12), as one override each time.
+  const ops = platform.audit.list({ action: 'cue' }).items.filter((e) => e.action === 'cue.rearm-all').reverse();
+  assert.deepEqual(ops.map((e) => [e.target, e.details]), [[show.id, { show: show.id, cues: 3 }], [show.id, { show: show.id, cues: 0 }]]);
+  assert.ok(ops[0].actor);
+  // Refusals: a show that isn't, a body with fields. It takes what the other overrides take.
+  assert.equal((await api('POST', '/shows/nope/cues/rearm', {})).status, 404);
+  assert.equal((await api('POST', `/shows/${show.id}/cues/rearm`, { all: true })).status, 422);
+  const doc = (await api('GET', '/openapi.json')).body;
+  assert.equal(doc.paths['/api/v1/shows/{ref}/cues/rearm'].post['x-skp-scope'], doc.paths['/api/v1/shows/{ref}/cues/{cueId}/{op}'].post['x-skp-scope']);
+});
+
+test('a hand-made title card or now-playing names its act (args.name), checked; as a sequence it puts the act on, then shows the card', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, watch, got, local, cue, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  watch('tk');
+  const card = (args, name = 'titleCard') => ({ type: 'overlay.action', name, ...(args ? { args } : {}) });
+  const later = (action) => timeline.add(show.id, { at: '04:00', action }).action;
+  // Trimmed; an empty name (or null) is whoever is on; the template's other args stay as they are.
+  assert.deepEqual(later(card({ name: '  VIKKSTAR ' })), card({ name: 'VIKKSTAR' }));
+  assert.deepEqual(later(card({ name: ' ' })), card());
+  assert.deepEqual(later(card({ name: null, extra: 1 }, 'nowPlaying')), card({ extra: 1 }, 'nowPlaying'));
+  assert.deepEqual(later(card({ name: 'Guest', b2b: 'Friend' })), card({ name: 'Guest', b2b: 'Friend' }), 'an act not in the lineup shows by its name');
+  // Refusals say what to fix, in a sequence's steps too, and over the API.
+  for (const [args, re] of [[{ name: 5 }, /"args.name" is the act's name/], [{ name: 'x'.repeat(81) }, /at most 80/], [{ b2b: 'Friend' }, /goes with "args.name"/], [{ name: 'A', b2b: ['B'] }, /"args.b2b"/]]) {
+    assert.throws(() => later(card(args)), (err) => err.code === 'invalid' && re.test(err.message), JSON.stringify(args));
+    assert.throws(() => later({ type: 'sequence', steps: [{ offsetMs: 0, action: card(args, 'nowPlaying') }] }), { code: 'invalid' }, JSON.stringify(args));
+  }
+  const refused = await api('POST', `/shows/${show.id}/cues`, { at: '23:00', action: card({ name: 7 }, 'nowPlaying') });
+  assert.deepEqual([refused.status, refused.body.type], [422, 'https://skp.dev/errors/invalid']);
+  // Another action's args are its template's own: not read as an act. A now-playing held until
+  // hidden is about an act, like the others.
+  assert.deepEqual(later(card({ name: 5 }, 'chipOnAt')).args, { name: 5 });
+  assert.deepEqual(later(card({ name: ' Deecee ' }, 'nowPlayingHold')), card({ name: 'Deecee' }, 'nowPlayingHold'));
+  assert.throws(() => later(card({ b2b: 'Friend' }, 'nowPlayingHold')), { code: 'invalid' });
+  // Fired: the card is about the act named, whoever is on.
+  platform.shows.setSlot(show.id, 0);
+  const vik = timeline.add(show.id, { at: '22:10', action: card({ name: 'VIKKSTAR' }) });
+  clock.to(Date.UTC(2026, 9, 18, 2, 10));
+  assert.equal(cue(vik.id).status, 'fired');
+  assert.deepEqual(of(got.tk, 'show.trigger').map((e) => [e.data.name, e.data.args]), [['titleCard', { name: 'VIKKSTAR' }]]);
+  assert.equal(local('tk')['show.currentSlot'], 0, 'who\'s on stays as it was');
+  // v0's DJ title card: the act's show.slot, then its card, at one instant, one cue.
+  const djtitle = (await api('POST', `/shows/${show.id}/cues`, { at: '22:20', action: { type: 'sequence', steps: [{ offsetMs: 0, action: { type: 'show.slot', slot: 'Deecee' } }, { offsetMs: 0, action: card({ name: 'Deecee' }) }] } })).body;
+  const from = got.tk.length;
+  await new Promise((r) => setTimeout(r, 150)); // the bus sends a key at most every 100 ms (02 §2.9), in real time
+  clock.to(Date.UTC(2026, 9, 18, 2, 20));
+  const seen = got.tk.slice(from).filter((e) => (e.type === 'state.changed' && e.data.key === 'show.currentSlot') || e.type === 'show.trigger');
+  assert.deepEqual(seen.map((e) => e.type), ['state.changed', 'show.trigger'], 'the act is on before its card shows');
+  assert.deepEqual(seen[1].data.args, { name: 'Deecee' });
+  assert.equal(local('tk')['show.currentSlot'], 2);
+  assert.deepEqual([cue(djtitle.id).status, cue(djtitle.id).stepsDone, cue(djtitle.id).error], ['fired', 2, undefined]);
+});
+
+test('the acts of every lineup and plan, partners too, latest night first: the names a lineup is offered (v0\'s roster)', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, api } = await setup(t, { clock });
+  platform.overlays.create({ slug: 'other', template: TESTBED, settings: {} });
+  const show = platform.shows.create({ ...SHOW, lineup: [{ time: '22:30', name: 'Manzone', b2b: 'strong' }, { time: '01:00', name: 'VIKKSTAR', headliner: true, logo: '/media/abc/vik.png' }] });
+  platform.shows.create({ ...SHOW, name: 'Last month', overlays: ['other'], date: '2026-09-19', lineup: [{ time: '23:00', name: 'vikkstar', logo: '/media/old/vik.png' }, { time: '00:00', name: 'Old  Timer', logo: '/media/old/ot.png' }] });
+  timeline.plans.add(show.id, { date: '2026-10-24', lineup: [{ time: '23:00', name: 'UNDERCOVER' }, { time: '00:00', name: 'manzone' }, { time: '01:00', name: 'VIKKSTAR' }] });
+  const want = [
+    { name: 'manzone', date: '2026-10-24' }, // spelled as on its latest night
+    { name: 'UNDERCOVER', date: '2026-10-24' },
+    { name: 'VIKKSTAR', date: '2026-10-24', logo: '/media/abc/vik.png' }, // the latest logo it had
+    { name: 'strong', date: '2026-10-17' }, // a partner (B2B)
+    { name: 'Old  Timer', date: '2026-09-19', logo: '/media/old/ot.png' },
+  ];
+  assert.deepEqual(timeline.acts(), want);
+  // Over the API, a page at a time.
+  const first = await api('GET', '/acts?limit=2');
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.body.items, want.slice(0, 2));
+  const rest = await api('GET', `/acts?limit=200&cursor=${first.body.next}`);
+  assert.deepEqual([...first.body.items, ...rest.body.items], want);
+  assert.equal(rest.body.next, undefined);
+  // Kept nowhere of its own: a show deleted takes its names with it.
+  platform.shows.remove('Last month');
+  assert.deepEqual(timeline.acts().map((a) => a.name), ['manzone', 'UNDERCOVER', 'VIKKSTAR', 'strong']);
+});
+
+test('a plan is read, replaced whole with its If-Match, and applied by hand before its day (v0\'s "Load now"), never on air', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, local } = await setup(t, { clock });
+  const call = (...args) => send(platform, ...args);
+  const show = platform.shows.create({ ...SHOW, goLive: '22:00' });
+  const base = `/shows/${show.id}/plans`;
+  const made = (await call('POST', base, { date: '2026-10-24', goLive: '23:00', overlaySettings: { tk: { look: 'event' } } })).body;
+  const read = await call('GET', `${base}/${made.id}`);
+  assert.deepEqual([read.status, read.body, read.etag], [200, made, `"${made.id}-r${made.rev}"`]);
+  // Replaced whole: its own lineup; go-live left out, so the show keeps its own that day.
+  const lineup = [{ time: '23:00', name: 'UNDERCOVER', headliner: true }, { time: '01:00', name: 'Deecee', closer: true }];
+  const put = await call('PUT', `${base}/${made.id}`, { date: '2026-10-31', lineup, overlaySettings: made.overlaySettings }, { 'if-match': read.etag });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.deepEqual([put.body.date, put.body.lineup, put.body.goLive, put.body.overlaySettings, put.body.activateAt], ['2026-10-31', lineup, undefined, { tk: { look: 'event' } }, '2026-10-31T16:00:00.000Z']);
+  assert.equal(put.etag, `"${made.id}-r${made.rev + 1}"`);
+  // What the If-Match read is no longer it: 412; the body is checked as a new plan's.
+  assert.equal((await call('PUT', `${base}/${made.id}`, { date: '2026-10-31' }, { 'if-match': read.etag })).status, 412);
+  const now = { 'if-match': put.etag };
+  for (const [body, status, code] of [
+    [{ date: '2026-10-31', lineup: [{ time: '9pm', name: 'X' }] }, 422, 'invalid'],
+    [{ date: '2026-10-10' }, 422, 'invalid'],
+    [{ date: '2026-10-31', name: 'Renamed' }, 422, 'unknown-field'],
+    [{ lineup }, 422, 'invalid'],
+  ]) {
+    const res = await call('PUT', `${base}/${made.id}`, body, now);
+    assert.deepEqual([res.status, res.body.type], [status, `https://skp.dev/errors/${code}`], JSON.stringify(body));
+  }
+  // Another plan's date: refused; its own date again is no clash.
+  const other = (await call('POST', base, { date: '2026-11-07' })).body;
+  const clash = await call('PUT', `${base}/${made.id}`, { date: '2026-11-07' }, now);
+  assert.deepEqual([clash.status, clash.body.type], [409, 'https://skp.dev/errors/plan-exists']);
+  // Its settings sent back as read are kept, even for an overlay that has left the show since;
+  // changed, they are checked again.
+  platform.shows.update(show.id, { overlays: ['main-h'] });
+  const kept = await call('PUT', `${base}/${made.id}`, { date: '2026-10-31', lineup, goLive: '22:30', overlaySettings: { tk: { look: 'event' } } }, now);
+  assert.deepEqual([kept.status, kept.body.goLive, kept.body.overlaySettings], [200, '22:30', { tk: { look: 'event' } }]);
+  const changed = await call('PUT', `${base}/${made.id}`, { date: '2026-10-31', overlaySettings: { tk: { look: 'takeover' } } }, { 'if-match': kept.etag });
+  assert.equal(changed.status, 422);
+  assert.match(changed.body.detail, /isn't one of the show's overlays/);
+  // Applied by hand: never while the show is live.
+  platform.shows.rec(show.id, 'start');
+  const live = await call('POST', `${base}/${made.id}/apply`, {});
+  assert.deepEqual([live.status, live.body.type], [409, 'https://skp.dev/errors/live']);
+  platform.shows.rec(show.id, 'reset');
+  const applied = await call('POST', `${base}/${made.id}/apply`, {});
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.ok(applied.body.activatedAt);
+  const after = platform.shows.get(show.id);
+  assert.deepEqual([after.date, after.goLive, after.lineup.map((s) => s.name)], ['2026-10-31', '22:30', ['UNDERCOVER', 'Deecee']]);
+  assert.equal(local('main-h')['show.lineup'][0].name, 'UNDERCOVER', 'its members see it at once');
+  assert.deepEqual(platform.audit.list({ action: 'plan' }).items.map((e) => [e.action, e.target, e.details]), [['plan.apply', made.id, { show: show.id, date: '2026-10-31' }]]);
+  // Applied, it is history: not changed, not applied again. The other plan is still to come.
+  assert.deepEqual((await call('PUT', `${base}/${made.id}`, { date: '2026-10-31' }, { 'if-match': `"${made.id}-r${applied.body.rev}"` })).body.type, 'https://skp.dev/errors/applied');
+  assert.equal((await call('POST', `${base}/${made.id}/apply`, {})).status, 409);
+  assert.equal((await call('GET', `${base}/${other.id}`)).body.activatedAt, undefined);
+  assert.equal((await call('GET', `${base}/plan_nope`)).status, 404);
+  assert.equal((await call('PUT', `${base}/plan_01ARZ3NDEKTSV4RRFFQ69G5FAV`, { date: '2026-11-14' }, now)).status, 404);
+});
+
+test('a plan the show couldn\'t send to its overlays is refused as the show\'s own change is; one stored anyway is refused by hand, stays to fix, and changes nothing on its day', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, local } = await setup(t, { clock });
+  const call = (...args) => send(platform, ...args);
+  const show = platform.shows.create({ ...SHOW, goLive: '22:00' });
+  const base = `/shows/${show.id}/plans`;
+  // 60 acts with long logo URLs: over 24 KiB as published (09 §9.1).
+  const big = Array.from({ length: 60 }, (_, i) => ({ time: '23:00', name: `Act ${i + 1}`, logo: `https://cdn.example.com/${'x'.repeat(400)}/${i}.png` }));
+  const tooLarge = (res, what) => assert.deepEqual([res.status, res.body.type], [422, 'https://skp.dev/errors/too-large'], what);
+  const read = await call('GET', `/shows/${show.id}`);
+  tooLarge(await call('PATCH', `/shows/${show.id}`, { lineup: big }, { 'if-match': read.etag }), 'the show\'s own change');
+  tooLarge(await call('POST', base, { date: '2026-10-18', lineup: big }), 'a new plan');
+  const made = (await call('POST', base, { date: '2026-10-18', lineup: [{ time: '23:00', name: 'UNDERCOVER' }] })).body;
+  tooLarge(await call('PUT', `${base}/${made.id}`, { date: '2026-10-18', lineup: big }, { 'if-match': `"${made.id}-r${made.rev}"` }), 'a plan replaced');
+  // Its date planned again: said as the change it is.
+  const again = await call('POST', base, { date: '2026-10-18' });
+  assert.equal(again.status, 409);
+  assert.match(again.body.detail, /already has a plan for 2026-10-18: change that one, or delete it first/);
+  // One stored before this was checked: by hand, refused before anything changes, and it stays a
+  // plan to fix or apply later; nothing is recorded.
+  const doc = platform.store.get('show_plans', made.id);
+  platform.store.put('show_plans', made.id, { ...doc.data, changes: { ...doc.data.changes, lineup: big } });
+  platform.shows.setSlot(show.id, 1);
+  tooLarge(await call('POST', `${base}/${made.id}/apply`, {}), 'applied by hand');
+  const kept = (await call('GET', `${base}/${made.id}`)).body;
+  assert.deepEqual([kept.activatedAt, kept.error], [undefined, undefined]);
+  assert.deepEqual(platform.audit.list({ action: 'plan' }).items, []);
+  assert.equal(platform.shows.get(show.id).date, '2026-10-17');
+  // On its day: nothing changes (not who's on either), and the plan says why.
+  clock.to(Date.UTC(2026, 9, 18, 16, 1));
+  const done = (await call('GET', `${base}/${made.id}`)).body;
+  assert.match(done.error, /too large to send to its overlays/);
+  assert.deepEqual([platform.shows.get(show.id).date, platform.shows.get(show.id).currentSlot, local('tk')['show.currentSlot']], ['2026-10-17', 1, 1]);
 });
