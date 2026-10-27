@@ -16,24 +16,31 @@
 //                                go-live) and is in no show: it may well have a time of its own,
 //                                so it is said quietly, on its page only
 //   namesActs(manifest)          its title cards (its actions) name the act on now, from a show
-//   showNotice(ctx, { overlay, manifest, canAdd, compact, times, onAdded }) → the notice, with
-//                                "Make a show from this overlay" and (canAdd: shows exist) "Add it
-//                                to a show"; times: the quiet line too
-//   makeShow(ctx, overlay, { manifest }) the dialog: name, date, time zone, go-live, and the other
-//                                overlays of its template in no show (its vertical twin), ticked;
-//                                POST /shows, then the new show's Lineup
-//   addToShow(ctx, overlay)      pick a show (the one its twin is in first) and PATCH its overlays
-//                                with If-Match (H16) → the show
+//   suggestedShow(overlay, shows, overlays) the show plainly its: its twin's, else one with no
+//                                overlays yet (made before, its lineup typed in) → { show, why }
+//   showNotice(ctx, { overlay, manifest, shows, overlays, compact, times, onAdded }) → the notice,
+//                                with "Make a show from this overlay" and, once shows exist, "Add it
+//                                to a show" ("Add it to <show>" first, said why, for the suggested
+//                                one); times: the quiet line too
+//   makeShow(ctx, overlay, { manifest }) the dialog: name, date, time zone, go-live (as New show
+//                                has them, show-day.js newNight()), and the other overlays of its
+//                                template in no show (its vertical twin), ticked; POST /shows, then
+//                                the new show's Lineup. The Shows list opens it too, for an
+//                                overlay it names as in no show
+//   addToShow(ctx, overlay, { prefer }) pick a show (prefer, else the one its twin is in; one whose
+//                                night has passed marked so) and PATCH its overlays with If-Match
+//                                (H16) → the show
+//   nightPassed(show), passedLine(ctx, show, { onMoved }) a show dated before its night now: the
+//                                overlay page's line, with "Move it to <its next night>"
 //
 // Each overlay keeps what feeds it ("Fed by"): a show is fed by what feeds its overlays, so neither
 // dialog changes it, and each says what feeds them.
 import * as api from './api.js';
-import { dialog, field, h, mount, notice, run, toast } from './dom.js';
-import { browserZone, dateField, dateLabel, showDayNow, zoneInput } from './show-day.js';
+import { field, formDialog, h, mount, notice, run, toast } from './dom.js';
+import { dateLabel, newNight, onWeekday, showDayNow, weekdayName } from './show-day.js';
 import { fedByWords } from './streams.js';
-import { timeInput } from './time-field.js';
+import { timeInput, timeProblem } from './time-field.js';
 
-const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const NAME_CHARS = 80;
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -90,24 +97,44 @@ export const needsShow = (overlay, manifest) => !!overlay && !overlay.show && re
 export const wantsShowTimes = (overlay, manifest) => !!overlay && !overlay.show && !readsLineup(manifest) && showParts(manifest).length > 0;
 
 // ---- the notice ------------------------------------------------------------------------------
+// The show to put an overlay in, when one is plainly it: the show an overlay of its template is
+// in (its twin: the two change scenes together only in one show), else a show with no overlays
+// yet (made before, its lineup typed in). shows: as listed (live first, then the latest night);
+// overlays: every overlay, for its twin. → { show, why } (why: in words), or undefined.
+export function suggestedShow(overlay, shows = [], overlays = []) {
+  const all = ordered(list(shows).filter((s) => s && typeof s.id === 'string'));
+  const near = new Map(sameTemplate(overlay, list(overlays)).filter((o) => o.show).map((o) => [String(o.show).toLowerCase(), o]));
+  const twinShow = all.find((s) => near.has(String(s.name).toLowerCase()));
+  if (twinShow) return { show: twinShow, why: `"${near.get(String(twinShow.name).toLowerCase()).slug}", of the same template, is in "${twinShow.name}".` };
+  const bare = all.find((s) => !list(s.overlays).length && !list(s.members).length);
+  if (!bare) return undefined;
+  const acts = list(bare.lineup).length;
+  return { show: bare, why: `"${bare.name}" has ${acts ? `${plural(acts, 'act')} in its lineup and ` : ''}no overlays yet.` };
+}
+
 // compact: a stream card on Live (the sentence and the buttons only). times: also the quiet line of
-// a template that reads only a show's times (the overlay's page; Live leaves it out).
-export function showNotice(ctx, { overlay, manifest, canAdd = false, compact = false, times = false, onAdded } = {}) {
+// a template that reads only a show's times (the overlay's page; Live leaves it out). shows (as
+// listed) and overlays: with a show plainly its (suggestedShow), "Add it to <show>" comes first,
+// named and said why; else "Make a show from this overlay", with "Add it to a show" when there
+// are shows (canAdd, when the list isn't at hand).
+export function showNotice(ctx, { overlay, manifest, shows, overlays, canAdd = list(shows).length > 0, compact = false, times = false, onAdded } = {}) {
   const loud = needsShow(overlay, manifest);
   if (!loud && !(times && wantsShowTimes(overlay, manifest))) return null;
   const lines = loud
     ? [h('p', `${showWords(manifest)} This overlay isn't in one yet.`)]
     : [h('p.small.muted', `${showWords(manifest)} This overlay isn't in a show.`)];
   if (loud && !compact && namesActs(manifest)) lines.push(h('p', 'Until it is, a title card has no act to name, so it shows nothing.'));
+  const suggested = ctx.can('timeline:write') ? suggestedShow(overlay, shows, overlays) : undefined;
+  if (suggested) lines.push(h(loud ? 'p' : 'p.small.muted', `${suggested.why} Add this overlay to it, so its set times reach it.`));
   if (!ctx.can('timeline:write')) {
     if (loud) lines.push(h('p.small.muted', 'Your role can\'t make shows: an operator or a higher role can put it in one.'));
   } else {
-    const make = h(loud ? 'button.btn.primary' : 'button.btn', { type: 'button', onclick: () => run(make, () => makeShow(ctx, overlay, { manifest })) }, 'Make a show from this overlay');
-    const add = canAdd ? h('button.btn', { type: 'button', onclick: () => run(add, async () => {
-      const show = await addToShow(ctx, overlay, { manifest });
+    const make = h(loud && !suggested ? 'button.btn.primary' : 'button.btn', { type: 'button', onclick: () => run(make, () => makeShow(ctx, overlay, { manifest })) }, 'Make a show from this overlay');
+    const add = canAdd || suggested ? h(loud && suggested ? 'button.btn.primary' : 'button.btn', { type: 'button', onclick: () => run(add, async () => {
+      const show = await addToShow(ctx, overlay, { manifest, prefer: suggested?.show.id });
       if (show) onAdded?.(show);
-    }) }, 'Add it to a show') : null;
-    lines.push(h('div.row', make, add));
+    }) }, suggested ? `Add it to ${suggested.show.name}` : 'Add it to a show') : null;
+    lines.push(h('div.row', suggested ? [add, make] : [make, add]));
   }
   if (!loud) return h('div.show-times', lines);
   const el = notice(lines, 'warn');
@@ -142,44 +169,6 @@ function fedNote(members) {
     h('p', 'They are fed differently, and each keeps what feeds it (Fed by):'),
     h('ul', members.map((o) => h('li', `${o.slug}: ${lower(fedByWords(bindingOf(o), o.bound))}`))),
     h('p', 'The show\'s Details can feed them all the same way.'));
-}
-
-// A form in a dialog that stays open while it saves (as Shows' New show): the primary button runs
-// submit() (busy, no double tap), a problem shows in the dialog, success closes it. onError(err,
-// say) may handle a problem itself (say(node) shows it) → true. It opens at its top, its title and
-// what it is about in view, with the focus on `focus`. Resolves with submit's result, or undefined
-// when cancelled.
-function formDialog({ title, body, submitLabel, focus, submit, onError }) {
-  const message = h('div', { 'aria-live': 'polite' });
-  let result;
-  const pending = dialog({ title, body: h('div', body, message), actions: [{ label: 'Cancel', value: false }, { label: submitLabel, value: true, kind: 'primary' }] });
-  const d = message.closest('dialog');
-  const button = d?.querySelector('.form-actions .btn.primary');
-  const say = (node) => {
-    mount(message, node);
-    message.scrollIntoView?.({ block: 'nearest' });
-  };
-  d?.addEventListener('click', async (e) => {
-    if (!button || !button.contains(e.target)) return;
-    // Ours, not the dialog's own handler (which would close it before the request is done).
-    e.stopPropagation();
-    e.preventDefault();
-    mount(message);
-    let problem;
-    const out = await run(button, async () => (await submit()) ?? true, { onError: (err) => { problem = err; } });
-    if (problem) {
-      if (!(await onError?.(problem, say))) say(notice(problem?.message || String(problem), 'danger'));
-      return;
-    }
-    if (out !== undefined) {
-      result = out;
-      d.close();
-    }
-  }, true);
-  // dialog() focused Cancel, at the bottom, which scrolled a tall dialog down past its title.
-  focus?.focus({ preventScroll: true });
-  if (d) d.scrollTop = 0;
-  return pending.then(() => result);
 }
 
 // A ticked checkbox for each twin, with its name as the label.
@@ -226,20 +215,10 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
     api.all('/api/v1/overlays'),
     ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
   ]);
-  const zone = browserZone();
   const name = h('input', { type: 'text', value: freeName(manifest?.name || overlay.slug, shows), maxlength: NAME_CHARS, required: true, autocomplete: 'off' });
-  // The show's day now, as New show has it: after midnight, still the night before.
-  const date = h('input', { type: 'date', value: showDayNow(zone), required: true });
-  const tz = zoneInput(zone);
+  // The show's night now, as New show has it: after midnight, still the night before.
+  const { date, tz, dateEl, tzEl } = newNight();
   const goLive = timeInput();
-  const dateEl = dateField('Date', date, { hint: 'The night of the show. Acts after midnight still belong to this date.', zone: () => tz.value.trim() || zone, weekdays: [5, 6] });
-  // Tonight follows the zone chosen, until the date is picked (by hand or a quick pick).
-  let datePicked = false;
-  date.addEventListener('input', () => { datePicked = true; });
-  tz.addEventListener('change', () => {
-    if (!datePicked && tz.value.trim()) date.value = showDayNow(tz.value.trim());
-    dateEl.refresh();
-  });
   const self = h('input', { type: 'checkbox', checked: true, disabled: true });
   const boxes = twinBoxes(twinsOf(overlay, overlays));
   const fed = h('div');
@@ -250,7 +229,7 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
     h('p.muted', 'A show is the night: its date, when it goes live, and the lineup with each act\'s set time. Its overlays show them all, and change scenes together.'),
     field('Name', name, { hint: 'What you call the night.' }),
     dateEl,
-    field('Time zone', tz, { hint: 'Where the show happens. Its times are in this zone, wherever your phone is.' }),
+    tzEl,
     field('Goes live at', goLive, { hint: 'When the countdown ends and the show goes on air. Optional.' }),
     h('fieldset',
       h('legend', 'Overlays in the show'),
@@ -269,7 +248,9 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
       if (!name.value.trim()) fail('Give the show a name.');
       if (!DATE.test(date.value)) fail('Pick the date of the show.');
       if (!tz.value.trim()) fail('Pick the time zone.');
-      if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30.');
+      // Said in the box's own words (formDialog focuses it): "add AM or PM", never "like 22:30".
+      const late = timeProblem(goLive.value, 'The go-live time');
+      if (late) throw Object.assign(new Error(late), { field: goLive });
       return api.post('/api/v1/shows', {
         name: name.value.trim(),
         overlays: [overlay.id, ...ticked(boxes).map((o) => o.id)],
@@ -278,7 +259,7 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
         ...(goLive.value ? { goLive: goLive.value } : {}),
       });
     },
-    onError: (err, say) => takenMeanwhile(err, { overlay, boxes, say, again: 'Create show', redraw: drawFed }),
+    onError: (err, { say }) => takenMeanwhile(err, { overlay, boxes, say, again: 'Create show', redraw: drawFed }),
   });
   if (!created?.id) return undefined;
   toast(`Created the show "${created.name}" with ${andList(list(created.members))}: add the night's acts and their set times.`, { ms: 6000 });
@@ -286,12 +267,48 @@ export async function makeShow(ctx, overlay, { manifest } = {}) {
   return created;
 }
 
+// ---- a show's night that has passed --------------------------------------------------------------
+// A show dated before its night now (in its zone, with its day boundary), and not live: its
+// countdown and set times are that night's. → { tonight, next } (its next night on the same
+// weekday), or undefined.
+export function nightPassed(show) {
+  if (!show || show.live || !DATE.test(show.date || '')) return undefined;
+  const tonight = showDayNow(show.timezone, show.dayBoundary || '12:00');
+  return show.date < tonight ? { tonight, next: onWeekday(tonight, show.date) } : undefined;
+}
+
+// The line said where an overlay in such a show is (its page), with "Move it to Sat, Oct 31": the
+// show's date, a PATCH with its If-Match (as the show's page does). onMoved() after, or after a
+// refusal said (the show changed or went meanwhile), to read it again.
+export function passedLine(ctx, show, { onMoved } = {}) {
+  const p = nightPassed(show);
+  if (!p) return null;
+  const canWrite = ctx.can('timeline:write');
+  const move = canWrite ? h('button.btn.small', { type: 'button', onclick: () => run(move, async () => {
+    try {
+      const moved = await api.patch(`/api/v1/shows/${api.seg(show.id)}`, { date: p.next }, { ifMatch: show });
+      toast(`"${moved.name}" is on ${dateLabel(p.next, true)} now: its set times and cues moved with it.`);
+    } catch (err) {
+      if (err?.status !== 412 && err?.status !== 404) throw err;
+      toast(err.status === 412 ? `"${show.name}" changed since this page read it: this is the latest. Move it again if you still want to.` : `"${show.name}" was deleted meanwhile.`, { kind: 'error', ms: 10000 });
+    }
+    onMoved?.();
+  }) }, `Move it to ${dateLabel(p.next)}`) : null;
+  return notice([
+    `Its night, ${dateLabel(show.date, true)}, has passed: the countdown and set times are still that night's. `,
+    canWrite ? `Move it to its next ${weekdayName(show.date)}, or plan the coming nights on the show's page.` : 'An operator moves it to its next night on the show\'s page.',
+    move ? h('div.row', move) : null,
+  ], 'warn');
+}
+
 // ---- Add it to a show ------------------------------------------------------------------------
 // The shows as Shows lists them: live first, then the latest night.
 const ordered = (shows) => [...shows].sort((a, b) => (b.live === true) - (a.live === true) || String(b.date).localeCompare(String(a.date)) || String(a.name).localeCompare(String(b.name)));
-const showLabel = (s) => `${s.name} · ${dateLabel(s.date)} · ${plural(list(s.members).length, 'overlay')}`;
+// Short (a phone's select cuts a long one): the night, "passed" for one gone by, the overlays.
+const showLabel = (s) => `${s.name} · ${dateLabel(s.date)}${nightPassed(s) ? ' · passed' : ''} · ${plural(list(s.members).length, 'overlay')}`;
 
-export async function addToShow(ctx, overlay, { manifest } = {}) {
+// prefer: the show to pick first (suggestedShow's), else the one an overlay of its template is in.
+export async function addToShow(ctx, overlay, { manifest, prefer } = {}) {
   const [listed, overlays] = await Promise.all([api.all('/api/v1/shows'), api.all('/api/v1/overlays')]);
   let shows = listed;
   if (!shows.length) {
@@ -304,19 +321,33 @@ export async function addToShow(ctx, overlay, { manifest } = {}) {
   const twinShow = ordered(shows).find((s) => near.has(String(s.name).toLowerCase()));
   const twin = twinShow && near.get(String(twinShow.name).toLowerCase());
   const pick = h('select');
+  const showField = field('Show', pick, { hint: ' ' });
+  // Under the select, for the show picked: its twin is there; its night has passed (in words: a
+  // phone's select cuts the label short).
+  const pickHint = () => {
+    const s = shows.find((x) => x.id === pick.value);
+    const words = [];
+    if (twin && s?.id === twinShow.id) words.push(`"${twin.slug}", of the same template, is in "${twinShow.name}".`);
+    if (nightPassed(s)) words.push(`Its night, ${dateLabel(s.date, true)}, has passed: the countdown and set times stay that night's until it is moved to its next night, on its page.`);
+    const hint = showField.querySelector('.hint');
+    hint.textContent = words.join(' ');
+    hint.hidden = !words.length;
+  };
   const drawPick = (keep) => {
     shows = ordered(shows);
     mount(pick, shows.map((s) => h('option', { value: s.id }, showLabel(s))));
     if (keep && shows.some((s) => s.id === keep)) pick.value = keep;
+    pickHint();
   };
-  drawPick(twinShow?.id);
+  pick.addEventListener('change', pickHint);
+  drawPick(prefer || twinShow?.id);
   const boxes = twinBoxes(twinsOf(overlay, overlays));
   const parts = showParts(manifest);
   const body = h('div',
     h('p.muted', parts.length
       ? `Then ${lower(andList(parts.map((p) => p.text)))} ${verb(parts)} from that show, and its scenes change with the show's other overlays.`
       : 'Its scenes then change with the show\'s other overlays.'),
-    field('Show', pick, { hint: twin ? `"${twin.slug}", of the same template, is in "${twinShow.name}".` : undefined }),
+    showField,
     boxes.length ? h('fieldset',
       h('legend', 'Also add'),
       boxes.map((b) => b.el),
@@ -334,7 +365,7 @@ export async function addToShow(ctx, overlay, { manifest } = {}) {
       return api.patch(`/api/v1/shows/${api.seg(show.id)}`, { overlays: [...new Set([...list(show.overlays), ...adding])] }, { ifMatch: show });
     },
     // Changed or deleted meanwhile: say so, show the shows as they are now, and let it be done again.
-    onError: async (err, say) => {
+    onError: async (err, { say }) => {
       if (await takenMeanwhile(err, { overlay, boxes, say, again: 'Add to show' })) return true;
       if (err?.status !== 412 && err?.status !== 404) return false;
       const was = shows.find((s) => s.id === pick.value);

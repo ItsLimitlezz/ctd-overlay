@@ -7,21 +7,24 @@
 //
 // What a show publishes to each member, as that overlay's own state (02 §2.5): show.scene,
 // show.lineup (each slot with startAt, the instant its time resolves to, 09 §9.2), show.headliner,
-// show.currentSlot, show.date, show.timezone, show.goLiveAt and show.recStartedAt. Two shows never
-// share state.
+// show.currentSlot, show.nobodyOn (the operator said nobody is on), show.date, show.timezone,
+// show.goLiveAt and show.recStartedAt. Two shows never share state.
 //
 // Everything is timed on the server: a scene with durationMs + then (04 §4.2) schedules its
 // return as part of the take, kept in the record so a restart mid-intro still returns; a trigger
 // carries startAt = now + TRIGGER_LEAD_MS so every member starts it on the same frame; REC is
 // anchored when the show first goes live (taking its program scene, or "auto" reaching go-live)
-// and cleared by taking its starting scene, as v0 did. A show is live while REC runs, for 12 hours
+// and cleared by taking its starting scene, as v0 did; one the operator reset stays reset for the
+// go-live it came after, a restart included (recResetAt). A show is live while REC runs, for 12 hours
 // at most (LIVE_MS, v0's rule: a show still "on air" after that was left so), which is what
 // automatic template upgrades wait for (04 §4.13).
 //
 // A scene is named by its id or by its core (04 §4.2), so a take, a timed scene's "then" and a
-// button work across templates: each member gets the name its own template knows. A new show
-// starts on "auto" (the countdown to go-live, then live: v0's first scene) when every member's
-// template has it; otherwise on no scene, each template's own default.
+// button work across templates: each member gets the name its own template knows. A show on no
+// scene starts on "auto" (the countdown to go-live, then live: v0's first scene) when every
+// member's template has it and it isn't live: when it is made, when its overlays change, and at
+// startup (one saved before this rule); otherwise it stays on no scene, each template's own
+// default. Starting there anchors no REC for a go-live already passed, then or at a restart.
 //
 // Follow OBS (09 §9.7, src/obs/follow.js): a show's `followObs` maps the OBS program scene to one of
 // its scenes; a take OBS made says so on the show (sceneByObs) until the next take.
@@ -48,7 +51,7 @@ const SLOT_FIELDS = ['time', 'name', 'b2b', 'headliner', 'closer', 'logo'];
 // What the show resource adds to each slot (09 §9.1–9.2): taken and ignored on a write, so a
 // lineup read, edited and sent back whole goes through.
 const SLOT_RESOLVED = ['startAt', 'clockGap', 'clockOverlap'];
-const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.date', 'show.timezone', 'show.goLiveAt', 'show.recStartedAt'];
+const SHOW_KEYS = ['show.scene', 'show.lineup', 'show.headliner', 'show.currentSlot', 'show.nobodyOn', 'show.date', 'show.timezone', 'show.goLiveAt', 'show.recStartedAt'];
 
 // A template's scene by id, else by core (04 §4.2).
 export function resolveScene(manifest, name) {
@@ -76,7 +79,8 @@ export class ShowError extends Error {
 }
 
 // passive: a look at the shows that changes nothing (a dry run): no catching up at startup.
-export function createShows({ store, bus, overlays, templates, log, now = Date.now, timers = { setTimeout, clearTimeout }, passive = false }) {
+// record: the audit log (07 §7.12), for what the platform changes on a show by itself.
+export function createShows({ store, bus, overlays, templates, log, now = Date.now, timers = { setTimeout, clearTimeout }, passive = false, record = () => {} }) {
   const returns = new Map(); // show id or overlay id → timer for a timed scene's return
   const goLives = new Map(); // show id → timer for REC at go-live
   let stopped = false;
@@ -154,6 +158,7 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       'show.lineup': lineup,
       'show.headliner': head ? head.name : undefined,
       'show.currentSlot': Number.isInteger(d.currentSlot) && d.currentSlot < lineup.length ? d.currentSlot : undefined,
+      'show.nobodyOn': d.nobodyOn === true && !Number.isInteger(d.currentSlot) ? true : undefined,
       'show.date': d.date,
       'show.timezone': d.timezone,
       'show.goLiveAt': d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined,
@@ -287,19 +292,24 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }
   }
 
-  // Where a show with no scene taken yet starts (v0's "auto"): the members' countdown to go-live,
-  // then live, when every member's template has a scene "auto" (by id or core); else none, so each
-  // shows its template's default. It anchors no REC: "auto" does that at go-live (arm).
-  function startScene(d) {
+  // Where a show on no scene starts (v0's "auto"): the members' countdown to go-live, then live,
+  // when every member's template has a scene "auto" (by id or core); else none, so each shows its
+  // template's default. Never on a show with a scene (one taken is never undone), nor on a live
+  // one, whose members are on air as they are. Answers the fields to add: the scene, and when the
+  // show started on it, since "auto" anchors REC at a go-live still to come (arm), not at one that
+  // passed before it started.
+  function startScene(d, t = now()) {
+    if (d.scene !== undefined || isLive(d, t)) return undefined;
     const list = members(d);
-    return list.length && list.every((m) => resolveScene(m.manifest, 'auto')) ? 'auto' : undefined;
+    return list.length && list.every((m) => resolveScene(m.manifest, 'auto')) ? { scene: 'auto', sceneTakenAt: t } : undefined;
   }
 
   function create(input, { actor = 'operator' } = {}) {
     const data = clean(input || {});
     checkPublishable(data);
     if (data.followObs === null) delete data.followObs;
-    const doc = store.put('shows', newId('show'), { ...data, scene: startScene(data), actor, createdAt: new Date(now()).toISOString(), editRev: 1 }, { ifRev: 0 });
+    const t = now();
+    const doc = store.put('shows', newId('show'), { ...data, ...startScene(data, t), actor, createdAt: new Date(t).toISOString(), editRev: 1 }, { ifRev: 0 });
     publish(doc);
     arm(doc);
     log.info('show created', { show: doc.id, name: data.name, overlays: data.overlays.length });
@@ -325,19 +335,21 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       else next.currentSlot = at;
     }
     if (Number.isInteger(next.currentSlot) && next.currentSlot >= next.lineup.length) delete next.currentSlot;
-    // Its first overlays, and no scene taken yet: it starts where a new show does.
-    let started = false;
-    if (next.scene === undefined && !doc.data.overlays.length && next.overlays.length) {
-      next.scene = startScene(next);
-      started = next.scene !== undefined;
-    }
+    // Its overlays changed while it is on no scene (its first ones, or the last without "auto"
+    // gone): it starts where a new show does. The same list sent back isn't a change.
+    const changed = data.overlays !== undefined && (data.overlays.length !== doc.data.overlays.length || data.overlays.some((o) => !doc.data.overlays.includes(o)));
+    const start = changed ? startScene(next) : undefined;
+    Object.assign(next, start);
+    // A REC reset is the operator's for the go-live it came after (dueGoLive); a new go-live counts.
+    const moved = goLiveOf(next) !== goLiveOf(doc.data);
+    if (moved) delete next.recResetAt;
     checkPublishable(next);
     const saved = store.put('shows', doc.id, next, { ifRev: doc.rev });
     for (const left of doc.data.overlays.filter((o) => !next.overlays.includes(o))) release(left);
     publish(saved);
-    // A go-live moved into the past while "auto" is on air counts from then (not when "auto" has
-    // only just started: that is no go-live of the show's).
-    arm(saved, { catchUp: !started && ['goLive', 'date', 'timezone', 'dayBoundary'].some((k) => data[k] !== undefined) });
+    // A go-live moved into the past while "auto" is on air counts from then (not one sent back as
+    // it was, and not when "auto" has only just started: that is no go-live of the show's).
+    arm(saved, { catchUp: !start && moved });
     notify(doc.id);
     return view(store.get('shows', doc.id) || saved);
   }
@@ -458,11 +470,13 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     if (obs) next.sceneByObs = { at: t, ...obs };
     if (def.durationMs && def.then) next.sceneReturn = { at: t + def.durationMs, then: def.then, from: scene };
     // REC (v0's rule): on air from the first program take; back to before the show on starting;
-    // under "auto", from go-live once it has come (and not more than LIVE_MS ago).
+    // under "auto", from go-live once it has come (and not more than LIVE_MS ago), even after the
+    // operator reset it: taking "auto" is asking for that.
     let recChanged = false;
     if (core === 'program' && !isLive(next, t)) { next.recStartedAt = t; recChanged = true; }
     if (core === 'starting' && next.recStartedAt !== undefined) { delete next.recStartedAt; recChanged = true; }
     if (core === 'auto') {
+      delete next.recResetAt;
       const at = goLiveOf(next);
       if (dueGoLive(next, at, t)) { next.recStartedAt = at; recChanged = true; }
     }
@@ -495,7 +509,9 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return { action: name, startAt, overlays: takers.map((x) => x.m.slug) };
   }
 
-  function setSlot(ref, slot) {
+  // null: nobody is on, as the operator says (nobodyOn), so a template that would go by the lineup's
+  // times names no act either; with { cleared }, no pick at all (a new night's: a plan).
+  function setSlot(ref, slot, { cleared = false } = {}) {
     const doc = get(ref);
     let index = slot;
     if (typeof slot === 'string') index = doc.data.lineup.findIndex((s) => s.name.toLowerCase() === slot.toLowerCase());
@@ -503,10 +519,16 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
       throw new ShowError(`"slot" must be a lineup position (0 to ${doc.data.lineup.length - 1}), an act's name, or null.`, 'invalid');
     }
     const next = { ...doc.data };
-    if (slot === null) delete next.currentSlot;
-    else next.currentSlot = index;
+    delete next.nobodyOn;
+    if (slot === null) {
+      delete next.currentSlot;
+      if (!cleared) next.nobodyOn = true;
+    } else next.currentSlot = index;
     const saved = store.put('shows', doc.id, next);
-    for (const m of members(saved.data)) m.channel.setLocalState('show.currentSlot', saved.data.currentSlot);
+    const state = stateOf(saved.data);
+    for (const m of members(saved.data)) {
+      for (const key of ['show.nobodyOn', 'show.currentSlot']) m.channel.setLocalState(key, state[key]);
+    }
     return view(saved);
   }
 
@@ -515,7 +537,11 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     if (action !== 'start' && action !== 'reset') throw new ShowError('"action" must be "start" or "reset".', 'invalid');
     const next = { ...doc.data };
     if (action === 'start') next.recStartedAt = now();
-    else delete next.recStartedAt;
+    else {
+      delete next.recStartedAt;
+      // Kept, so a go-live already passed doesn't start REC again (at a restart, 09 §9.1).
+      next.recResetAt = now();
+    }
     const saved = store.put('shows', doc.id, next);
     for (const m of members(saved.data)) m.channel.setLocalState('show.recStartedAt', saved.data.recStartedAt);
     arm(saved);
@@ -594,9 +620,10 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     }, goLiveAt - now(), () => rearmShow(doc.id)));
   }
   const goLiveOf = (d) => (d.goLive ? resolveTime(d.date, d.goLive, d).at : undefined);
-  // Go-live counts while it is less than LIVE_MS ago, and REC doesn't already run for it (from
-  // earlier this night, or started by hand since): REC from last week doesn't.
-  const dueGoLive = (d, at, t) => at !== undefined && at <= t && t - at < LIVE_MS && !isLive(d, at);
+  // Go-live counts while it is less than LIVE_MS ago, REC doesn't already run for it (from earlier
+  // this night, or started by hand since), and the operator hasn't reset REC since it came (a
+  // restart after the show is no go-live): REC from last week doesn't.
+  const dueGoLive = (d, at, t) => at !== undefined && at <= t && t - at < LIVE_MS && !isLive(d, at) && !(d.recResetAt >= at);
   function goLive(id, at) {
     const cur = store.get('shows', id);
     const saved = store.put('shows', id, { ...cur.data, recStartedAt: at });
@@ -632,14 +659,35 @@ export function createShows({ store, bus, overlays, templates, log, now = Date.n
     return handle;
   }
 
+  // A show saved before shows started on "auto" (09 §9.1, the first scene) is on no scene, so its
+  // template's default is on air before go-live (TAKEOVER's live scene). At startup it starts on
+  // "auto" as a new show does, when startScene says so (it isn't live, and every member has
+  // "auto"): its members' state, no take, and no REC. A go-live still to come is armed; one passed
+  // tonight isn't caught up (TAKEOVER on "auto" after go-live is its live scene, with no REC until
+  // the operator starts it). A show on a scene is never touched, so a second start changes
+  // nothing; a live one waits for a start when it isn't. The scene is live control: the show's
+  // edit revision (its ETag) stays.
+  function firstScene(doc) {
+    const start = startScene(doc.data);
+    if (!start) return doc;
+    const saved = store.put('shows', doc.id, { ...doc.data, ...start });
+    const at = goLiveOf(saved.data);
+    log.info('a show saved on no scene starts on "auto", as a new show does', { show: doc.id, name: doc.data.name, ...(at !== undefined ? { goLiveAt: new Date(at).toISOString(), afterGoLive: at <= start.sceneTakenAt } : {}) });
+    record('show.first-scene', { actor: 'platform', target: doc.data.name, show: doc.id, scene: start.scene });
+    return saved;
+  }
+
   // At startup: every show's state to its members, standalone scenes back on their overlays, and
-  // the timers armed (a return already due happens now). One show that can't be published never
-  // keeps the platform (or a command line opening the data directory) from starting. A passive
-  // look does none of it: catching up writes (REC at a go-live that passed, a return due).
+  // the timers armed (a return already due happens now). REC is caught up at a go-live that passed
+  // while the platform was down, when "auto" was on air then: not one that passed before the show
+  // started on it. One show that can't be published never keeps the platform (or a command line
+  // opening the data directory) from starting. A passive look does none of it: catching up writes
+  // (the first scene, REC at a go-live that passed, a return due).
   for (const doc of passive ? [] : all()) {
     try {
-      publish(doc);
-      arm(doc, { catchUp: true });
+      const cur = firstScene(doc);
+      publish(cur);
+      arm(cur, { catchUp: !(cur.data.sceneTakenAt > goLiveOf(cur.data)) });
     } catch (err) {
       log.error('a show could not be restored at startup; fix or delete it', { show: doc.id, name: doc.data.name, err: err.message });
     }

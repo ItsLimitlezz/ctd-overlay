@@ -109,7 +109,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
     const templates = createTemplateRegistry({ dirs: [BUILTIN_DIR, ...templateDirs], dataDir: config.dataDir, log: log.child('templates'), readOnly });
     const overlays = createOverlays({ store, bus, templates, log: log.child('overlays'), secrets, exposure: config.exposure, readOnly });
     const media = createMediaLibrary({ ...mediaOptions, dataDir: config.dataDir, store, log: log.child('media'), ffmpeg: ffmpeg ?? config.ffmpeg, readOnly });
-    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly });
+    const shows = createShows({ store, bus, overlays, templates, log: log.child('shows'), ...clock, passive: readOnly, record: (action, details) => audit.record({ action, ...details }) });
     // Shows and overlays that follow the OBS program scene (09 §9.7), from the state connections set.
     const obs = createObsFollow({ bus, store, shows, overlays, log: log.child('obs'), passive: readOnly, record: (action, details) => audit.record({ action, ...details }) });
     shows.useObsSources((ids) => obs.candidates(obs.bindingOfShow(ids)));

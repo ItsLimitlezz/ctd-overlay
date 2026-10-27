@@ -12,7 +12,9 @@
 //           as typed (and still wrong) instead of reading "10:30" as morning.
 // Setting value takes "HH:MM" (or "HH:MM:SS") and shows it as this browser writes times
 // ("9:30 PM", or "21:30"); "?…" puts the text back as typed. What's wrong is said under the box
-// once it is left (inline: false when the page says it itself; timeError(value) gives the words).
+// once it is left (inline: false when the page says it itself; timeError(value) gives the words),
+// and by the form that is sent with it, in the same words (timeProblem(value, what)), never in
+// others: a form never asks for "22:30" on a phone whose box says "Add AM or PM".
 import { h } from './dom.js';
 
 const VALUE = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
@@ -69,6 +71,16 @@ export function parseTime(text, { h12 = false, seconds = false } = {}) {
 // The words for a value a timeInput gave that isn't a time ("?…"), or undefined.
 export function timeError(value, { h12 = twelveHour(), seconds = false } = {}) {
   return typeof value === 'string' && value.startsWith('?') ? parseTime(value.slice(1), { h12, seconds }).error : undefined;
+}
+
+// What's wrong with a timeInput's value when its form is sent, naming the box (what): the box's
+// own words for one that can't be read ("The go-live time: add AM or PM: 10:30 PM, or 10:30 AM."),
+// `missing` for an empty one that needs a time. undefined: it can be sent.
+export function timeProblem(value, what, { missing, h12 = twelveHour(), seconds = false } = {}) {
+  if (typeof value === 'string' && VALUE.test(value)) return undefined;
+  if (!value) return missing;
+  const words = timeError(value, { h12, seconds }) || `Type it like ${formatTime('21:30', { h12 })}.`;
+  return `${what}: ${words[0].toLowerCase()}${words.slice(1)}`;
 }
 
 export function timeInput({ value, h12 = twelveHour(), seconds = false, inline = true, ...attrs } = {}) {

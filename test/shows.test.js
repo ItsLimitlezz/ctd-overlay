@@ -7,6 +7,7 @@ import { createServer, request } from 'node:http';
 import path from 'node:path';
 import { ownHosts, startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { newId } from '../src/ids.js';
 import { createShows, LINEUP_BYTES, LIVE_MS, TRIGGER_LEAD_MS } from '../src/shows/registry.js';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
@@ -268,16 +269,24 @@ test('an overlay outside a show takes its own scene, which survives a restart; i
   assert.equal(second.local('solo')['show.scene'], 'brb');
 });
 
-test('the current slot: by position or by name, published to the members', async (t) => {
+test('the current slot: by position or by name, published to the members; nobody on as the operator says, or no pick at all', async (t) => {
   const { platform, local } = await setup(t);
   overlaysFor(platform);
   const show = platform.shows.create(SHOW);
+  assert.equal('show.nobodyOn' in local('main-h'), false, 'no pick yet: a template may go by the clock');
   platform.shows.setSlot(show.id, 1);
   assert.equal(local('main-h')['show.currentSlot'], 1);
   platform.shows.setSlot(show.id, 'deecee');
   assert.equal(local('main-v')['show.currentSlot'], 2);
+  const nobody = platform.shows.setSlot(show.id, null);
+  assert.deepEqual([nobody.currentSlot, nobody.nobodyOn], [undefined, true]);
+  assert.deepEqual(['show.currentSlot' in local('main-h'), local('main-h')['show.nobodyOn']], [false, true], 'nobody, whatever the clock says');
+  platform.shows.setSlot(show.id, 0);
+  assert.deepEqual([local('main-v')['show.currentSlot'], 'show.nobodyOn' in local('main-v')], [0, false]);
+  // A new night's (a plan's): no pick at all.
   platform.shows.setSlot(show.id, null);
-  assert.equal('show.currentSlot' in local('main-h'), false);
+  assert.equal(platform.shows.setSlot(show.id, null, { cleared: true }).nobodyOn, undefined);
+  assert.deepEqual(['show.currentSlot' in local('main-h'), 'show.nobodyOn' in local('main-h')], [false, false]);
   for (const bad of [3, -1, 1.5, 'nobody']) assert.throws(() => platform.shows.setSlot(show.id, bad), { code: 'invalid' }, String(bad));
   // A lineup edit that removes the current slot's position clears it.
   platform.shows.setSlot(show.id, 2);
@@ -463,8 +472,8 @@ function cranked(t, platform, start, { late = 0 } = {}) {
   };
   const { log, entries } = memoryLogger();
   c.entries = entries;
-  c.make = () => {
-    const s = createShows({ store: platform.store, bus: platform.bus, overlays: platform.overlays, templates: platform.templates, log, now: () => c.t, timers });
+  c.make = (options = {}) => {
+    const s = createShows({ store: platform.store, bus: platform.bus, overlays: platform.overlays, templates: platform.templates, log, now: () => c.t, timers, ...options });
     defer(t, () => s.stop());
     return s;
   };
@@ -525,6 +534,36 @@ test('REC at go-live: caught up after a restart across it, on a go-live moved in
   assert.equal(shows.get(show.id).live, false);
 });
 
+test('REC the operator reset stays reset at a restart after the show; taking "auto" or a go-live to come counts again', async (t) => {
+  const { platform } = await setup(t);
+  platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 0, 0));
+  let shows = c.make();
+  const g = utcShow(c.t + 60 * MIN);
+  const show = shows.create({ name: 'Reset', overlays: ['tk'], date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time });
+  assert.equal(show.scene, 'auto', 'a new show starts on "auto"');
+  c.advance(60 * MIN);
+  const goLiveAt = shows.get(show.id).goLiveAt;
+  assert.equal(shows.get(show.id).recStartedAt, goLiveAt);
+  // Three hours in, the show is over: REC reset, then the platform updated half an hour later.
+  c.advance(3 * 60 * MIN);
+  assert.equal(shows.rec(show.id, 'reset').live, false);
+  shows.stop();
+  c.advance(30 * MIN);
+  shows = c.make();
+  assert.deepEqual(['scene', 'recStartedAt', 'live'].map((k) => shows.get(show.id)[k]), ['auto', undefined, false], 'not live again from go-live');
+  assert.equal(platform.overlays.resolve('tk').channel.snapshot().state['show.recStartedAt'], undefined);
+  assert.equal(shows.onAir(platform.overlays.resolve('tk').doc.id), false, 'template upgrades don\'t wait');
+  // Taking "auto" asks for REC from go-live, reset or not.
+  assert.equal(shows.take(show.id, 'auto').recStartedAt, goLiveAt);
+  // A reset before a go-live leaves that go-live to count when it comes (next week's).
+  const week = utcShow(goLiveAt + 7 * 24 * 60 * MIN);
+  shows.update(show.id, { date: week.date, goLive: week.time });
+  shows.rec(show.id, 'reset');
+  c.advance(7 * 24 * 60 * MIN);
+  assert.equal(shows.get(show.id).recStartedAt, shows.get(show.id).goLiveAt, 'live from next week\'s go-live');
+});
+
 test('REC at go-live is anchored at go-live even when the timer fires late, and follows an edited go-live', async (t) => {
   const { platform } = await setup(t);
   platform.overlays.create({ slug: 'tk', template: TAKEOVER, settings: {} });
@@ -572,6 +611,48 @@ test('a new show starts on "auto" (v0\'s first scene) when every member has it: 
   assert.equal('show.scene' in local('tk-bed'), false);
   shows.take(mixed.id, 'brb');
   assert.equal(shows.update(mixed.id, { overlays: ['tk-bed'] }).scene, 'brb');
+});
+
+test('the first scene when a show\'s overlays change (Add it to a show), never on a live one; a go-live passed before "auto" started is never caught up, at a restart either; a start that starts a show records it', async (t) => {
+  const { platform, local } = await setup(t);
+  overlaysFor(platform, ['main-h', 'main-v']);
+  for (const slug of ['tk-late', 'tk-joins', 'tk-mixed', 'tk-live', 'tk-old']) platform.overlays.create({ slug, template: TAKEOVER, settings: {} });
+  const c = cranked(t, platform, Date.UTC(2026, 9, 17, 2, 0));
+  let shows = c.make();
+  const g = utcShow(c.t - 10 * MIN); // go-live ten minutes ago
+  const night = { date: g.date, timezone: 'UTC', dayBoundary: '00:00', goLive: g.time };
+  const late = shows.create({ name: 'Late', overlays: ['tk-late'], ...night });
+  assert.deepEqual([late.scene, late.sceneTakenAt, late.live], ['auto', c.t, false]);
+  // Added to a show that has none yet; the last member without "auto" leaving; not another change.
+  const joins = shows.create({ name: 'Joins', overlays: [], ...night });
+  assert.deepEqual(['scene', 'live'].map((k) => shows.update(joins.id, { overlays: ['tk-joins'] })[k]), ['auto', false]);
+  const mixed = shows.create({ name: 'Mixed', overlays: ['tk-mixed', 'main-h'], ...night });
+  assert.equal(shows.update(mixed.id, { lineup: [{ time: '01:00', name: 'X' }] }).scene, undefined, 'a change to anything else leaves it');
+  assert.deepEqual(['scene', 'live'].map((k) => shows.update(mixed.id, { overlays: ['tk-mixed'] })[k]), ['auto', false]);
+  assert.equal(local('tk-mixed')['show.scene'], 'auto');
+  // A live show: its members stay on air as they are.
+  const onAir = shows.create({ name: 'On air', overlays: ['main-v'], ...night });
+  shows.rec(onAir.id, 'start');
+  assert.equal(shows.update(onAir.id, { overlays: ['tk-live'] }).scene, undefined);
+  // A go-live sent back as it was anchors nothing.
+  assert.equal(shows.update(late.id, { date: night.date, goLive: night.goLive }).live, false);
+  // One saved on no scene by the version before.
+  const id = (slug) => platform.overlays.resolve(slug).doc.id;
+  const old = platform.store.put('shows', newId('show'), { name: 'Old', overlays: [id('tk-old')], ...night, lineup: [], actor: 'operator', createdAt: new Date(c.t - 7 * 24 * 60 * MIN).toISOString(), editRev: 1 }).id;
+  // Sent back whole (its overlays as they were): not a change of its overlays.
+  assert.equal(shows.update(old, { name: 'Old', overlays: [id('tk-old'), 'tk-old'] }).scene, undefined, 'the same overlays sent back');
+  // A restart a minute later, well within 12 hours of that go-live.
+  shows.stop();
+  c.advance(MIN);
+  const recorded = [];
+  shows = c.make({ record: (action, details) => recorded.push({ action, ...details }) });
+  for (const s of [late, joins, mixed]) assert.equal(shows.get(s.id).recStartedAt, undefined, s.name);
+  assert.deepEqual([shows.get(old).scene, shows.get(old).recStartedAt], ['auto', undefined]);
+  assert.deepEqual(recorded, [{ action: 'show.first-scene', actor: 'platform', target: 'Old', show: old, scene: 'auto' }]);
+  assert.equal(shows.get(onAir.id).scene, undefined, 'still live: still left');
+  // A go-live moved into the past while "auto" is on air: live from it.
+  const moved = shows.update(late.id, { goLive: utcShow(c.t - 5 * MIN).time });
+  assert.equal(moved.recStartedAt, moved.goLiveAt);
 });
 
 test('scenes by core (04 §4.2): a take, REC and a timed scene\'s return work across templates; each member gets the name its template knows', async (t) => {

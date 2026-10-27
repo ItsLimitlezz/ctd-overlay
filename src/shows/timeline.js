@@ -34,7 +34,9 @@
 // What the templates offer is read when the show changes or is built: after changing a member's
 // template, build again. A cue made by hand does the same with an act: a title card or now-playing
 // names it (args.name), and, to put the act on as it shows (v0's DJ cues), it is a sequence of the
-// act's show.slot and then its card, at the same instant.
+// act's show.slot and then its card, at the same instant. Who's on is the operator's: a cue the
+// timeline fires never takes it back to an act the night has moved past, nor shows a card about
+// one, and an act put on skips what was still to come for the acts before it (actOn).
 //
 // A planned show (09 §9.6) is activated at the day boundary of its date, in the show's zone and
 // with its boundary as they are then: its lineup and times become the show's, overlay settings it
@@ -369,7 +371,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     let saved = store.put('cues', doc.id, data);
     try {
       if (data.action.type === 'sequence') saved = runSteps(saved, { actor, manual });
-      else later(doc.id, apply(doc.data.showId, doc.data.action, { actor, manual }));
+      else later(doc.id, apply(doc.data.showId, doc.data.action, { actor, manual, key: recipeKey(doc.data) }));
       log.info('cue fired', { show: doc.data.showId, cue: doc.id, action: doc.data.action.type, manual, actor, lateMs: Math.max(0, now() - doc.data.at) });
     } catch (err) {
       saved = noteError(doc.id, err);
@@ -436,12 +438,14 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     stepTimers.get(id).add(h);
   }
 
-  function apply(showId, action, { actor, manual }) {
+  // key: a recipe's cue's (checkAct).
+  function apply(showId, action, { actor, manual, key }) {
     switch (action.type) {
       case 'show.scene':
         shows.take(showId, action.scene, { transition: action.transition || 'fade', actor });
         return;
       case 'overlay.action': {
+        if (!manual) checkAct(showId, action, key);
         // An action, or a timed scene played as one (the Event Intro, a headliner intro): that
         // takes the show's scene, so on its own it plays only from program.
         const offer = shows.offers(showId, action.name);
@@ -452,6 +456,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
         return;
       }
       case 'show.slot':
+        if (!manual) checkAct(showId, action, key);
         shows.setSlot(showId, action.slot);
         return;
       case 'media.play': {
@@ -497,6 +502,86 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     }
   }
 
+  // ---- who's on, and the cues about an act (09 §9.3) --------------------------------------------
+  // The night's acts in order: by start, then lineup position. Each slot's id is its time and act
+  // (a second slot of both: "#2"), which the recipe's cues are kept by.
+  const nightOrder = (show) => show.lineup.map((s, index) => ({ ...s, index })).sort((a, b) => a.startAt - b.startAt || a.index - b.index);
+  function slotIds(order) {
+    const seen = new Map();
+    return order.map((s) => {
+      const base = `${s.time}|${s.name}`;
+      seen.set(base, (seen.get(base) || 0) + 1);
+      return seen.get(base) > 1 ? `${base}#${seen.get(base)}` : base;
+    });
+  }
+
+  // Where the act an action is about stands, the act on now in mind: "past" (before it in the
+  // night's order: the night has moved on), "ahead" (after it), "on", or undefined (nobody is on,
+  // or the action is about no act of the lineup: another action, a guest's card). The act is the
+  // one a recipe's cue was made for (key: any of its cues is its set's), else a show.slot's (the
+  // first of its name, as who's on is set), or the one a card names (every slot of that name).
+  function standing(show, action, key) {
+    if (!Number.isInteger(show.currentSlot)) return undefined;
+    const order = nightOrder(show);
+    const on = order.findIndex((s) => s.index === show.currentSlot);
+    const made = key ? slotIds(order).indexOf(key.slice(0, key.lastIndexOf(':'))) : -1;
+    let places = [];
+    if (made >= 0) places = [made];
+    else if (action?.type === 'show.slot') {
+      const index = typeof action.slot === 'string' ? show.lineup.findIndex((s) => s.name.toLowerCase() === action.slot.toLowerCase()) : action.slot;
+      places = [order.findIndex((s) => s.index === index)].filter((p) => p >= 0);
+    } else if (action?.type === 'overlay.action' && ACT_CARDS.includes(action.name) && typeof action.args?.name === 'string') {
+      const name = actName(action.args.name);
+      places = order.flatMap((s, p) => (actName(s.name) === name ? [p] : []));
+    }
+    if (on < 0 || !places.length) return undefined;
+    if (places.every((p) => p < on)) return { where: 'past', on: order[on].name, act: order[places[0]].name };
+    if (places.every((p) => p > on)) return { where: 'ahead', on: order[on].name, act: order[places[0]].name };
+    return { where: 'on' };
+  }
+
+  // A cue the timeline fires never takes the night back: a show.slot for an act before the act on
+  // does nothing, nor does a card about such an act; a recipe's cue (key, one the operator hasn't
+  // edited) is about its act's set, so besides putting it on, it plays only while that act is on
+  // (or nobody is picked yet: not after Nobody on). Fired by hand, a cue plays anyway. The
+  // operator's Next act wins over the lineup's times: v0's DJ cues were fired by hand.
+  function checkAct(showId, action, key) {
+    const show = shows.get(showId);
+    const s = standing(show, action, key);
+    const shown = action.type === 'overlay.action' ? 'Not shown' : 'Not done';
+    if (s?.where === 'past') throw new ShowError(`${shown}: ${s.on} was already on, after ${s.act} in the lineup.`, 'act-passed');
+    if (!key || action.type === 'show.slot') return;
+    if (s?.where === 'ahead') throw new ShowError(`${shown}: ${s.on} was still on, not ${s.act}.`, 'act-passed');
+    if (show.nobodyOn === true) throw new ShowError(`${shown}: nobody was on (Nobody on).`, 'act-passed');
+  }
+  const recipeKey = (d) => (d.generated && !d.edited ? d.key : undefined);
+
+  // The operator put an act on (PUT /slot): every cue still to come that is only about acts before
+  // it (the recipe's for their sets; by hand, their slot and their cards) would do nothing now, so
+  // it is skipped at once rather than wait on Live as next. Recorded as one override. A cue about
+  // an act after it stays: that act's set is still to come. → { cues, acts }: the cues skipped,
+  // and the acts they were about, in the night's order.
+  function actOn(showRef, { actor = 'operator' } = {}) {
+    const show = shows.get(showRef);
+    const done = [];
+    const acts = new Set();
+    for (const doc of cuesOf(show.id)) {
+      const d = doc.data;
+      if (d.removed || d.status !== 'armed') continue;
+      const steps = d.action.type === 'sequence' ? d.action.steps.map((s) => s.action) : [d.action];
+      const where = steps.map((a) => standing(show, a, recipeKey(d)));
+      if (!where.every((s) => s?.where === 'past')) continue;
+      for (const s of where) acts.add(s.act);
+      done.push(save(doc.id, { ...d, status: 'skipped' }));
+    }
+    if (done.length) {
+      log.info('cues of the acts before the one put on skipped', { show: show.id, cues: done.length, actor });
+      record('cue.skip-passed', { actor, target: show.id, show: show.id, cues: done.length });
+    }
+    const order = nightOrder(show).map((s) => s.name);
+    return { cues: done.sort(inOrder).map(view), acts: [...acts].sort((a, b) => order.indexOf(a) - order.indexOf(b)) };
+  }
+
   // ---- the recipe (09 §9.5) -------------------------------------------------------------------
   function cleanRecipe(recipe) {
     if (recipe === null) return null;
@@ -525,17 +610,16 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
       }
       return cache.get(name);
     };
-    const slots = show.lineup.map((s, index) => ({ ...s, index })).sort((a, b) => a.startAt - b.startAt || a.index - b.index);
+    const slots = nightOrder(show);
+    const ids = slotIds(slots);
     const out = [];
     const cue = (key, at, label, action, order) => out.push({ key, at, label, action, order });
-    const seen = new Map();
     slots.forEach((s, i) => {
-      const base = `${s.time}|${s.name}`;
-      seen.set(base, (seen.get(base) || 0) + 1);
-      const id = seen.get(base) > 1 ? `${base}#${seen.get(base)}` : base;
+      const id = ids[i];
       const end = slots.slice(i + 1).find((x) => x.startAt > s.startAt)?.startAt ?? s.startAt + LAST_SLOT_MS;
-      // Who's on, by name: it stays the same act if slots are added or removed above it.
-      cue(`${id}:slot`, s.startAt, `${s.name} on`, { type: 'show.slot', slot: seen.get(base) > 1 ? s.index : s.name }, 0);
+      // Who's on, by name: it stays the same act if slots are added or removed above it (a second
+      // slot of the same act at the same time, by position).
+      cue(`${id}:slot`, s.startAt, `${s.name} on`, { type: 'show.slot', slot: id !== `${s.time}|${s.name}` ? s.index : s.name }, 0);
       if (r.headliner && s.headliner && offered('headliner')) cue(`${id}:headliner`, s.startAt, `${s.name}: headliner intro`, { type: 'overlay.action', name: 'headliner' }, 1);
       else if (r.titleCard && offered('titleCard')) cue(`${id}:title`, s.startAt, `${s.name}: title card`, { type: 'overlay.action', name: 'titleCard', args: { name: s.name } }, 1);
       if (r.introOffsetMin !== null && offered('intro')) {
@@ -810,7 +894,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
         try { overlays.updateSettings(id, settings); } catch (err) { warnings.push(`${slug}: ${err.message}`); }
       }
       if (before.recStartedAt !== undefined) shows.rec(d.showId, 'reset');
-      if (before.currentSlot !== undefined) shows.setSlot(d.showId, null);
+      if (before.currentSlot !== undefined || before.nobodyOn) shows.setSlot(d.showId, null, { cleared: true });
       shows.update(d.showId, { ...d.changes, date: d.date });
       if (warnings.length) store.put('show_plans', planId, { ...marked.data, warnings });
       log.info('planned show activated', { show: d.showId, plan: planId, date: d.date, warnings: warnings.length });
@@ -920,6 +1004,7 @@ export function createTimeline({ store, shows, overlays, media, connectors, log,
     remove,
     override,
     rearmAll,
+    actOn,
     build,
     plans: { list: listPlans, get: (showRef, planId) => planView(planOf(showRef, planId).doc), add: addPlan, replace: replacePlan, apply: applyPlan, remove: removePlan },
     acts,

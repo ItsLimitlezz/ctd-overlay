@@ -82,8 +82,12 @@ Three apps work together. You stream through **CTD Relay**, **CTD Overlay** draw
 3. **Choose what feeds each overlay.** On the overlay's **Settings → Fed by**, choose **Only these**
    and tick the profile (*Relay · Miami or Bust*). The overlay now shows only that profile's chat,
    alerts and viewers.
-4. **Group them into a show.** In **Shows → New show**, add the overlays, the date, the time
-   zone and the lineup. The show's scenes now change every member at once.
+4. **Group them into a show.** On a TAKEOVER overlay's page, **Make a show from this overlay**
+   (or **Shows → New show**, with any overlays): the date, the time zone and when it goes live,
+   with its vertical twin ticked. Then the show's **Lineup**, each act with its set time. Set
+   times, the countdown, who's on, REC and title cards live on the show, so an overlay in no show
+   says so and shows none of them. The show's scenes change every member at once, and a new show
+   starts on **Auto**: the countdown, then live at go-live.
 5. **Put them in OBS:**
    - **With the CTD OBS plugin:** pick the profile in the plugin, and it adds that profile's
      overlays as browser sources on the right canvas (main or vertical).
@@ -134,7 +138,15 @@ Streams that are running come first.
 - **Scenes:** one tap changes every overlay of the show, horizontal and vertical together.
   A timed scene returns by itself.
 - **Who's on and the timeline:** the lineup, the next cue, and the cues that fire on their own.
-- **REC:** starts by itself at go-live, or by hand.
+  **Next act** wins over the set times: an act put on early skips what was still to come for the
+  acts before, and Live says how many. **Nobody on** names no act.
+- **Actions:** the template's buttons, each saying what it did: TAKEOVER's **DJ title card** and
+  **Now playing** are **on air** for their seconds on screen, **Now playing (hold)** is **on air
+  until hidden** (until **Hide title card and now playing**: **hidden**), **Play The Line's
+  clip** is **sent** and **Stop The Line's clip** **stopped**. A button that shows nothing with
+  the overlay's settings (TAKEOVER's chips outside its event look) says so, and why.
+- **REC:** starts by itself at go-live, or by hand. A reset stays reset, a platform update after
+  the show included.
 - **The overlay picker:** pick one overlay to see its preview, its OBS link, its actions,
   **Simulate** buttons, and what feeds it.
 - **Alerts:** what's on screen and what's waiting, with **Skip**, **Replay last** and **Pause**.
@@ -144,6 +156,19 @@ Streams that are running come first.
 On a phone, it all works one-handed:
 
 <img src="images/phone.png" alt="Live on a phone" width="260">
+
+Live also says, quietly, what to put right before the night:
+- **An overlay in no show** (a TAKEOVER one) says so on its card, with **Make a show from this
+  overlay** and **Add it to a show** (first, and named, when a show is plainly its: the one its
+  twin is in, or one with a lineup and no overlays yet): its title cards have no act to name
+  until it is in one.
+- **An older template version:** an overlay still on an older version than the one installed
+  (after a platform update, say) has a line under its stream's status, linking to its Version
+  tab. Upgrade a show's overlays of that template together, before going live; once it is live,
+  after the show.
+
+The whole TAKEOVER night, step by step, is in
+[RUNNING.md](RUNNING.md#the-dprtmnt-takeover-night).
 
 ### Alerts
 
@@ -174,7 +199,7 @@ The show's graphics can switch when OBS does: OBS on **BRB** puts the overlays o
 |---|---|
 | **Chat** | Merged chat from every platform, with platform tags, badges, emotes and name colours. Instagram/TikTok "joined" lines stay out unless you turn them on in the connection. |
 | **Alerts** | Subs, gifts, raids, cheers, Super Chats and tips, one at a time, with an optional sound. |
-| **TAKEOVER** | The D/PRTMNT show package: countdown, live set, BRB, timetable, intros, The Line, POV. |
+| **TAKEOVER** | The D/PRTMNT show package: countdown, live set, BRB, timetable, intros, The Line, POV, with title cards, Now playing (held until hidden) and The Line's clip on a tap. |
 | **Text & Clock** | Up to three lines of text and a clock: time of day, a countdown (showing "LIVE" at zero), a count-up, the stream's run time from Relay, or a frame-accurate timecode. |
 
 <img src="images/text-clock.png" alt="Text & Clock: MIAMI OR BUST, Road to Miami · Day 3, STARTING IN 09:58" width="760">
@@ -191,6 +216,9 @@ The show's graphics can switch when OBS does: OBS on **BRB** puts the overlays o
   published as `ghcr.io/itslimitlezz/ctd-overlay:latest`.
 - **Updating the NAS:** **TrueNAS → Apps → ctd-overlay → Edit → Save**. It downloads the newest
   image and restarts; your overlays, shows and connections stay.
+- **Overlays keep their template's version:** a new version of TAKEOVER (or another template that
+  comes with the platform) is installed beside the old one, and each overlay moves to it only when
+  you upgrade it, on its **Version** tab. Live says when one is behind.
 - **Note:** for now, builds are started by hand after changes are merged; GitHub isn't starting
   them by itself on this repository yet.
 

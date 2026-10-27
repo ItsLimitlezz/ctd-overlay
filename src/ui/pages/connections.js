@@ -660,7 +660,7 @@ export async function detail(view, ctx) {
 
   mount(view, head, statusBox, signBox, valuesBox, actionsBox, settingsBox);
   drawAll();
-  if (outcome) history.replaceState(null, '', `#/connections/${encodeURIComponent(c.id)}`);
+  if (outcome) history.replaceState(history.state, '', `#/connections/${encodeURIComponent(c.id)}`);
 
   // Live: its status as it changes; values and a sign-in in progress every few seconds.
   const stopEvents = api.events(['system.connection'], (env) => { if (env.data?.connection === c.id) refresh().catch(() => {}); });

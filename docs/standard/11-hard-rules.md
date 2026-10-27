@@ -110,6 +110,7 @@ v0 is the working prototype this standard generalizes. Mapping:
 | `rundown.json` | timeline cues |
 | `kit.json` | show + overlay settings |
 | `shows.json` (planned shows) | show plans (09 §9.6) |
+| `roster` (names offered as an act is typed) | the acts of every lineup and plan (`GET /acts`, 09 §9.1) |
 | `viewers.json` | Twitch and Kick **connections**, encrypted |
 | `live.viewers` | `viewers.total`, `viewers.<platform>`, `viewers.stale` |
 | REC anchor `recStartedAt` | `show.recStartedAt` |
@@ -131,9 +132,11 @@ above):
   prefix). With no match, no slot is flagged; the event look shows the name as a setting.
 - **One overlay with both canvases** replaces v0's `feed=h` and `feed=v` links; only the settings
   that differ from the template's defaults are saved. In the event look, v0's own scanline switch
-  (`evOpts.scan`) is the one that applies, and its now-playing and chip switches (`np`, `sched`),
-  which the template doesn't have, turn those cues off instead. A typed viewer number is not
-  imported (H6).
+  (`evOpts.scan`) is the one that applies, and its now-playing and chip switches (`np`, `sched`)
+  become the template's (`nowPlayingBar`, `scheduleChips`), the cues they turned off left out.
+  v0's hold times (`cardSec`, `npSec`), its REC switch (`showRec`) and the delay of its title card
+  by itself (`delaySec`, as `autoCardSec`) come along; that card stays off (`autoCard`), since v0
+  showed it on standalone links only. A typed viewer number is not imported (H6).
 - **Generated cues** use v0's recipe: a title card at every start, the headliner's included (v0
   had no headliner intro of its own), the Event Intro `clubIntroMin` in, now playing every
   `npIntervalMin`. Two differences remain, the platform's: the last set's now playing runs two
@@ -147,8 +150,9 @@ above):
   the overlay's whole settings.
 - **Credentials** wait, encrypted with the record id as associated data, until connections exist
   (06 §6.1); `skp key rotate` re-encrypts them with the rest.
-- Never imported: the roster, live state (scene, REC, counters), other uploads, `crash.log`. Paths
-  in v0's files are never followed: the clip is looked up by its base name in `uploads/` only.
+- Never imported: the roster, live state (scene, when REC started, the clip playing, counters),
+  other uploads, `crash.log`. Paths in v0's files are never followed: the clip is looked up by
+  its base name in `uploads/` only.
 
 Suggested order for the new build: storage and auth → overlays and the runtime SDK with mock
 data → port the TAKEOVER design as the first template (VIKKSTAR was removed from v0 after its

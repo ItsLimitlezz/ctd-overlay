@@ -615,7 +615,10 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         const slot = rest[1] === 'none' ? null : /^\d+$/.test(rest[1]) ? Number(rest[1]) : rest[1];
         const s = await platform('PUT', `/shows/${encodeURIComponent(rest[0])}/slot`, { slot });
         if (opts.json) json(s);
-        else out(s.currentSlot === undefined ? `${s.name}: nobody picked (who's on follows the clock)` : `${s.name}: ${s.lineup[s.currentSlot].name} is on`);
+        else {
+          const skipped = s.cuesSkipped ? `; ${s.cuesSkipped.count} cue${s.cuesSkipped.count === 1 ? '' : 's'} still to come for ${s.cuesSkipped.acts.join(', ')} skipped` : '';
+          out(s.currentSlot === undefined ? `${s.name}: nobody is on` : `${s.name}: ${s.lineup[s.currentSlot].name} is on${skipped}`);
+        }
         return 0;
       }
 

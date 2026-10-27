@@ -9,7 +9,7 @@
 //   DELETE /api/v1/shows/:ref
 //   PUT    /api/v1/shows/:ref/scene                { scene, transition? }: on every member (a command)
 //   POST   /api/v1/shows/:ref/triggers/:name       { args? }: to every member with the action
-//   PUT    /api/v1/shows/:ref/slot                 { slot }: a lineup position or act, or null
+//   PUT    /api/v1/shows/:ref/slot                 { slot }: a lineup position or act, or null (cuesSkipped)
 //   POST   /api/v1/shows/:ref/rec                  { action: "start" | "reset" }
 //   GET    /api/v1/shows/:ref/cues                 the timeline (09 §9.3), paged
 //   POST   /api/v1/shows/:ref/cues                 { at: "HH:MM" | ISO, action, label? }
@@ -51,7 +51,7 @@ const iso = (ms) => (typeof ms === 'number' ? new Date(ms).toISOString() : ms);
 export function showResource(s) {
   const out = { ...s };
   delete out.actor;
-  for (const k of ['goLiveAt', 'recStartedAt', 'sceneTakenAt']) if (out[k] !== undefined) out[k] = iso(out[k]);
+  for (const k of ['goLiveAt', 'recStartedAt', 'recResetAt', 'sceneTakenAt']) if (out[k] !== undefined) out[k] = iso(out[k]);
   if (out.sceneReturn) out.sceneReturn = { ...out.sceneReturn, at: iso(out.sceneReturn.at) };
   if (out.sceneByObs) out.sceneByObs = { ...out.sceneByObs, at: iso(out.sceneByObs.at) };
   if (out.lineup) out.lineup = out.lineup.map((slot) => ({ ...slot, startAt: iso(slot.startAt) }));
@@ -79,7 +79,12 @@ export function showRoutes({ api, shows, timeline, streams }) {
       const out = shows.trigger(params.ref, params.name, { args: body.args ?? {}, actor: who.label });
       return { ...out, startAt: iso(out.startAt) };
     } }),
-    r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null', body: { fields: ['slot'] }, run: ({ params, body }) => answer(shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot)) }),
+    // An act put on skips what was still to come for the acts before it (09 §9.3): said with the show.
+    r({ method: 'PUT', path: '/api/v1/shows/:ref/slot', scope: CONTROL, command: true, summary: 'Who is on: a lineup position, an act, or null; the cues still to come for the acts before it are skipped (cuesSkipped)', body: { fields: ['slot'] }, run: ({ params, body, who }) => {
+      const s = shows.setSlot(params.ref, body.slot === undefined ? undefined : body.slot);
+      const passed = timeline.actOn(s.id, { actor: who.label });
+      return { ...answer(s), ...(passed.cues.length ? { cuesSkipped: { count: passed.cues.length, acts: passed.acts } } : {}) };
+    } }),
     r({ method: 'POST', path: '/api/v1/shows/:ref/rec', scope: CONTROL, command: true, summary: 'Start or reset REC', body: { fields: ['action'] }, run: ({ params, body }) => answer(shows.rec(params.ref, body.action)) }),
     // The timeline (09 §9.3–9.6).
     r({ method: 'GET', path: '/api/v1/shows/:ref/cues', scope: READ, summary: 'The show\'s cues, in time order', paged: true, run: ({ params, url }) => api.paginate(timeline.list(params.ref), url, cueKey) }),

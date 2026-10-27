@@ -917,6 +917,75 @@ test('a hand-made title card or now-playing names its act (args.name), checked; 
   assert.deepEqual([cue(djtitle.id).status, cue(djtitle.id).stepsDone, cue(djtitle.id).error], ['fired', 2, undefined]);
 });
 
+test('who\'s on is the operator\'s: an act put on early skips what was still to come for the acts before it; no cue takes the night back, and a set\'s cues play only while its act is on', async (t) => {
+  const clock = fakeClock(T0);
+  const { platform, timeline, watch, got, local, cue, api } = await setup(t, { clock });
+  const show = platform.shows.create(SHOW);
+  watch('tk');
+  timeline.build(show.id);
+  const card = (name, kind = 'titleCard') => ({ type: 'overlay.action', name: kind, args: { name } });
+  const cards = () => of(got.tk, 'show.trigger').map((e) => [e.data.name, e.data.args.name]);
+  const byLabel = (label, at) => timeline.list(show.id).find((c) => c.label === label && (!at || c.at === at));
+  // v0's DJ cue for Manzone by hand; a card for the act to come; a guest's.
+  const djCue = timeline.add(show.id, { at: '23:00', action: { type: 'sequence', steps: [{ offsetMs: 0, action: { type: 'show.slot', slot: 'Manzone' } }, { offsetMs: 0, action: card('Manzone') }] } });
+  const teaser = timeline.add(show.id, { at: '23:10', action: card('Deecee') });
+  const guest = timeline.add(show.id, { at: '23:20', action: card('Guest', 'nowPlaying') });
+  // 22:06, Next act twice on Live: VIKKSTAR is on before Manzone's set was to start.
+  clock.to(T0 + 6 * MIN);
+  const first = await api('PUT', `/shows/${show.id}/slot`, { slot: 0 });
+  assert.deepEqual([first.status, first.body.cuesSkipped], [200, undefined], 'no act comes before the first');
+  const second = await api('PUT', `/shows/${show.id}/slot`, { slot: 1 });
+  assert.deepEqual(second.body.cuesSkipped, { count: 18, acts: ['Manzone'] }, 'Manzone\'s set (on, title card, Event Intro, 14 now playing) and the DJ cue');
+  assert.ok(timeline.list(show.id).filter((c) => c.label?.startsWith('Manzone')).every((c) => c.status === 'skipped'));
+  assert.deepEqual([cue(djCue.id).status, cue(teaser.id).status, cue(guest.id).status], ['skipped', 'armed', 'armed']);
+  assert.equal(timeline.list(show.id).find((c) => c.status === 'armed').id, teaser.id, 'next on Live: no longer Manzone\'s');
+  assert.deepEqual(platform.audit.list({ action: 'cue' }).items.filter((e) => e.action === 'cue.skip-passed').map((e) => e.details), [{ show: show.id, cues: 18 }], 'one override, recorded');
+  // 22:31: who's on stays VIKKSTAR; nothing of Manzone's showed.
+  clock.to(Date.UTC(2026, 9, 18, 2, 31));
+  assert.equal(local('tk')['show.currentSlot'], 1);
+  assert.deepEqual(cards(), []);
+  // Re-armed, Manzone's cues are judged as they fire: fired, with why nothing showed.
+  assert.equal(timeline.rearmAll(show.id).length, 16, 'still to come: the Event Intro, 14 now playing, the DJ cue');
+  clock.to(Date.UTC(2026, 9, 18, 2, 41));
+  for (const c of [byLabel('Manzone: Event Intro'), byLabel('Manzone: now playing', '2026-10-18T02:40:00.000Z')]) {
+    assert.deepEqual([cue(c.id).status, cue(c.id).error], ['fired', 'Not shown: VIKKSTAR was already on, after Manzone in the lineup.'], c.label);
+  }
+  assert.deepEqual(of(got.tk, 'show.scene.changed'), [], 'the Event Intro didn\'t play');
+  assert.deepEqual(cards(), []);
+  // Fired by hand, a cue plays anyway.
+  timeline.override(show.id, byLabel('Manzone: now playing', '2026-10-18T02:50:00.000Z').id, 'fire');
+  assert.deepEqual(cards(), [['nowPlaying', 'Manzone']]);
+  // 22:45, Manzone put back on: their set's cues play again; the card for the act to come and the
+  // guest's show whoever is on.
+  clock.to(Date.UTC(2026, 9, 18, 2, 45));
+  assert.equal((await api('PUT', `/shows/${show.id}/slot`, { slot: 'Manzone' })).body.cuesSkipped, undefined);
+  clock.to(Date.UTC(2026, 9, 18, 3, 21));
+  assert.deepEqual(cards().slice(1), [['titleCard', 'Manzone'], ['nowPlaying', 'Manzone'], ['titleCard', 'Deecee'], ['nowPlaying', 'Manzone'], ['nowPlaying', 'Guest'], ['nowPlaying', 'Manzone']]);
+  assert.equal(cue(djCue.id).error, undefined);
+  // 01:00, VIKKSTAR on by the lineup; at 01:02 the operator keeps Manzone on: VIKKSTAR's set waits.
+  clock.to(Date.UTC(2026, 9, 18, 5, 1));
+  assert.equal(local('tk')['show.currentSlot'], 1);
+  clock.to(Date.UTC(2026, 9, 18, 5, 2));
+  await api('PUT', `/shows/${show.id}/slot`, { slot: 0 });
+  const shown = cards().length;
+  clock.to(Date.UTC(2026, 9, 18, 5, 11));
+  assert.equal(cue(byLabel('VIKKSTAR: now playing', '2026-10-18T05:10:00.000Z').id).error, 'Not shown: Manzone was still on, not VIKKSTAR.');
+  assert.equal(cue(byLabel('VIKKSTAR: Event Intro').id).error, 'Not shown: Manzone was still on, not VIKKSTAR.');
+  assert.equal(cards().length, shown);
+  // Next act: VIKKSTAR's set goes on from there.
+  assert.equal((await api('PUT', `/shows/${show.id}/slot`, { slot: 1 })).body.cuesSkipped, undefined, 'nothing of Manzone\'s was still to come');
+  clock.to(Date.UTC(2026, 9, 18, 5, 21));
+  assert.deepEqual(cards().slice(shown), [['nowPlaying', 'VIKKSTAR']]);
+  // Nobody on (a break): the set's cards wait for an act; the next act's slot cue puts them on.
+  assert.equal((await api('PUT', `/shows/${show.id}/slot`, { slot: null })).body.nobodyOn, true);
+  clock.to(Date.UTC(2026, 9, 18, 5, 31));
+  assert.equal(cue(byLabel('VIKKSTAR: now playing', '2026-10-18T05:30:00.000Z').id).error, 'Not shown: nobody was on (Nobody on).');
+  assert.deepEqual(cards().slice(shown), [['nowPlaying', 'VIKKSTAR']]);
+  clock.to(Date.UTC(2026, 9, 18, 7, 1));
+  assert.equal(local('tk')['show.currentSlot'], 2, 'Deecee on at 03:00');
+  assert.equal(cards().at(-1)[1], 'Deecee');
+});
+
 test('the acts of every lineup and plan, partners too, latest night first: the names a lineup is offered (v0\'s roster)', async (t) => {
   const clock = fakeClock(T0);
   const { platform, timeline, api } = await setup(t, { clock });
@@ -1036,4 +1105,64 @@ test('a plan the show couldn\'t send to its overlays is refused as the show\'s o
   const done = (await call('GET', `${base}/${made.id}`)).body;
   assert.match(done.error, /too large to send to its overlays/);
   assert.deepEqual([platform.shows.get(show.id).date, platform.shows.get(show.id).currentSlot, local('tk')['show.currentSlot']], ['2026-10-17', 1, 1]);
+});
+
+test('a show saved before the first scene (on none) starts on "auto" at startup with no REC, take or cue: a go-live passed tonight isn\'t caught up, one to come is armed; live, taken and mixed shows stay; a second start changes nothing', async (t) => {
+  const dataRoot = tempDir(t);
+  const first = await setup(t, { dataRoot, clock: fakeClock(T0 - 2 * HOUR) });
+  for (const slug of ['tk-next', 'tk-live', 'tk-taken', 'tk-mixed']) first.platform.overlays.create({ slug, template: TAKEOVER, settings: {} });
+  const id = (slug) => first.platform.overlays.resolve(slug).doc.id;
+  // As the version before saved them: no scene; edited a few times.
+  const old = (name, slugs, extra = {}) => first.platform.store.put('shows', newId('show'), { ...SHOW, name, overlays: slugs.map(id), goLive: '21:30', actor: 'operator', createdAt: iso(T0 - 7 * 24 * HOUR), editRev: 3, ...extra }).id;
+  const tonight = old('DPRTMNT Saturday', ['tk']);
+  const later = old('Later', ['tk-next'], { goLive: '23:00' });
+  const live = old('On air', ['tk-live'], { recStartedAt: T0 - 30 * MIN });
+  const taken = old('Taken', ['tk-taken'], { scene: 'brb', sceneTakenAt: T0 - HOUR });
+  const mixed = old('Mixed', ['tk-mixed', 'main-h']);
+  const missed = first.timeline.add(tonight, { at: '21:40', action: { type: 'overlay.action', name: 'titleCard', args: { name: 'Manzone' } } });
+  const etag = (await send(first.platform, 'GET', `/shows/${tonight}`)).etag;
+  await first.platform.stop();
+
+  // Back at 22:00: tonight's go-live (21:30) has passed; the later show's (23:00) is to come.
+  const clock = fakeClock(T0);
+  const second = await setup(t, { dataRoot, clock, overlays: false });
+  const show = (ref) => second.platform.shows.get(ref);
+  second.watch('tk');
+  assert.deepEqual([show(tonight).scene, show(tonight).sceneTakenAt, show(tonight).recStartedAt, show(tonight).live], ['auto', T0, undefined, false], 'on "auto", not live from a go-live that passed before it');
+  assert.equal(show(tonight).rev, 3, 'live control: its ETag stays');
+  assert.equal(second.local('tk')['show.scene'], 'auto');
+  assert.equal('show.recStartedAt' in second.local('tk'), false);
+  assert.equal(show(later).scene, 'auto');
+  assert.deepEqual([show(live).scene, show(live).recStartedAt], [undefined, T0 - 30 * MIN], 'live: left as it is');
+  assert.equal(show(taken).scene, 'brb');
+  assert.equal(show(mixed).scene, undefined, 'a member without "auto": each shows its own default');
+  const started = (entries) => entries.filter((e) => e.msg === 'a show saved on no scene starts on "auto", as a new show does').map((e) => [e.context.name, e.context.afterGoLive]).sort();
+  assert.deepEqual(started(second.entries), [['DPRTMNT Saturday', true], ['Later', false]]);
+  // Nothing taken, triggered or fired: the cue the restart passed is missed, as any is.
+  clock.advance(RECONNECT_MS + SEC);
+  assert.equal(second.cue(missed.id).status, 'missed');
+  assert.deepEqual([...of(second.got.tk, 'show.scene.changed'), ...of(second.got.tk, 'show.trigger')], []);
+  assert.deepEqual(second.entries.filter((e) => ['cue fired', 'scene taken', 'show live at go-live'].includes(e.msg)), []);
+  // An edit made on the ETag read before the restart goes through; a go-live sent back as it was
+  // anchors nothing.
+  const edit = await send(second.platform, 'PATCH', `/shows/${tonight}`, { goLive: '21:30', lineup: LINEUP.slice(0, 2) }, { 'if-match': etag });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  assert.equal(show(tonight).recStartedAt, undefined);
+  // The go-live still to come: live at it, with no take.
+  clock.to(T0 + HOUR);
+  assert.equal(show(later).recStartedAt, T0 + HOUR, 'live at its go-live');
+  assert.equal(show(tonight).recStartedAt, undefined);
+  await second.platform.stop();
+
+  // Started again at 23:10, within 12 hours of tonight's go-live: still no REC from it.
+  const third = await setup(t, { dataRoot, clock: fakeClock(T0 + 70 * MIN), overlays: false });
+  assert.deepEqual(['scene', 'sceneTakenAt', 'recStartedAt'].map((k) => third.platform.shows.get(tonight)[k]), ['auto', T0, undefined], 'a second start changes nothing');
+  assert.deepEqual(started(third.entries), []);
+  assert.equal(third.platform.shows.get(live).scene, undefined, 'still live: still left');
+  await third.platform.stop();
+
+  // The next day, the show that was live isn't: it starts there too.
+  const fourth = await setup(t, { dataRoot, clock: fakeClock(T0 + 13 * HOUR), overlays: false });
+  assert.deepEqual([fourth.platform.shows.get(live).scene, fourth.platform.shows.get(live).live], ['auto', false]);
+  assert.deepEqual(started(fourth.entries), [['On air', true]]);
 });

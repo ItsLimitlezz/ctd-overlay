@@ -1,6 +1,7 @@
 // A show night set up in the admin UI (08, 09), in a real browser: what v0's one setup did, on a
-// show. An overlay in no show says so (with no show yet too) and makes a show, which starts on its
-// countdown; dates have quick picks in the show's zone and day boundary; a lineup's names come from
+// show. An overlay in no show says so (with no show yet too) and makes a show with the overlay
+// page's dialog (its twin ticked, the night as New show has it), which starts on its countdown;
+// dates have quick picks in the show's zone and day boundary; a lineup's names come from
 // every lineup (v0's roster) with their logos; the timeline is built from it, a card picks its act
 // (and puts them on), all cues still to come are re-armed at once, and a time the clocks repeat
 // says which it is; a plan has a lineup of its own, changed with If-Match and made the show by hand
@@ -116,6 +117,8 @@ const type = (page, selector, value, nth = 0) => page.eval(`(() => {
 })()`);
 const text = (page, selector = '[data-view]') => page.eval(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((e) => e.innerText).join('\\n')`);
 const sideways = (page) => page.eval('document.documentElement.scrollWidth > innerWidth + 1');
+// The open dialog's checkboxes: [label, checked, disabled].
+const boxes = (page) => page.eval('[...document.querySelectorAll("dialog[open] input[type=checkbox]")].map((c) => [(document.querySelector(`label[for="${c.id}"]`) || c.closest("label"))?.textContent.trim(), c.checked, c.disabled])');
 // Console errors and CSP violations; a refused request's "Failed to load resource" is expected here.
 const problems = (page) => page.problems.filter((p) => !p.startsWith('network:'));
 
@@ -140,10 +143,12 @@ test('a TAKEOVER night from nothing: the overlay in no show makes one, quick dat
   await page.waitFor('document.querySelector("[data-view] .notice")', 10000);
   assert.match(await text(page, '[data-view] .notice'), /^tk is in no show, so it shows no set times, countdown or who's on/);
 
-  // New show, from the notice: tk picked, tonight's date (in the zone, after the day boundary).
-  await click(page, '[data-view] button', 'New show with tk');
+  // A show made from the notice, with the overlay page's dialog: tk in it, tonight's date (in the
+  // zone, after the day boundary).
+  await click(page, '[data-view] button', 'Make a show from tk');
   await page.waitFor('document.querySelector("dialog[open] input[type=date]")', 10000);
-  assert.deepEqual(await page.eval('Object.fromEntries([...document.querySelectorAll("dialog[open] input[type=checkbox]")].map((c) => [c.value, [c.checked, c.disabled]]))'), { last: [false, true], tk: [true, false], count: [false, false] });
+  assert.equal(await page.eval('document.querySelector("dialog[open] h2").textContent'), 'Make a show from "tk"');
+  assert.deepEqual(await boxes(page), [['tk (this overlay)', true, true]], 'last is in a show, count is another template');
   await type(page, 'dialog[open] select', ZONE);
   const night = tonight();
   // The quick picks, in the zone picked: tonight, a week on, and the coming night on a past
@@ -228,7 +233,7 @@ test('the first night: with no show yet, the overlay in no show is named and New
   await page.waitFor('document.querySelector("[data-view] .notice")', 10000);
   assert.match(await text(page, '[data-view] .notice'), /^tk is in no show, so it shows no set times, countdown or who's on\. Make a show with it\./);
   assert.match(await text(page), /No shows yet/);
-  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .notice button")].map((b) => b.textContent)'), ['New show with tk']);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .notice button")].map((b) => b.textContent)'), ['Make a show from tk']);
   // The page's own New show picks it too: the one overlay in no show that reads a show.
   await click(page, '[data-view] button', 'New show');
   await page.waitFor('document.querySelector("dialog[open] input[type=date]")', 10000);
@@ -268,6 +273,11 @@ test('the timeline: a card picks its act and puts them on as one cue, changed an
   await page.waitFor('document.querySelector("dialog[open] select")', 10000);
   const visible = () => page.eval('[...document.querySelectorAll("dialog[open] .field")].filter((f) => !f.hidden && !f.closest("[hidden]")).map((f) => f.querySelector("label")?.textContent.trim()).filter(Boolean)');
   await type(page, 'dialog[open] input.time-field', '23:58');
+  // The chips show nothing in the TAKEOVER look: their options say so, and, picked, why.
+  const graphics = await page.eval('[...[...document.querySelectorAll("dialog[open] select")][1].options].map((o) => o.textContent)');
+  assert.ok(graphics.includes('Opening DJ chip (shows nothing now)') && graphics.includes('DJ title card'), graphics.join(', '));
+  await type(page, 'dialog[open] select', 'chipOpening', 1);
+  assert.match(await page.eval('document.querySelector("dialog[open]").innerText'), /Opening DJ chip shows nothing now: the chips show in the Headliner event look only\./);
   // A now-playing held until hidden is about an act too.
   await type(page, 'dialog[open] select', 'nowPlayingHold', 1);
   assert.ok((await visible()).includes('Act'), 'a held now-playing is about an act');
@@ -418,8 +428,15 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
   await page.waitFor('[...document.querySelectorAll("[data-view] .card-head button")].some((b) => b.textContent === "Plan a date")', 10000);
   await click(page, '[data-view] .card-head button', 'Plan a date');
   await page.waitFor('document.querySelector("[data-view] h2")?.textContent === "Plan a date"', 10000);
-  const picks = await page.eval('[...document.querySelectorAll("[data-view] [aria-label=\'Quick dates\'] button")].map((b) => b.textContent)');
-  assert.ok(!picks.includes('Tonight') && picks.includes('Next week'), picks.join(', '));
+  // Its date is on tonight's weekday: the first such night is a week away, "Next", and the one
+  // after it two weeks away. Each counts from tonight: pressed, it shows so and stays.
+  const quick = () => page.eval('[...document.querySelectorAll("[data-view] [aria-label=\'Quick dates\'] button")].map((b) => [b.textContent, b.getAttribute("aria-pressed")])');
+  const day = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`));
+  const picks = (await quick()).map(([label]) => label);
+  assert.ok(!picks.includes('Tonight') && picks.includes(`Next ${day}`) && picks.includes('In two weeks') && !picks.includes(`This ${day}`), picks.join(', '));
+  for (let i = 0; i < 2; i++) await click(page, '[data-view] [aria-label=\'Quick dates\'] button', 'In two weeks');
+  assert.equal(await page.eval('document.querySelector("[data-view] input[type=date]").value'), addDays(date, 14), 'pressed twice: still two weeks on');
+  assert.deepEqual((await quick()).find(([label]) => label === 'In two weeks'), ['In two weeks', 'true']);
   await type(page, '[data-view] input[type=date]', tonight());
   await click(page, '[data-view] button', 'Save plan');
   await page.waitFor('document.querySelector("dialog[open]")', 5000);
@@ -486,5 +503,78 @@ test('a plan has a lineup of its own: planned, changed (If-Match), made the show
     await sleep(400);
     assert.equal(await sideways(page), false, `${tab} at 390 px`);
   }
+  assert.deepEqual(problems(page), []);
+});
+
+test('one way into a show for overlays in no show: the list opens the overlay page\'s dialog, one per template, the twin ticked; New show has the same night and picks them; on to the Lineup, at a phone\'s width', opts, async (t) => {
+  const platform = await start(t);
+  const call = await owner(platform);
+  for (const slug of ['tk-h', 'tk-v']) platform.overlays.create({ slug, template: TAKEOVER, settings: {} });
+  platform.overlays.create({ slug: 'count', template: { id: 'dev.skp.viewers', version: platform.templates.versions('dev.skp.viewers')[0].version }, settings: {} });
+  const page = await openSignedIn(t, platform, '/shows', { width: 390, height: 844 });
+  await page.waitFor('document.querySelector("[data-view] .notice button")', 10000);
+  assert.match(await text(page, '[data-view] .notice'), /^tk-h and tk-v are in no show, so they show no set times, countdown or who's on\. Make a show with them\./);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .notice button")].map((b) => b.textContent)'), ['Make a show from tk-h and tk-v']);
+  assert.equal(await sideways(page), false);
+  const dateNow = () => page.eval('document.querySelector("dialog[open] input[type=date]").value');
+
+  // New show, any overlays: the two of one template picked, the night in this device's zone, the
+  // date following the zone chosen.
+  await click(page, '[data-view] .page-head button', 'New show');
+  await page.waitFor('document.querySelector("dialog[open] input[type=date]")', 10000);
+  assert.deepEqual((await boxes(page)).sort(), [['count', false, false], ['tk-h', true, false], ['tk-v', true, false]]);
+  const night = await dateNow();
+  await type(page, 'dialog[open] select', ZONE);
+  assert.equal(await dateNow(), tonight(), 'the night in the zone chosen');
+  await click(page, 'dialog[open] button', 'Cancel');
+  await page.waitFor('!document.querySelector("dialog[open]")', 5000);
+
+  // From the notice: the overlay page's dialog, its twin ticked, the same night, the same zone rule.
+  await click(page, '[data-view] .notice button', 'Make a show from tk-h and tk-v');
+  await page.waitFor('document.querySelector("dialog[open] fieldset")', 10000);
+  assert.equal(await page.eval('document.querySelector("dialog[open] h2").textContent'), 'Make a show from "tk-h"');
+  assert.deepEqual(await boxes(page), [['tk-h (this overlay)', true, true], ['tk-v', true, false]]);
+  assert.equal(await dateNow(), night, 'the night New show has');
+  await type(page, 'dialog[open] select', ZONE);
+  assert.equal(await dateNow(), tonight());
+  assert.equal(await page.eval('(() => { const d = document.querySelector("dialog[open]"); return d.scrollWidth <= d.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth + 1; })()'), true, 'the dialog fits');
+  await click(page, 'dialog[open] button', 'Create show');
+  await page.waitFor('/^#\\/shows\\/show_[0-9A-Z]+\\?tab=lineup$/.test(location.hash) && document.querySelector("#tab-lineup")?.getAttribute("aria-selected") === "true"', 15000);
+  const made = 'Created the show "D/PRTMNT TAKEOVER" with tk-h and tk-v: add the night\'s acts and their set times.';
+  await page.waitFor(`[...document.querySelectorAll(".toast span")].some((t) => t.textContent === ${JSON.stringify(made)})`, 5000);
+  const id = await page.eval('location.hash.split("/")[2].split("?")[0]');
+  const show = (await call('GET', `/shows/${id}`)).body;
+  assert.deepEqual([[...show.members].sort(), show.date, show.timezone], [['tk-h', 'tk-v'], tonight(), ZONE]);
+  assert.equal(await sideways(page), false, 'the Lineup on a phone');
+
+  // In a show now: the list says nothing of them.
+  await go(page, '/shows', 'document.querySelector("[data-view] .grid")');
+  assert.equal(await page.eval('!!document.querySelector("[data-view] .notice")'), false);
+  assert.deepEqual(problems(page), []);
+});
+
+test('a show made before, its lineup typed and no overlays yet, is where the overlay in no show goes: named first on Shows, added in one dialog; an act set before go-live says the countdown covers it', opts, async (t) => {
+  const platform = await start(t);
+  const call = await owner(platform);
+  platform.overlays.create({ slug: 'takeover', template: TAKEOVER, settings: {} });
+  const made = (await call('POST', '/shows', { name: 'DPRTMNT Saturday', overlays: [], date: tonight(), timezone: ZONE, goLive: '22:15', lineup: [{ time: '21:30', name: 'Opener' }, { time: '23:00', name: 'Headliner DJ', headliner: true }] })).body;
+  const page = await openSignedIn(t, platform, '/shows', { width: 390, height: 844 });
+  await page.waitFor('document.querySelector("[data-view] .notice button")', 10000);
+  assert.match(await text(page, '[data-view] .notice'), /^takeover is in no show, so it shows no set times, countdown or who's on\. Add it to a show, or make a new show\.\s+"DPRTMNT Saturday" has 2 acts in its lineup and no overlays yet\./);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .notice button")].map((b) => [b.textContent, b.classList.contains("primary")])'), [['Add takeover to DPRTMNT Saturday', true], ['Make a show from takeover', false]]);
+  assert.equal(await sideways(page), false);
+  await click(page, '[data-view] .notice button', 'Add takeover to DPRTMNT Saturday');
+  await page.waitFor('document.querySelector("dialog[open] select")', 10000);
+  assert.equal(await page.eval('document.querySelector("dialog[open] select").value'), made.id, 'that show, picked');
+  await click(page, 'dialog[open] button', 'Add to show');
+  await page.waitFor('!document.querySelector("dialog[open]")', 10000);
+  assert.deepEqual((await call('GET', `/shows/${made.id}`)).body.members, ['takeover']);
+  await page.waitFor('!document.querySelector("[data-view] .notice")', 10000);
+  // Its lineup: the opener, set before the show goes live, is said to be under the countdown.
+  await go(page, `/shows/${made.id}?tab=lineup`, '[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "Add an act")');
+  const rows = await page.eval('[...document.querySelectorAll("[data-view] fieldset")].map((f) => f.innerText)');
+  assert.match(rows[0], /Before the show goes live at 10:15\sPM: on Auto the countdown covers this set\./);
+  assert.doesNotMatch(rows[1], /Before the show goes live/);
+  assert.equal(await sideways(page), false);
   assert.deepEqual(problems(page), []);
 });

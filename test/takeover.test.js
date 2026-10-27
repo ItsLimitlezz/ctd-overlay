@@ -394,6 +394,25 @@ describe('TAKEOVER on air', () => {
     assert.deepEqual(problems(page), []);
   });
 
+  test('"Nobody on" (show.nobodyOn) names no act, whatever the clock says: a held Now playing goes, and comes back with the act picked', opts, async (t) => {
+    const state = night();
+    delete state['show.currentSlot'];
+    const { page, take, text, trigger, platform } = await open(t, { state });
+    await take('program');
+    trigger('nowPlayingHold');
+    const npName = (name) => `document.querySelector("[data-kind=np] .name") && document.querySelector("[data-kind=np] .name").textContent === ${JSON.stringify(name)}`;
+    await page.waitFor(npName('Trapment'), 3000);
+    platform.bus.setState('show.nobodyOn', true);
+    await page.waitFor('!document.querySelector("[data-kind=np]")', 3000);
+    await take('pov');
+    assert.deepEqual(await text('[data-who] .name'), [], 'nobody, though Trapment\'s set has started by the clock');
+    await take('program');
+    platform.bus.setState('show.nobodyOn', undefined);
+    platform.bus.setState('show.currentSlot', 3);
+    await page.waitFor(npName('BIA'), 3000);
+    assert.deepEqual(problems(page), []);
+  });
+
   test('The Line\'s clip plays on through data and settings changes; one from another site is refused', opts, async (t) => {
     const clip = `/media/${FILE_ID}/line.mp4`;
     const { page, take, platform } = await open(t, { settings: { lineClip: clip }, state: night() });

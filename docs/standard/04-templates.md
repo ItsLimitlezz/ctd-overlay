@@ -275,6 +275,16 @@ The runtime calls the registered handler with `{ args, startAt, durationMs }`. T
 shows the element from `startAt` for `durationMs` on server time, then hides it. A trigger that
 arrives after its window has passed **MUST NOT** be shown.
 
+An action declares `durationMs` when it shows for a set time. One without it is instant (a hide,
+a clip started or stopped) or open-ended (a card held until another action hides it), as its
+template does it; its trigger still carries the platform's default `durationMs`, which such a
+template ignores. The admin UI says which it is when one is fired (08 §8.4).
+
+A template **MAY** let a setting stand for an action's declared `durationMs` (a hold time): a
+trigger carrying the declared value shows for the setting; one asking for another duration shows
+for that. TAKEOVER's title card does so with its `cardSec` setting, and Now playing with `npSec`,
+so a button and a cue hold them as long as the overlay says.
+
 ## 4.7 Scenes and transitions
 
 The runtime owns scene switching: it mounts the incoming scene container

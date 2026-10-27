@@ -4,7 +4,7 @@
 // durationMs), so a horizontal and a vertical feed hit the same frame (05 §5.3).
 //
 // Data it reads (02 §2.5): show.lineup (slots with startAt; time is a label), show.currentSlot,
-// show.headliner (through the "headliner" setting's binding), show.goLiveAt, show.date,
+// show.nobodyOn, show.headliner (through the "headliner" setting's binding), show.goLiveAt, show.date,
 // show.recStartedAt, viewers.total, viewers.stale. Anything absent is hidden, never shown as a
 // placeholder (H6).
 //
@@ -36,10 +36,12 @@
     const i = SK.state('show.currentSlot');
     return Array.isArray(raw) && Number.isInteger(i) && raw[i] && typeof raw[i].name === 'string' && raw[i].name.trim() ? raw[i] : undefined;
   }
-  // Who's on: the operator's pick, else the slot the clock is in.
+  // Who's on: the operator's pick, else the slot the clock is in, unless the operator said nobody
+  // is on (show.nobodyOn: Nobody on on Live), whatever the clock says.
   function current() {
     const pick = picked();
     if (pick) return pick;
+    if (SK.state('show.nobodyOn') === true) return undefined;
     const now = SK.clock.now();
     let cur;
     for (const s of ordered()) if (typeof s.startAt === 'number' && s.startAt <= now) cur = s;
@@ -518,9 +520,10 @@
     lineSettings();
   });
   SK.onState('show.*', (key) => {
-    if (key === 'show.lineup' || key === 'show.currentSlot') actMayChange();
+    const who = key === 'show.currentSlot' || key === 'show.nobodyOn';
+    if (key === 'show.lineup' || who) actMayChange();
     if (key === 'show.lineup') preloadLogos();
-    if (key === 'show.currentSlot') {
+    if (who) {
       paint();
       followAct();
     } else if (/^show\.(lineup|date|headliner|goLiveAt)$/.test(key)) refresh();

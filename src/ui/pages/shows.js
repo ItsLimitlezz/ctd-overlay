@@ -8,15 +8,20 @@
 // ("Follow OBS", obs.js).
 //
 // What v0's one setup did lives on a show here (set times, the countdown, who's on, the
-// timeline), so the list says which overlays are in no show, and a show whose night has passed
-// says so. A weekly show is quick to move on: dates have quick picks (Tonight, This Saturday, Next
-// week), a lineup's names are offered from every lineup (GET /acts, v0's roster), and a plan has a
-// lineup of its own, edited like the show's. Unsaved edits are never dropped without a word: a tab
-// change asks first, and moving the show to its next night keeps them.
+// timeline), so the list says which overlays are in no show, with "Make a show from …" (the
+// overlay page's dialog, show-from-overlay.js), and a show whose night has passed says so. A weekly
+// show is quick to move on: dates have quick picks (Tonight, This Saturday, Next week; the rules
+// are show-day.js's), a lineup's names are offered from every lineup (GET /acts, v0's roster), and
+// a plan has a lineup of its own, edited like the show's. Unsaved edits are never dropped without
+// a word: a tab change asks first, and so does leaving the page (a link, Back, a reload: app.js
+// ctx.guardLeave); moving the show to its next night keeps them.
 import * as api from '../api.js';
-import { badge, clock, confirm, dialog, empty, every, field, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
+import { notDrawn } from '../action-needs.js';
+import { badge, clock, confirm, empty, every, field, formDialog, h, menu, mount, notice, pageHead, run, statusDot, tabs, toast } from '../dom.js';
 import { followObsCard } from '../obs.js';
-import { timeError, timeInput } from '../time-field.js';
+import { addDays, browserZone, dateField, dateLabel, newNight, onWeekday, partsIn, showDayNow, weekdayName, zoneInput } from '../show-day.js';
+import { addToShow, makeShow, suggestedShow } from '../show-from-overlay.js';
+import { timeInput, timeProblem } from '../time-field.js';
 import { bindingName, fedByForm, fedByWords } from '../streams.js';
 
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -50,6 +55,20 @@ const readsShow = (manifest) => (Array.isArray(manifest?.consumes?.state) ? mani
 
 // ---- small helpers ---------------------------------------------------------------------------
 const fail = (message) => { throw new Error(message); };
+// A form that can't be sent because of one box: the box gets the focus, in view (not the body,
+// where a busy button leaves it), and the problem names it (err.field: formDialog shows it too).
+const failAt = (el, message) => {
+  if (el?.isConnected) {
+    el.focus({ preventScroll: true });
+    el.scrollIntoView?.({ block: 'center' });
+  }
+  throw Object.assign(new Error(message), { field: el });
+};
+// A time box's value that can't be sent: said with the box's own words, the box focused.
+const checkTime = (input, what, missing) => {
+  const problem = timeProblem(input.value, what, { missing });
+  if (problem) failAt(input, problem);
+};
 const minutesOf = (t) => {
   const m = TIME.exec(t || '');
   return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
@@ -57,43 +76,13 @@ const minutesOf = (t) => {
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const andList = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
-function browserZone() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
-}
 // "(America/Toronto time)" when the show's zone isn't this device's.
 const zoneNote = (tz) => (tz && tz !== browserZone() ? ` (${tz.replace(/_/g, ' ')} time)` : '');
 
-// The wall clock of an instant in a zone: { year, month, day, hour, minute } as strings. A zone's
-// formatter is made once (a timeline asks for hundreds of instants).
-const wallFormats = new Map();
-function partsIn(date, timeZone) {
-  let fmt = wallFormats.get(timeZone);
-  if (!fmt) {
-    const opts = { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
-    try { fmt = new Intl.DateTimeFormat('en-US', { ...opts, timeZone }); } catch { fmt = new Intl.DateTimeFormat('en-US', opts); }
-    wallFormats.set(timeZone, fmt);
-  }
-  const out = {};
-  for (const p of fmt.formatToParts(date)) out[p.type] = p.value;
-  if (out.hour === '24') out.hour = '00';
-  return out;
-}
+// An instant's date and wall-clock time in a zone (show-day.js partsIn).
 const ymdIn = (date, tz) => { const p = partsIn(date, tz); return `${p.year}-${p.month}-${p.day}`; };
 const hmIn = (date, tz) => { const p = partsIn(date, tz); return `${p.hour}:${p.minute}`; };
 
-// A calendar date ("2026-10-17") as words: "Sat, Oct 17" or "Saturday, October 17, 2026".
-function dateLabel(ymd, long = false) {
-  const m = DATE.exec(ymd || '');
-  if (!m) return ymd || '';
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  const opts = long ? { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' } : { weekday: 'short', day: 'numeric', month: 'short' };
-  return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: 'UTC' }).format(d);
-}
-function addDays(ymd, n) {
-  const m = DATE.exec(ymd || '');
-  if (!m) return ymd;
-  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + n)).toISOString().slice(0, 10);
-}
 // A wall-clock time ("01:00") in this device's way of writing times: "1:00 AM".
 function timeLabel(t) {
   const m = TIME.exec(t || '');
@@ -108,82 +97,6 @@ function instantLabel(iso, tz) {
   } catch {
     return new Date(iso).toLocaleString();
   }
-}
-
-// The show's day now, in its zone and with its day boundary (09 §9.2), on the server's clock:
-// before the boundary it is still the night before, so at 1 AM on Sunday a Saturday show's
-// "tonight" is Saturday.
-function showDayNow(tz, boundary = '12:00') {
-  const p = partsIn(new Date(api.serverNow()), tz);
-  const today = `${p.year}-${p.month}-${p.day}`;
-  return minutesOf(`${p.hour}:${p.minute}`) < (minutesOf(boundary) || 0) ? addDays(today, -1) : today;
-}
-const weekdayOf = (ymd) => {
-  const m = DATE.exec(ymd || '');
-  return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay() : NaN;
-};
-const weekdayName = (ymd) => {
-  const m = DATE.exec(ymd || '');
-  return m ? new Intl.DateTimeFormat(undefined, { weekday: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))) : '';
-};
-// The first date on or after `from` that falls on the weekday of `like`.
-const onWeekday = (from, like) => addDays(from, (weekdayOf(like) - weekdayOf(from) + 7) % 7);
-
-// Quick picks under a date field (v0's "This Saturday"), for a weekly show: Tonight, the next night
-// on the date's weekday, and a week after the date; a new show, with no weekday of its own yet, also
-// gets the coming Friday and Saturday (weekdays: 5, 6). Tonight is the show's day now in the zone
-// and with the day boundary the form has (zone(), boundary()). A plan, for a night still to come
-// (future), gets no Tonight: its picks start tomorrow. The date is said in words beside them,
-// weekday and all, which a date field doesn't show. Returns { words, row, refresh }.
-function datePicks(input, { zone, boundary = () => '12:00', weekdays = [], future = false }) {
-  const words = h('span.small', { 'aria-live': 'polite' });
-  const row = h('div.row', { role: 'group', 'aria-label': 'Quick dates' });
-  const pick = (ymd) => {
-    input.value = ymd;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-  function refresh() {
-    const v = DATE.test(input.value) ? input.value : '';
-    const tonight = showDayNow(zone(), boundary());
-    const picks = future ? [] : [['Tonight', tonight]];
-    const weekly = (ymd) => {
-      const at = onWeekday(future ? addDays(tonight, 1) : tonight, ymd);
-      if (!picks.some(([, d]) => d === at)) picks.push([`This ${weekdayName(ymd)}`, at]);
-    };
-    // A week's dates from a Sunday (2026-10-18): one for each weekday asked.
-    for (const wd of weekdays) weekly(addDays('2026-10-18', wd));
-    if (v) weekly(v);
-    if (v) picks.push(['Next week', addDays(v, 7)]);
-    mount(row, picks.map(([label, ymd]) => h('button.btn.small', {
-      type: 'button', disabled: input.disabled, 'aria-pressed': String(ymd === v), 'aria-label': `${label}: ${dateLabel(ymd, true)}`, onclick: () => pick(ymd),
-    }, label)));
-    words.textContent = v ? `${dateLabel(v, true)}${v === tonight ? ': tonight' : v < tonight ? ': that night has passed' : ''}` : '';
-  }
-  input.addEventListener('input', refresh);
-  input.addEventListener('change', refresh);
-  refresh();
-  return { words, row, refresh };
-}
-// A date field with its quick picks: the date in words under the field, then the picks.
-function dateField(label, input, { hint, zone, boundary, weekdays, future }) {
-  const picks = datePicks(input, { zone, boundary, weekdays, future });
-  const el = field(label, input, { hint });
-  input.after(picks.words, picks.row);
-  el.refresh = picks.refresh;
-  return el;
-}
-
-// The time zone control: a list of the zones this browser knows, or a text field where it can't
-// list them. The current zone is always an option.
-function zoneInput(value, { disabled } = {}) {
-  let zones = [];
-  try { zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []; } catch { zones = []; }
-  if (!zones.length) return h('input', { type: 'text', value: value || '', autocomplete: 'off', spellcheck: 'false', placeholder: 'America/Toronto', disabled });
-  const list = value && !zones.includes(value) ? [value, ...zones] : zones;
-  const select = h('select', { disabled }, list.map((z) => h('option', { value: z }, z.replace(/_/g, ' '))));
-  if (value) select.value = value;
-  return select;
 }
 
 // A checkbox as a 44 px toggle button: the whole box is the label.
@@ -225,6 +138,19 @@ function boundaryWords(b, date) {
   return `Times before ${timeLabel(b)} belong to the next day: an act at ${timeLabel(example)} plays after midnight, on ${dateLabel(addDays(date, 1))}, not before doors.`;
 }
 
+// A time's place in the show's night: minutes from its day boundary (01:00 comes after 23:00).
+const nightKey = (t, boundary) => (minutesOf(t) - (minutesOf(boundary) || 0) + 1440) % 1440;
+const beforeLive = (t, goLive, boundary) => TIME.test(t || '') && TIME.test(goLive || '') && nightKey(t, boundary) < nightKey(goLive, boundary);
+// Acts set before the show goes live: on Auto the countdown (Starting Soon) covers their sets.
+// Said where the go-live is set, as a reminder, never refused: an opener before doors is a choice.
+function beforeGoLive(rows, goLive, boundary) {
+  const early = rows.filter((r) => String(r.name || '').trim() && beforeLive(r.time, goLive, boundary));
+  if (!early.length) return null;
+  return notice(early.length === 1
+    ? `${early[0].name.trim()} starts at ${timeLabel(early[0].time)}, before the show goes live at ${timeLabel(goLive)}: on Auto the countdown covers their set.`
+    : `${andList(early.map((r) => r.name.trim()))} start before the show goes live at ${timeLabel(goLive)}: on Auto the countdown covers their sets.`, 'warn');
+}
+
 // A choice from a list, or a text field when there is nothing to list. The current value is
 // always an option.
 function choice(options, value, { placeholder, disabled } = {}) {
@@ -233,37 +159,6 @@ function choice(options, value, { placeholder, disabled } = {}) {
   const select = h('select', { disabled }, list.map((o) => h('option', { value: o.value }, o.label)));
   if (value !== undefined) select.value = value;
   return select;
-}
-
-// A form in a dialog that stays open while it saves: the primary button runs submit() (busy, no
-// double tap), a problem shows in the dialog, and success closes it. Resolves with submit's
-// result, or undefined when cancelled. onError(err, close) may handle an error itself (→ true).
-function formDialog({ title, body, submitLabel = 'Save', focus, submit, onError }) {
-  const message = h('div', { 'aria-live': 'polite' });
-  let result;
-  const pending = dialog({ title, body: h('div', body, message), actions: [{ label: 'Cancel', value: false }, { label: submitLabel, value: true, kind: 'primary' }] });
-  const d = message.closest('dialog');
-  const button = d?.querySelector('.form-actions .btn.primary');
-  d?.addEventListener('click', async (e) => {
-    if (!button || !button.contains(e.target)) return;
-    // Ours, not the dialog's own handler (which would close it before the request is done).
-    e.stopPropagation();
-    e.preventDefault();
-    mount(message);
-    const out = await run(button, async () => (await submit()) ?? true, {
-      onError: (err) => {
-        if (onError?.(err, () => d.close())) return;
-        mount(message, notice(err?.message || String(err), 'danger'));
-        message.scrollIntoView?.({ block: 'nearest' });
-      },
-    });
-    if (out !== undefined) {
-      result = out;
-      d.close();
-    }
-  }, true);
-  focus?.focus();
-  return pending.then(() => result);
 }
 
 // A slot as the API takes it (registry.js SLOT_FIELDS): nothing the server added.
@@ -287,17 +182,19 @@ const actKey = (name) => String(name || '').trim().replace(/\s+/g, ' ').toLowerC
 // names of every lineup (acts: GET /acts, v0's roster), and a known act's latest logo comes with
 // its name into a row that has none. rows: { time, name, b2b?, headliner?, closer?, logo?, orig? }
 // (orig: the slot as the server resolved it, for the instant it starts), changed in place;
-// night(): { date, boundary, timezone } as they are now; onChange() after each edit.
+// night(): { date, boundary, timezone, goLive? } as they are now (an act before the go-live says
+// so); onChange() after each edit.
 let editors = 0;
 function lineupEditor({ rows, night, images, acts = [], disabled, onChange }) {
   const list = h('div.stack');
   const names = h('datalist', { id: `acts-${++editors}` }, acts.map((a) => h('option', { value: a.name })));
   const logos = new Map(acts.filter((a) => a.logo && images.some((i) => i.value === a.logo)).map((a) => [actKey(a.name), a.logo]));
 
-  // When a row plays: the server's instant for a saved time; for a changed one, which day.
+  // When a row plays: the server's instant for a saved time; for a changed one, which day. A time
+  // that can't be read says so under its own box (timeInput), once it is left.
   function when(row) {
-    const { date, boundary, timezone } = night();
-    if (!TIME.test(row.time)) return [h('span', timeError(row.time) || 'Set a time.')];
+    const { date, boundary, timezone, goLive } = night();
+    if (!TIME.test(row.time)) return row.time ? [] : [h('span', 'Set a time.')];
     const nextDay = minutesOf(row.time) < minutesOf(boundary);
     const out = [];
     if (row.orig && row.orig.time === row.time && row.orig.startAt) {
@@ -307,6 +204,7 @@ function lineupEditor({ rows, night, images, acts = [], disabled, onChange }) {
     } else {
       out.push(h('span', nextDay ? `After midnight: plays on ${dateLabel(addDays(date, 1))}.` : `Plays on ${dateLabel(date)}.`));
     }
+    if (beforeLive(row.time, goLive, boundary)) out.push(notice(`Before the show goes live at ${timeLabel(goLive)}: on Auto the countdown covers this set.`, 'warn'));
     return out;
   }
 
@@ -333,8 +231,10 @@ function lineupEditor({ rows, night, images, acts = [], disabled, onChange }) {
       tools.querySelector('[data-key^="down-"]').setAttribute('aria-label', `Move ${label()} down`);
       tools.querySelector('summary').setAttribute('aria-label', `More for ${label()}`);
     };
-    const time = timeInput({ value: row.time, inline: false, required: true, disabled, oninput: (e) => { row.time = e.target.value; update(); onChange(); } });
-    const name = h('input', { type: 'text', value: row.name, maxlength: 80, required: true, autocomplete: 'off', list: names.id, disabled, oninput: (e) => { row.name = e.target.value; relabel(); onChange(); } });
+    // What's wrong with the time shows right under its box (a phone's keyboard hides the foot of
+    // the row); when the act plays, at the foot.
+    const time = timeInput({ value: row.time, required: true, disabled, dataset: { field: 'time' }, oninput: (e) => { row.time = e.target.value; update(); onChange(); } });
+    const name = h('input', { type: 'text', value: row.name, maxlength: 80, required: true, autocomplete: 'off', list: names.id, disabled, dataset: { field: 'name' }, oninput: (e) => { row.name = e.target.value; relabel(); onChange(); } });
     const b2b = h('input', { type: 'text', value: row.b2b || '', maxlength: 80, autocomplete: 'off', list: names.id, disabled, oninput: (e) => { row.b2b = e.target.value; onChange(); } });
     const logoOptions = [{ value: '', label: 'No logo (the name shows)' }, ...images];
     const logo = choice(logoOptions, row.logo || '', { disabled });
@@ -397,6 +297,18 @@ function lineupEditor({ rows, night, images, acts = [], disabled, onChange }) {
       draw();
       onChange();
     },
+    // Before saving: the first act that can't be saved fails with what is wrong with it, by its
+    // number and name, in its time box's own words ("Act 2, Headliner DJ: add AM or PM: …"), its
+    // box focused.
+    check() {
+      rows.forEach((row, i) => {
+        const who = `Act ${i + 1}${String(row.name || '').trim() ? `, ${row.name.trim()}` : ''}`;
+        const set = list.querySelectorAll('fieldset')[i];
+        const problem = timeProblem(row.time, who, { missing: `${who} needs a start time.` });
+        if (problem) failAt(set?.querySelector('[data-field="time"]'), problem);
+        if (!String(row.name || '').trim()) failAt(set?.querySelector('[data-field="name"]'), `${who} needs a name.`);
+      });
+    },
   };
 }
 
@@ -418,9 +330,19 @@ async function loadCatalog(show, overlays, media) {
     const { id, version } = o.template || {};
     if (typeof id === 'string' && typeof version === 'string') pins.set(`${id}@${version}`, { id, version });
   }
-  const manifests = (await Promise.all([...pins.values()].map((t) => api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`).then((v) => v?.manifest, () => undefined)))).filter(Boolean);
+  const read = await Promise.all([...pins.values()].map((t) => api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`).then((v) => v?.manifest, () => undefined)));
+  const manifests = read.filter(Boolean);
+  const byPin = new Map([...pins.keys()].map((key, i) => [key, read[i]]));
   const scenes = new Map();
   const actions = new Map();
+  // A graphic every member that has it draws nothing for, with its settings as they are now
+  // (TAKEOVER's chips outside its event look): its option says so, and why.
+  const quiet = new Map();
+  for (const id of new Set(manifests.flatMap((m) => (Array.isArray(m.actions) ? m.actions : []).map((a) => a?.id)))) {
+    const having = members.filter((o) => (byPin.get(`${o.template?.id}@${o.template?.version}`)?.actions || []).some((a) => a?.id === id));
+    const whys = having.map((o) => notDrawn(o, id));
+    if (having.length && whys.every(Boolean)) quiet.set(id, whys[0]);
+  }
   const text = (v, fallback) => (typeof v === 'string' && v ? v : fallback);
   for (const m of manifests) for (const a of Array.isArray(m.actions) ? m.actions : []) if (a?.id && !actions.has(a.id)) actions.set(a.id, text(a.label, a.id));
   for (const m of manifests) {
@@ -439,6 +361,7 @@ async function loadCatalog(show, overlays, media) {
     images: ready.filter((m) => m.kind === 'image').map((m) => ({ value: m.url, label: m.name || m.url })),
     sceneLabel: (id) => scenes.get(id) || id,
     actionLabel: (id) => actions.get(id) || id,
+    quiet: (id) => quiet.get(id),
     mediaName: (id) => media.find((m) => m.id === id)?.name || 'a clip that is no longer uploaded',
   };
 }
@@ -488,7 +411,7 @@ export async function list(view, ctx) {
   ctx.setTitle('Shows');
   const canWrite = ctx.can('timeline:write');
   const body = h('div');
-  let free = []; // the overlays in no show that read one, as last drawn: New show picks the one
+  let free = []; // the overlays in no show that read one, as last drawn: New show picks those of one template
   const newButton = canWrite ? h('button.btn.primary', { type: 'button', onclick: () => run(newButton, () => newShow(ctx, { loose: free })) }, 'New show') : null;
   mount(view, pageHead('Shows', { actions: newButton ? [newButton] : [] }), body);
 
@@ -508,13 +431,28 @@ export async function list(view, ctx) {
   const loose = (overlays) => overlays.filter((o) => o?.slug && !o.show && readsShow(manifests.get(pin(o)))).map((o) => o.slug);
   const draw = (shows, overlays) => {
     free = loose(overlays);
-    const make = (slug) => h('button.btn', { type: 'button', onclick: (e) => run(e.currentTarget, () => newShow(ctx, { overlay: slug })) }, `New show with ${slug}`);
+    // The overlay page's "Make a show from this overlay" (show-from-overlay.js), one per template:
+    // the same dialog, with its other overlays in no show (its vertical twin) ticked.
+    const byTemplate = new Map();
+    for (const o of overlays.filter((x) => free.includes(x?.slug))) {
+      const key = o.template?.id || o.slug;
+      if (!byTemplate.has(key)) byTemplate.set(key, []);
+      byTemplate.get(key).push(o);
+    }
+    const make = (group) => h('button.btn', { type: 'button', onclick: (e) => run(e.currentTarget, () => makeShow(ctx, group[0], { manifest: manifests.get(pin(group[0])) })) }, `Make a show from ${andList(group.map((o) => o.slug))}`);
+    // A show plainly theirs (their twin's, or one with no overlays yet, its lineup typed in): added
+    // to it first, as the overlay page does, in the same dialog (the twins ticked).
+    const add = (group, suggested) => h('button.btn.primary', { type: 'button', onclick: (e) => run(e.currentTarget, async () => {
+      if (await addToShow(ctx, group[0], { manifest: manifests.get(pin(group[0])), prefer: suggested.show.id })) refresh();
+    }) }, `Add ${andList(group.map((o) => o.slug))} to ${suggested.show.name}`);
+    const groups = [...byTemplate.values()].map((group) => ({ group, suggested: canWrite ? suggestedShow(group[0], shows, overlays) : undefined }));
     const one = free.length === 1;
     // Said with no show yet too: the first night is where it matters most.
     const looseNote = free.length ? notice([
       `${andList(free)} ${one ? 'is' : 'are'} in no show, so ${one ? 'it shows' : 'they show'} no set times, countdown or who's on. `,
-      canWrite ? (shows.length ? `Add ${one ? 'it' : 'them'} to a show under its Details, or make a new show.` : `Make a show with ${one ? 'it' : 'them'}.`) : 'An operator adds overlays to a show under its Details.',
-      canWrite && one ? h('div.row', make(free[0])) : null,
+      canWrite ? (shows.length ? `Add ${one ? 'it' : 'them'} to a show, or make a new show.` : `Make a show with ${one ? 'it' : 'them'}.`) : 'An operator adds overlays to a show under its Details.',
+      ...groups.filter((g) => g.suggested).map((g) => h('p', g.suggested.why)),
+      canWrite ? h('div.row', groups.map(({ group, suggested }) => [suggested ? add(group, suggested) : null, make(group)])) : null,
     ], 'warn') : null;
     if (!shows.length) {
       mount(body, looseNote, empty('No shows yet',
@@ -563,25 +501,23 @@ function showCard(s) {
     h('div.row', h('a.btn', { href }, 'Open')));
 }
 
-// opts.overlay: an overlay's slug to pick; without it, the one overlay in no show whose template
-// reads a show (opts.loose: their slugs, as the list has them), if there is just one: a chat or a
-// viewer count in no show needs none.
-async function newShow(ctx, { overlay, loose = [] } = {}) {
+// New show, any overlays: its night as "Make a show from this overlay" has it (show-day.js
+// newNight()). The overlays in no show whose template reads a show (opts.loose: their slugs, as
+// the list has them) come picked when they are of one template, with its other overlays in no
+// show (a vertical twin), as there: a chat or a viewer count in no show needs none.
+async function newShow(ctx, { loose = [] } = {}) {
   const overlays = await loadAll('/api/v1/overlays');
-  const zone = browserZone();
   const free = overlays.filter((o) => o?.slug && !o.show && loose.includes(o.slug));
-  const picked = overlays.find((o) => o?.slug === overlay && !o.show) || (free.length === 1 ? free[0] : undefined);
+  const template = new Set(free.map((o) => o.template?.id)).size === 1 ? free[0].template?.id : undefined;
+  const picked = template ? overlays.filter((o) => o?.slug && !o.show && o.template?.id === template) : [];
   const name = h('input', { type: 'text', maxlength: 80, required: true, autocomplete: 'off', placeholder: 'Saturday TAKEOVER' });
-  const date = h('input', { type: 'date', value: showDayNow(zone), required: true });
-  const tz = zoneInput(zone);
+  const { date, tz, dateEl, tzEl } = newNight();
   const goLive = timeInput();
-  const picker = overlayPicker(overlays, { members: picked ? [picked.id] : [] });
-  const dateEl = dateField('Date', date, { hint: 'The night of the show. Acts after midnight still belong to this date.', zone: () => tz.value.trim() || zone, weekdays: [5, 6] });
-  tz.addEventListener('change', () => dateEl.refresh());
+  const picker = overlayPicker(overlays, { members: picked.map((o) => o.id) });
   const body = h('div',
     field('Name', name, { hint: 'What you call the night.' }),
     dateEl,
-    field('Time zone', tz, { hint: 'Where the show happens. Its times are in this zone, wherever your phone is.' }),
+    tzEl,
     field('Goes live at', goLive, { hint: 'When the countdown ends and the show goes on air. Optional.' }),
     picker.el);
   const created = await formDialog({
@@ -593,7 +529,7 @@ async function newShow(ctx, { overlay, loose = [] } = {}) {
       if (!name.value.trim()) fail('Give the show a name.');
       if (!DATE.test(date.value)) fail('Pick the date of the show.');
       if (!tz.value.trim()) fail('Pick the time zone.');
-      if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30.');
+      checkTime(goLive, 'The go-live time');
       return api.post('/api/v1/shows', {
         name: name.value.trim(),
         overlays: picker.values(),
@@ -604,8 +540,9 @@ async function newShow(ctx, { overlay, loose = [] } = {}) {
     },
   });
   if (!created?.id) return;
-  // Next: the acts and their set times.
-  toast(`Created the show "${created.name}". Next: its lineup.`);
+  // Next: the acts and their set times, as after "Make a show from this overlay".
+  const members = Array.isArray(created.members) ? created.members : [];
+  toast(`Created the show "${created.name}"${members.length ? ` with ${andList(members)}` : ''}: add the night's acts and their set times.`, { ms: 6000 });
   ctx.navigate(`/shows/${api.seg(created.id)}?tab=lineup`);
 }
 
@@ -744,9 +681,10 @@ export async function detail(view, ctx) {
       // As it was read (H16): a show edited meanwhile is looked at again before it goes.
       await api.del(base(), { ifMatch: show });
       toast(`Deleted the show "${show.name}"`);
-      ctx.navigate('/shows');
+      // In place of the show's page (Back doesn't come to it), with nothing left to save there.
+      ctx.navigate('/shows', { replace: true });
     } catch (err) {
-      if (err.status === 404) { toast(`"${show.name}" was already deleted.`); ctx.navigate('/shows'); return; }
+      if (err.status === 404) { toast(`"${show.name}" was already deleted.`); ctx.navigate('/shows', { replace: true }); return; }
       if (err.status !== 412) { toast(err); return; }
       await fresh(true).catch(() => {});
       toast('The show changed since you opened it: this is the latest. Delete it again if you still want to.', { kind: 'error', ms: 10000 });
@@ -809,8 +747,8 @@ export async function detail(view, ctx) {
       if (!n) fail('Give the show a name.');
       if (!DATE.test(date.value)) fail('Pick the date of the show.');
       if (!zone.value.trim()) fail('Pick the time zone.');
-      if (!TIME.test(boundary.value)) fail('Set the day boundary as hours and minutes, like 12:00.');
-      if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30, or leave it empty.');
+      checkTime(boundary, 'The day boundary', `Set the day boundary, like ${timeLabel('12:00')}.`);
+      checkTime(goLive, 'The go-live time');
       if (n !== formShow.name) patch.name = n;
       if (date.value !== formShow.date) patch.date = date.value;
       if (zone.value.trim() !== formShow.timezone) patch.timezone = zone.value.trim();
@@ -843,13 +781,38 @@ export async function detail(view, ctx) {
       const words = { name: 'name', date: 'date', timezone: 'time zone', dayBoundary: 'day boundary', goLive: 'go-live time', overlays: 'overlays' };
       toast(`Saved the show's ${andList(Object.keys(patch).map((k) => words[k]))}.`);
       drawHead();
-      drawDetails(panel, await loadAll('/api/v1/overlays'));
+      // The details as saved, at once (nothing is left to lose by leaving); then with the overlays
+      // as they are now, unless another tab is open by then or an edit has begun.
+      drawDetails(panel, overlays);
+      const drawn = panel.firstElementChild;
+      const latest = await loadAll('/api/v1/overlays');
+      if (drawn?.isConnected && !unsaved?.() && JSON.stringify(latest) !== JSON.stringify(overlays)) drawDetails(panel, latest);
     }));
 
     const fedBox = h('div');
     drawFedBy(fedBox, overlays);
     const followBox = h('div');
     drawFollow(followBox, overlays);
+    // The hints say what the form has now (the date, zone, boundary and go-live being edited), not
+    // the show as saved; an act set before the go-live is said too (the countdown covers it).
+    const boundaryField = field('Day boundary', boundary, { hint: ' ' });
+    const goLiveField = field('Goes live at', goLive, { hint: ' ' });
+    const early = h('div');
+    function hints() {
+      const d = DATE.test(date.value) ? date.value : formShow.date;
+      const bnd = TIME.test(boundary.value) ? boundary.value : b;
+      const z = zone.value.trim() || formShow.timezone;
+      boundaryField.querySelector('.hint').textContent = `When the show's day starts. ${boundaryWords(bnd, d)} An afternoon show sets it earlier, like ${timeLabel('06:00')}.`;
+      goLiveField.querySelector('.hint').textContent = TIME.test(goLive.value)
+        ? `When the countdown ends: ${dateLabel(minutesOf(goLive.value) < minutesOf(bnd) ? addDays(d, 1) : d)}, ${timeLabel(goLive.value)}${zoneNote(z)}. Leave empty for no go-live time.`
+        : 'When the countdown ends and the show goes on air. Leave empty for no go-live time.';
+      mount(early, beforeGoLive(lineupOf(formShow), goLive.value, bnd));
+    }
+    for (const el of [date, zone, boundary, goLive]) {
+      el.addEventListener('input', hints);
+      el.addEventListener('change', hints);
+    }
+    hints();
     mount(panel, h('div.stack', h('div.card',
       h('h2', 'Details'),
       disabled ? notice('You can look at this show; changing it needs an operator or a higher role.') : null,
@@ -857,8 +820,9 @@ export async function detail(view, ctx) {
         field('Name', name),
         dateEl,
         field('Time zone', zone, { hint: 'Where the show happens. Every time of the show is in this zone, wherever your phone is.' }),
-        field('Day boundary', boundary, { hint: `When the show's day starts. ${boundaryWords(b, formShow.date)} An afternoon show sets it earlier, like ${timeLabel('06:00')}.` }),
-        field('Goes live at', goLive, { hint: formShow.goLiveAt ? `When the countdown ends: ${instantLabel(formShow.goLiveAt, formShow.timezone)}${zoneNote(formShow.timezone)}. Leave empty for no go-live time.` : 'When the countdown ends and the show goes on air. Leave empty for no go-live time.' })),
+        boundaryField,
+        goLiveField),
+      early,
       picker.el,
       canWrite ? h('div.form-actions', save) : null), fedBox, followBox));
   }
@@ -979,15 +943,14 @@ export async function detail(view, ctx) {
         drawLineup(panel, images, acts, rows.map((r) => ({ ...r, orig: r.orig && now.find((s) => s.time === r.orig.time && s.name === r.orig.name) })));
       }
     };
-    const editor = lineupEditor({ rows, night: () => ({ date: formShow.date, boundary: b, timezone: formShow.timezone }), images, acts, disabled, onChange: () => touched() });
+    const editor = lineupEditor({ rows, night: () => ({ date: formShow.date, boundary: b, timezone: formShow.timezone, goLive: formShow.goLive }), images, acts, disabled, onChange: () => touched() });
     const add = h('button.btn', { type: 'button', onclick: () => editor.add() }, 'Add an act');
     const sort = h('button.btn', { type: 'button', onclick: () => editor.sort() }, 'Sort by time');
     const undo = h('button.btn.ghost', { type: 'button', onclick: () => drawLineup(panel, images, acts) }, 'Undo changes');
     const save = h('button.btn.primary', { type: 'button' }, 'Save lineup');
     save.addEventListener('click', () => run(save, async () => {
       const lineup = rows.map(cleanSlot);
-      const bad = lineup.findIndex((s) => !TIME.test(s.time) || !s.name);
-      if (bad >= 0) fail(`Act ${bad + 1} needs a start time and a name.`);
+      editor.check();
       if (!dirty()) {
         toast('Nothing to save: the lineup is as it was.');
         return;
@@ -1012,7 +975,12 @@ export async function detail(view, ctx) {
       const heads = lineup.filter((s) => s.headliner).length;
       toast(`Lineup saved: ${plural(lineup.length, 'act')}${show.recipe ? '; the timeline follows it' : ''}.${heads > 1 ? ' More than one act is the headliner: templates use the first.' : ''}`);
       drawHead();
-      drawLineup(panel, images, await loadAll('/api/v1/acts'));
+      // The lineup as saved, at once (nothing is left to lose by leaving); then with the names it
+      // adds to the roster, unless another tab is open by then or an edit has begun.
+      drawLineup(panel, images, acts);
+      const drawn = panel.firstElementChild;
+      const roster = await loadAll('/api/v1/acts');
+      if (drawn?.isConnected && !unsaved?.() && JSON.stringify(roster) !== JSON.stringify(acts)) drawLineup(panel, images, roster);
     }));
 
     mount(panel, h('div.card',
@@ -1074,7 +1042,7 @@ export async function detail(view, ctx) {
       const at = timeInput({ value: initialAt, required: true });
       const kind = h('select', KINDS.map((k) => h('option', { value: k.type }, k.label)));
       kind.value = a && !fixed ? a.type : 'overlay.action';
-      const graphic = choice(cat.actions, a?.type === 'overlay.action' ? a.name : undefined, { placeholder: 'titleCard' });
+      const graphic = choice(cat.actions.map((o) => (cat.quiet?.(o.value) ? { ...o, label: `${o.label} (shows nothing now)` } : o)), a?.type === 'overlay.action' ? a.name : undefined, { placeholder: 'titleCard' });
       // A title card or now-playing is about an act: one of the lineup, or whoever is on when it
       // fires; and it may put that act on as it shows (v0's DJ title card), as one cue.
       const lineupNames = [...new Set((Array.isArray(show.lineup) ? show.lineup : []).map((s) => s?.name).filter(Boolean))];
@@ -1093,8 +1061,10 @@ export async function detail(view, ctx) {
       const stopClip = choice([{ value: '', label: 'Whatever is playing' }, ...cat.clips], a?.type === 'media.stop' ? a.mediaId || '' : '');
       const label = h('input', { type: 'text', value: cue?.label || '', maxlength: 120, autocomplete: 'off', placeholder: 'Headliner takeover' });
       const noMembers = !cat.scenes.length && !cat.actions.length;
+      const graphicHint = noMembers ? 'Add overlays to the show (Details) to pick from what their templates offer.' : 'What the show\'s templates offer. An intro takes over the screen, then returns to the show.';
+      const graphicField = field('Graphic', graphic, { hint: graphicHint });
       const groups = {
-        'overlay.action': [field('Graphic', graphic, { hint: noMembers ? 'Add overlays to the show (Details) to pick from what their templates offer.' : 'What the show\'s templates offer. An intro takes over the screen, then returns to the show.' })],
+        'overlay.action': [graphicField],
         'show.scene': [field('Scene', scene, { hint: noMembers ? 'Add overlays to the show (Details) to pick from their scenes.' : undefined }), field('Transition', transition)],
         'show.slot': [field('Act', slot, { hint: actOptions.length ? 'The act stays the same if the lineup changes around it.' : 'The lineup is empty: add acts under Lineup first.' })],
         'media.play': [field('Clip', clip, { hint: cat.clips.length ? 'Plays on every overlay of the show.' : 'Upload a video or audio clip in Media first.' })],
@@ -1107,6 +1077,9 @@ export async function detail(view, ctx) {
         if (!putTouched) putOn.input.checked = graphic.value.trim() === 'titleCard';
         actField.hidden = !isCard();
         putField.hidden = !isCard() || !act.value;
+        // A graphic the overlays draw nothing for with their settings now: said, with why.
+        const why = cat.quiet?.(graphic.value.trim());
+        graphicField.querySelector('.hint').textContent = why ? `${graphicHint} ${cat.actionLabel(graphic.value.trim())} shows nothing now: ${why}.` : graphicHint;
       };
       for (const el of [kind, graphic, act]) {
         el.addEventListener('change', sync);
@@ -1125,7 +1098,7 @@ export async function detail(view, ctx) {
         initialAt,
         read() {
           const v = at.value.trim();
-          if (!TIME.test(v)) fail('Set the time as hours and minutes, like 22:30.');
+          checkTime(at, 'The time', `Set the time of the cue, like ${timeLabel('22:30')}.`);
           let action;
           if (!fixed) {
             const type = kind.value;
@@ -1199,7 +1172,7 @@ export async function detail(view, ctx) {
           if (!Object.keys(patch).length) return { unchanged: true };
           return api.patch(`${base()}/cues/${api.seg(cue.id)}`, patch, { ifMatch: cue });
         },
-        onError: (err, close) => {
+        onError: (err, { close }) => {
           if (err?.status !== 412) return false;
           close();
           toast('This cue changed since you opened it (it may have fired): this is the latest. Make your change again.', { kind: 'error', ms: 10000 });
@@ -1518,7 +1491,8 @@ export async function detail(view, ctx) {
       // A plan with no go-live that night (set from the command line) stays so until a time is set.
       let noGoLive = plan?.goLive === null;
       const rows = (Array.isArray(plan?.lineup) ? plan.lineup : []).map(cleanSlot);
-      const night = () => ({ date: DATE.test(date.value) ? date.value : show.date, boundary: b, timezone: show.timezone });
+      // Its go-live, else the show's (none: a plan with none that night).
+      const night = () => ({ date: DATE.test(date.value) ? date.value : show.date, boundary: b, timezone: show.timezone, goLive: TIME.test(goLive.value) ? goLive.value : noGoLive ? undefined : show.goLive });
       const editor = lineupEditor({ rows, night, images, acts, onChange: () => touched() });
       const own = toggle('A lineup of its own', Array.isArray(plan?.lineup), { onChange: () => { drawOwn(); touched(); } });
       const showActs = lineupOf(show);
@@ -1548,20 +1522,23 @@ export async function detail(view, ctx) {
       const touched = () => { status.textContent = state() !== initial ? 'Unsaved changes' : ''; };
       date.addEventListener('input', () => { editor.draw(); touched(); });
       goLive.addEventListener('input', () => { noGoLive = false; touched(); });
+      goLive.addEventListener('change', () => editor.draw()); // the acts before it say so
       // Another tab asks first, as Cancel does; the show moving to another night changes nothing here.
-      unsaved = () => (state() === initial ? '' : isNew ? 'This plan isn\'t saved: what you set here is lost.' : 'Your changes are lost; the plan stays as it was saved.');
+      // Saved (done), nothing is lost while the list comes back.
+      let done = false;
+      unsaved = () => (done || state() === initial ? '' : isNew ? 'This plan isn\'t saved: what you set here is lost.' : 'Your changes are lost; the plan stays as it was saved.');
       reshow = () => {};
 
       async function leave() {
         const lost = unsaved();
-        if (lost && !(await confirm({ title: 'Leave without saving?', consequence: lost, confirmLabel: 'Leave' }))) return;
+        if (lost && !(await ctx.confirmLeave(lost))) return;
         showList();
       }
       const cancel = h('button.btn.ghost', { type: 'button', onclick: () => leave() }, 'Cancel');
       const save = h('button.btn.primary', { type: 'button' }, isNew ? 'Save plan' : 'Save changes');
       save.addEventListener('click', () => run(save, async () => {
         if (!DATE.test(date.value)) fail('Pick the date.');
-        if (goLive.value && !TIME.test(goLive.value)) fail('Set the go-live time as hours and minutes, like 22:30, or leave it empty.');
+        checkTime(goLive, 'The go-live time');
         if (!isNew && state() === initial) {
           toast('Nothing to save: the plan is as it was.');
           showList();
@@ -1573,8 +1550,7 @@ export async function detail(view, ctx) {
         if (own.input.checked) {
           const lineup = rows.map(cleanSlot);
           if (!lineup.length) fail('Add the night\'s acts, or turn off "A lineup of its own" to keep the show\'s.');
-          const bad = lineup.findIndex((s) => !TIME.test(s.time) || !s.name);
-          if (bad >= 0) fail(`Act ${bad + 1} needs a start time and a name.`);
+          editor.check();
           body.lineup = lineup;
         }
         // What this form doesn't change, as it was read: a plan is saved whole.
@@ -1615,6 +1591,7 @@ export async function detail(view, ctx) {
           else showList();
           return;
         }
+        done = true;
         await fresh(true).catch(() => {}); // its day may have begun: then it is the show now
         toast(saved.activatedAt ? `The plan for ${dateLabel(saved.date, true)} is the show now: its day has begun.`
           : `${isNew ? 'Planned' : 'Saved the plan'} for ${dateLabel(saved.date, true)}: it becomes the show ${instantLabel(saved.activateAt, tz())}.`);
@@ -1695,17 +1672,18 @@ export async function detail(view, ctx) {
     selected: TAB_IDS.includes(wanted) ? wanted : 'details',
     // The tab in the address, so a reload comes back to it (no navigation: replaceState). Not
     // once the user has gone to another page while this one loaded: the address is theirs.
-    onChange: (id) => { if (!gone && ctx.alive()) history.replaceState(null, '', `#/shows/${api.seg(show.id)}?tab=${id}`); },
+    onChange: (id) => { if (!gone && ctx.alive()) history.replaceState(history.state, '', `#/shows/${api.seg(show.id)}?tab=${id}`); },
   });
   // A tab change (a click, or the arrow keys) that would lose unsaved edits asks first, as the plan
-  // editor's Cancel does; the tab itself again too, as that draws it afresh.
+  // editor's Cancel does; the tab itself again too, as that draws it afresh. The router's question
+  // (ctx.confirmLeave): a Back pressed while it is asked isn't asked about again.
   const bar = tabsEl.querySelector('[role=tablist]');
   function guard(e, tab) {
     const lost = !leaving && tab && unsaved?.();
     if (!lost) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    confirm({ title: 'Leave without saving?', consequence: lost, confirmLabel: 'Leave' }).then((ok) => {
+    ctx.confirmLeave(lost).then((ok) => {
       if (!ok || gone) return;
       leaving = true;
       try { tab.focus(); tab.click(); } finally { leaving = false; }
@@ -1717,6 +1695,9 @@ export async function detail(view, ctx) {
     const i = btns.indexOf(document.activeElement);
     if (i >= 0 && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) guard(e, btns[(i + (e.key === 'ArrowRight' ? 1 : btns.length - 1)) % btns.length]);
   }, true);
+  // Leaving the page (a link, Back, a reload or closing the tab) asks the same (app.js), until the
+  // show is gone.
+  ctx.guardLeave(() => (gone ? '' : unsaved?.() || ''));
   mount(view, head, tabsEl);
 
   // The head (live or not, the name) stays current; a show deleted elsewhere says so.

@@ -10,7 +10,7 @@ uses only the public API (03).
 | **Live** | The show-night console: every stream running and whether it is on air, then one show's or overlay's previews, scenes, actions, cues, alerts and connection health. The default landing page once set up. |
 | **Overlays** | Every overlay: preview, settings form, bindings, URL with "Copy" and "Add to OBS". |
 | **Templates** | The gallery: installed templates, install new, versions. |
-| **Shows** | Shows, member overlays, lineup, timeline, planned dates. |
+| **Shows** | Shows, member overlays, lineup, timeline, planned dates (§8.9). |
 | **Connections** | Twitch, Kick, YouTube, Spotify, OBS, custom hooks — status and setup. |
 | **Media** | Uploaded clips and images. |
 | **Settings** | Appearance, users, tokens, webhooks, security, exposure, backups, about. |
@@ -18,6 +18,16 @@ uses only the public API (03).
 On screens narrower than 760 px the navigation collapses into a menu, and destructive actions
 (reset, delete, rotate key) **MUST** live behind a menu and a confirmation — never as a
 top-level button that can be hit by a thumb mid-show.
+
+Edits not saved yet are never dropped without a word. Leaving a page that has some (a link, the
+navigation, the browser's Back, or another tab of the same page) **MUST** ask first, *"Leave
+without saving?"*, naming what is lost (*"Your changes to the lineup are lost; it stays as it was
+saved."*); **Cancel** keeps the page as it is, its edits, its address and the browser's history
+(a Back is undone with a Forward, a page's own move with a Back, so no entry is lost or doubled),
+and **Leave** makes the move as it was made. Reloading or closing the tab asks too, where the
+browser lets a page ask (Safari on iOS doesn't). One question at a time: a move made while one is
+open is undone, not asked about again. Once a change is saved, nothing asks. A session that ends
+mid-show signs in again to the page it was on, its query too (a show's console, a show's tab).
 
 ## 8.2 Template gallery
 
@@ -60,8 +70,16 @@ The path a non-technical user takes: **browse → preview → use → copy into 
   - *Add it to a show* picks a show, the one an overlay of the same template is in first (they
     change scenes together only in the same show), with the same twins ticked, and changes the
     show's overlays with the show's If-Match: a show changed meanwhile is said, shown as it is
-    now, and nothing is added until it is done again.
+    now, and nothing is added until it is done again. A show whose night has passed is marked so
+    in the list (*"· passed"*), and said in words under it.
+  - A show that is plainly the overlay's (the one its twin is in, else one with no overlays yet,
+    made before with its lineup typed in) comes first, named and said why (*"DPRTMNT Saturday
+    has 2 acts in its lineup and no overlays yet."*): **Add it to DPRTMNT Saturday** is the
+    primary button, *Make a show* the other. The Shows list offers the same.
   - Neither changes what feeds the overlays: a show is fed by what feeds its members (§8.4).
+- An overlay in a show whose night has passed says so on its page (*"Its night, Saturday,
+  October 24, 2026, has passed: the countdown and set times are still that night's."*), with one
+  tap to move the show to its next night on the same weekday (with the show's If-Match).
 - A template that reads only a show's times (`show.goLiveAt`, `show.recStartedAt`: a clock's
   countdown to the go-live and count-up since) may have a time of its own, so outside a show its
   page says so quietly (*"With no time of its own, the countdown runs to a show's go-live…"*),
@@ -97,15 +115,44 @@ CTD Relay servers, say) are two streams.
   kept in the address. An overlay outside a show opens the same panel on its own, with its scenes.
 - An overlay outside a show whose template reads who's on from one (§8.3) says so on its card
   and first in its console, with the same **Make a show from this overlay** and, once there is a
-  show (one made while the console is open too), **Add it to a show**; added from its console,
+  show (one made while the console is open too), **Add it to a show** (first, and named, for a
+  show plainly its, §8.3); added from its console,
   Live opens the show's console with it chosen. Its actions fire with no act named, so its
-  Actions say why a title card shows nothing until it is in a show, and one fired is said to be
-  sent with no act to name, not to be on air.
+  Actions name the title cards that show nothing until it is in a show (*"This overlay isn't in
+  a show, so DJ title card, Now playing and Now playing (hold) have no act to name: they show
+  nothing."*); one of them fired is said to be sent with no act to name, and any other action to
+  be sent, never to be on air.
+- An overlay on an older version of its template than the newest installed (an overlay stays on
+  its version until it is upgraded, 04 §4.10: a platform update that brings a template's new
+  version moves none) is said quietly, to whoever can upgrade it, on its stream's card and in the
+  console, each overlay's name a link to its Version tab. A show's overlays of one template are
+  upgraded together, before going live: half upgraded, an action reaches only some of them, and
+  their settings differ. While the stream runs (on air, or REC), after it: an upgrade reloads the
+  overlay in OBS. The upgrade dialog says what the version brings beside its settings: its new
+  scenes and actions (new buttons on Live), each with what it needs of the settings (*"it plays
+  the clip chosen in the overlay's settings"*).
 - Previews of the show's overlays (H and V).
 - Scene buttons for the show's scenes, labelled with the template's names for them, with the
   active one highlighted. Template extras (e.g. Headliner Intro) appear only when the active
   template provides them.
-- Action buttons for every declared template action.
+- Action buttons for every declared template action. One pressed says what it did, with the
+  action's label: on air for an action with a `durationMs` (*"DJ title card on air"*), on air
+  until hidden for a card without one (*"Now playing (hold) on air until hidden"*), done for an
+  untimed one labelled *Hide …* or *Stop …* (*"Title card and now playing hidden"*), sent for any
+  other (*"Play The Line's clip sent"*: what it does is its template's, 04 §4.6). An action that
+  plays the media a setting names (TAKEOVER's The Line's clip) says, as an error, where none is
+  chosen and where to choose it, the overlays read as they are now; one the overlays' settings
+  draw nothing for (TAKEOVER's chips outside its Headliner event look) is said under the buttons
+  and, pressed, *"sent, but it shows nothing"*, with why; in a show, an overlay of the same
+  template the action didn't reach (its version doesn't have it) is named. A cue's Graphic says
+  the same of such an action.
+- Who's on: the act on, **Next act** (naming it) and **Put on** for each act, and **Nobody on**.
+  With nobody picked, it says which act's set the lineup's times are in, and Next act is that
+  act. An act put on early skips what was still to come for the acts before it (09 §9.3), said
+  with it (*"Headliner DJ is on. 6 cues still to come for Opener were skipped"*).
+- On `auto` past its go-live with no REC (a show made after it, or REC reset), the status says
+  that its overlays show it live with no REC, and what starts REC: **Start REC** (from now) or
+  taking Auto again (from go-live).
 - Timeline: next cue with a countdown in server time, "Trigger now" and "Skip", and the full
   cue list with done/upcoming state.
 - Alert queue controls: pause, skip, replay last.
@@ -178,3 +225,42 @@ chat."* or *"Spotify requires the app owner to have Premium."*
 - Errors say what happened and what to do; success says what changed ("Scene changed to BRB").
 - Every destructive confirmation names its consequence ("OBS sources using this URL will stop
   working").
+- A time of day is typed as text, the same in every browser: *9:30 PM*, *21:30*, *9pm*, *2130*.
+  On a 12-hour clock a time without AM or PM is asked about (*"Add AM or PM: 10:30 PM, or 10:30
+  AM."*), never guessed. A time that can't be read is said right under its box once it is left,
+  and is never saved or turned into another time when the form is drawn again. Sending its form
+  says the same words, naming the box (*"Act 2, Headliner DJ: add AM or PM: 10:30 PM, or 10:30
+  AM."*), and puts the focus on it; an example of a time is written in the device's clock. A
+  browser's own time box isn't used: Safari's shows an AM/PM that looks set before it is.
+
+## 8.9 Shows
+
+A show is a night (09): its page has **Details**, **Lineup**, **Timeline** and **Plans**, each
+edited with the show's If-Match, and each asking before its unsaved edits are dropped (§8.1).
+
+- A date has quick picks, and says the date in words with its weekday (*"Saturday, October 24,
+  2026: tonight"*): **Tonight** (the show's day now in its zone, with its day boundary: at 1 AM it
+  is still the night before), the next night on its weekday, and **Next week** after that night;
+  a new show also gets the coming Friday and Saturday. Every pick counts from tonight, not from
+  the date in the field: the one picked shows as pressed, and pressing it again changes nothing.
+  A plan is for a night still to come, so it has no Tonight, and on a show's own weekday its
+  picks are **Next Monday** and **In two weeks**. A new show's date follows the time zone chosen
+  until it is picked; New show and *Make a show from this overlay* (§8.3) pick the same night.
+- Details' hints say what the form has now (the date, zone, day boundary and go-live being
+  edited): *"When the countdown ends: Sat, Oct 31, 11:00 PM."* An act set before the go-live is
+  said, in Details and on its Lineup row (*"Before the show goes live at 10:15 PM: on Auto the
+  countdown covers this set."*), never refused.
+- A lineup's act and B2B fields offer the names of every lineup and plan (`GET /acts`, v0's
+  roster) as they are typed, and a known act's latest logo comes with its name to a row without
+  one. Headliner and closer are flagged apart (H8).
+- The list says which overlays that read who's on are in no show, with *Make a show from …* for
+  each template's: the overlay page's dialog (§8.3), and first *Add … to <show>* for a show
+  plainly theirs. **New show** takes any overlays, those picked when they are of one template.
+- A show whose night has passed says so on its page, with one tap to move it to its next night
+  on the same weekday; the tab open keeps its unsaved edits, on the new night.
+- A plan is edited in the tab, like the lineup: its date, its go-live (empty: the show's), and a
+  lineup of its own (or the show's as it is that day), saved whole with its If-Match. It can
+  become the show now, never while the show is live (09 §9.6).
+- The timeline builds from the lineup (09 §9.5), takes a card cue that puts its act on as it
+  shows (09 §9.3), and re-arms every cue still to come from its menu, behind a confirmation that
+  says how many (09 §9.4).

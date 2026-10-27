@@ -114,6 +114,9 @@ async function open(t, { settings = {}, state = {}, canvas, query = {} } = {}) {
 }
 
 const NOTHING = /\b(undefined|null|NaN)\b|\[object /;
+// A timecode shown for the time in data-at: the page rounds that time to the millisecond after
+// working out the frame, so a time within half a millisecond of a frame's edge is either frame.
+const frameOf = (text, at, f) => [at - 0.5, at, at + 0.5].map(f).find((x) => x === text) ?? f(at);
 
 describe('Text & Clock in a browser', () => {
   test('the time of day in the chosen zone, on the server\'s clock, 12- or 24-hour; settings apply live', opts, async (t) => {
@@ -163,7 +166,7 @@ describe('Text & Clock in a browser', () => {
     const since = Date.parse('2026-10-17T00:27:57.000Z'); // 05:57:57 there
     const settings = { mode: 'countup', timezone: 'Asia/Kolkata', targetDate: '2026-10-17', targetTime: '05:57:57' };
     const { clock, shows, set, platform, page } = await open(t, { settings });
-    await shows('/^1:03:0\\d$/');
+    await shows('/^1:03:\\d\\d$/'); // a page slow to open still lands in this minute
     const c = await clock();
     assert.equal(c.text, T.duration(c.at - since));
     // No time set: the go-live a show gives (or nothing to count, hidden).
@@ -178,7 +181,7 @@ describe('Text & Clock in a browser', () => {
     serverTime(t, '2026-10-17T03:00:00.000Z');
     const startedAt = Date.now() - (2 * HOUR + 3 * MIN + 4000);
     const { clock, shows, platform, page, set } = await open(t, { settings: { mode: 'runtime', label: 'ON AIR FOR' }, state: { 'stream.clock': { startedAt, fps: 30, offsetMs: 0, at: Date.now() } } });
-    await shows('/^2:03:0\\d$/');
+    await shows('/^2:03:\\d\\d$/');
     const c = await clock();
     assert.equal(c.text, T.duration(c.at - startedAt));
     platform.bus.setState('stream.clock', { fps: 30, offsetMs: 0, at: Date.now() }); // the session stopped
@@ -188,7 +191,7 @@ describe('Text & Clock in a browser', () => {
     assert.equal((await clock()).text, '—');
     // Unknown to CTD Relay, a time set is the fallback.
     set({ mode: 'runtime', targetDate: '2026-10-17', targetTime: '02:00', timezone: 'UTC' });
-    await shows('/^1:00:0\\d$/');
+    await shows('/^1:00:\\d\\d$/');
     assert.deepEqual(page.problems, []);
   });
 
@@ -196,11 +199,11 @@ describe('Text & Clock in a browser', () => {
     serverTime(t, '2026-10-17T03:00:00.000Z');
     const startedAt = Date.now() - (HOUR + 2 * MIN + 3500);
     const { page, clock, shows, platform, set } = await open(t, { settings: { mode: 'timecode', timecodeSource: 'run' }, state: { 'stream.clock': { startedAt, fps: 30, offsetMs: 0, at: Date.now() } } });
-    await shows('/^01:02:0\\d:\\d\\d$/');
+    await shows('/^01:02:\\d\\d:\\d\\d$/');
     const frames = new Set();
     for (let i = 0; i < 8; i++) {
       const c = await clock();
-      assert.equal(c.text, T.timecode(c.at - startedAt, 30), 'exactly the frame of the time it shows');
+      assert.equal(c.text, frameOf(c.text, c.at, (at) => T.timecode(at - startedAt, 30)), 'exactly the frame of the time it shows');
       // Every frame, not once a second: well under a second old, with room for a busy machine.
       assert.ok(c.now - c.at < 600, `painted every frame, not once a second (${c.now - c.at} ms old)`);
       assert.ok(Number(c.text.slice(-2)) < 30);
@@ -222,13 +225,13 @@ describe('Text & Clock in a browser', () => {
     for (let i = 0; i < 3; i++) {
       await new Promise((r) => setTimeout(r, 45));
       c = await clock();
-      assert.equal(c.text, T.timecode(c.at - startedAt, 25));
+      assert.equal(c.text, frameOf(c.text, c.at, (at) => T.timecode(at - startedAt, 25)));
     }
     // The time of day in UTC, on CTD Relay's clock (2 s ahead of this server's).
     set({ mode: 'timecode', timecodeSource: 'utc' });
     await shows('/^03:00:\\d\\d:\\d\\d$/');
     c = await clock();
-    assert.equal(c.text, T.timecodeOfDay(c.at + 2000, 'UTC', 25));
+    assert.equal(c.text, frameOf(c.text, c.at, (at) => T.timecodeOfDay(at + 2000, 'UTC', 25)));
     // Run time with no stream: "—", and nothing breaks.
     set({ mode: 'timecode', timecodeSource: 'run' });
     platform.bus.setState('stream.clock', undefined);

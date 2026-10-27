@@ -124,6 +124,19 @@ These are settled. An implementation that departs from one is not SKP-conformant
 
 ## Changes
 
+**2026-10-26.** From reviewing a D/PRTMNT TAKEOVER night run from a phone (v0 parity):
+
+1. Who's on is the operator's: a cue the timeline fires never takes it back to an act the night
+   has moved past, a recipe's cue plays only while its act is on (or nobody is picked yet), and
+   putting an act on skips what was still to come for the acts before it, said in the answer
+   (`cuesSkipped`). *(09 §9.3, 03 §3.4)*
+2. "Nobody on" means nobody: the show publishes `show.nobodyOn`, so a template that goes by the
+   lineup's times when nobody is picked names no act either. *(02 §2.5, 09 §9.1)*
+3. A REC the operator reset stays reset for the go-live it came after, a restart included
+   (`recResetAt`), until `auto` is taken or the go-live moves. *(09 §9.1)*
+4. Leaving a page with unsaved edits keeps the browser's history as it was, Cancel or Leave; a
+   time box's problem is said in the same words when its form is sent. *(08 §8.1, §8.8)*
+
 **2026-10-15.** From building the connector host and CTD Relay (plan steps 16, 16b):
 
 1. Bindings are `"all"` (every connection, made later too: the default) or a list; existing

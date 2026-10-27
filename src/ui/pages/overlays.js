@@ -6,11 +6,12 @@
 // is in none says so first, with "Make a show from this overlay" and "Add it to a show"
 // (show-from-overlay.js); quietly, when it reads only a show's times (a clock may have its own).
 // One in a show offers a saved change to the show's other overlays of its template, since
-// settings (the copy too) are each overlay's own.
+// settings (the copy too) are each overlay's own. Leaving with a change not saved asks first.
 import * as api from '../api.js';
+import { needsWords } from '../action-needs.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
 import { followObsCard } from '../obs.js';
-import { needsShow, readsLineup, sampleWords, showNotice, showParts, showWords, wantsShowTimes } from '../show-from-overlay.js';
+import { needsShow, passedLine, readsLineup, sampleWords, showNotice, showParts, showWords, wantsShowTimes } from '../show-from-overlay.js';
 import { bindingName, connectionChip, fedByForm, fedByWords } from '../streams.js';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -293,8 +294,9 @@ async function load(slug, ctx) {
     import('../schema-form.js').catch(() => undefined),
     // The connections to choose from for "Fed by" (operators read them here, by name and status).
     api.get('/api/v1/system/health').then((r) => ({ list: Array.isArray(r?.connections) ? r.connections : [] }), (error) => ({ list: [], error })),
-    // The other overlays: those of its template in its show have settings of their own.
-    overlay.show ? api.all('/api/v1/overlays').catch(() => []) : [],
+    // The other overlays: those of its template in its show have settings of their own; outside a
+    // show, the show its twin is in is the one to add it to.
+    overlay.show || ctx.can('timeline:write') ? api.all('/api/v1/overlays').catch(() => []) : [],
   ]);
   return { overlay, urls, pinned, versions, shows, showId: shows.find((s) => s.name === overlay.show)?.id, formModule, health, overlays };
 }
@@ -491,9 +493,16 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // A template that reads only a show's times may have a time of its own: a quiet line instead.
   const outsideShow = needsShow(overlay, manifest);
   const timesOutside = wantsShowTimes(overlay, manifest);
-  const addable = { overlay, manifest, canAdd: data.shows.length > 0, onAdded: () => reload() };
+  const addable = { overlay, manifest, shows: data.shows, overlays: data.overlays, onAdded: () => reload() };
   if (outsideShow) notices.push(showNotice(ctx, addable));
   let showLine = timesOutside ? showNotice(ctx, { ...addable, times: true }) : null;
+  // Its show's night has passed (a weekly show left on last week's date): what it shows on air is
+  // that night's countdown and set times, which only the show's page said.
+  const myShow = overlay.show ? data.shows.find((s) => s.id === data.showId) : undefined;
+  if (myShow && showParts(manifest).length) {
+    const passed = passedLine(ctx, myShow, { onMoved: () => reload() });
+    if (passed) notices.push(passed);
+  }
   if (overlay.show) {
     const parts = showParts(manifest).map((p) => p.text);
     const at = (tab) => `${showHref(data.showId || overlay.show)}?tab=${tab}`;
@@ -591,7 +600,9 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const undoBtn = h('button.btn', { type: 'button', onclick: () => undo() }, 'Undo changes');
   undoBtn.hidden = true;
   const dirtyNote = h('span.small.muted', { 'aria-live': 'polite' });
+  let settingsDirty = false; // what "Unsaved changes" says, for leaving the page
   const markDirty = (dirty) => {
+    settingsDirty = dirty;
     undoBtn.hidden = !dirty;
     dirtyNote.textContent = dirty ? 'Unsaved changes' : '';
   };
@@ -813,6 +824,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // Which connections feed it: every one (made later too), or only some, so two streams at once
   // each show their own chat, alerts and viewers. Saved with If-Match like the settings (H16).
   const fedByPanel = h('section.card.stack#fed-by', h('h2', 'Fed by'));
+  let fedChanged = () => false;
   {
     const binding = overlay.connections === 'all' ? 'all' : Array.isArray(overlay.connections) ? overlay.connections : 'all';
     const bound = Array.isArray(overlay.bound) ? overlay.bound : [];
@@ -826,6 +838,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     } else {
       const saveFed = h('button.btn.primary', { type: 'button', disabled: true, onclick: () => saveFedBy() }, 'Save connections');
       const fedForm = fedByForm({ connections: data.health?.list, value: binding, legend: 'Connections it shows', onChange: () => { saveFed.disabled = !fedForm.changed(); } });
+      fedChanged = () => fedForm.changed();
       const nameOf = (entry) => bindingName(data.health?.list, entry);
       async function saveFedBy() {
         const next = fedForm.value();
@@ -837,6 +850,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
             throw err;
           }
           toast(`"${overlay.slug}" is fed by ${next === 'all' ? 'every connection' : next.length ? next.map(nameOf).join(', ') : 'no connection'} now.`);
+          fedChanged = () => false; // saved: nothing to lose while the page is read again
           await reload();
         });
       }
@@ -849,9 +863,11 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // for the equivalent overlay of every CTD Relay profile, so switching profile re-points
   // its browser sources. Empty: the template's short name.
   const rolePanel = h('section.card.stack#role', h('h2', 'Role in OBS'));
+  let roleChanged = () => false;
   {
     const fallback = String(pinned.id || '').split('.').pop() || 'overlay';
     const input = h('input', { type: 'text', value: overlay.role || '', maxlength: '54', autocomplete: 'off', spellcheck: 'false', placeholder: fallback, disabled: !canWrite, pattern: '[a-z0-9][a-z0-9\\-]*' });
+    roleChanged = () => canWrite && input.value.trim().toLowerCase() !== (overlay.role || '');
     const saveRole = h('button.btn', { type: 'submit', disabled: !canWrite }, 'Save role');
     rolePanel.append(h('form', { onsubmit: async (e) => {
       e.preventDefault();
@@ -946,6 +962,23 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       default: return `${name} changes.`;
     }
   };
+  // What the new version brings beside its settings: its new scenes, and its new actions (buttons on
+  // Live, things a cue can do), each with what it needs of the settings (action-needs.js).
+  function newInVersion(target, ms) {
+    const had = (key) => new Set((Array.isArray(manifest?.[key]) ? manifest[key] : []).map((x) => x?.id));
+    const added = (key) => (Array.isArray(target?.[key]) ? target[key] : []).filter((x) => x && typeof x.id === 'string' && !had(key).has(x.id));
+    const scenes = added('scenes');
+    const actions = added('actions');
+    if (!scenes.length && !actions.length) return null;
+    return [
+      h('h3', 'New in this version'),
+      scenes.length ? h('p', `${scenes.length === 1 ? 'A scene' : 'Scenes'}: ${andList(scenes.map((s) => `"${s.label || s.id}"`))}, on Live and for cues.`) : null,
+      actions.length ? h('ul', actions.map((a) => {
+        const needs = needsWords(target.id, a.id, (name) => settingName(ms, `/${name}`));
+        return h('li', `"${a.label || a.id}": a new button on Live, and something a cue can do${needs ? `; ${needs}` : ''}.`);
+      })) : null,
+    ];
+  }
   function planBody(plan, migrateBox, target) {
     const ms = [target, manifest];
     const changes = Array.isArray(plan.changes) ? plan.changes : [];
@@ -957,6 +990,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       gone.scenes?.length ? notice(`Scenes this version doesn't have: ${list(gone.scenes)}. A show, button or cue that takes them won't work.`, 'warn') : null,
       gone.actions?.length ? notice(`Actions this version doesn't have: ${list(gone.actions)}. Buttons and cues that fire them won't work.`, 'warn') : null,
       gone.canvases?.length ? notice(`Canvases this version doesn't have: ${list(gone.canvases)}. OBS sources using them show the default canvas.`, 'warn') : null,
+      newInVersion(target, ms),
       h('h3', 'Settings'),
       changes.length ? h('ul', changes.map((c) => h('li', describe(c, ms)))) : h('p.muted', 'No setting changes.'),
       plan.migrated === true ? h('p.muted', 'The version\'s update script carried your settings over.') : null,
@@ -1040,6 +1074,12 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     { id: 'version', label: 'Version', render: (p) => { p.append(panels.version); } },
   ], { selected: state.tab, onChange: (id) => { state.tab = id; } });
   cleanups.push(() => tabList.destroy?.());
+  // Leaving the page (a link, Back, a reload) with a change on the Settings tab not saved yet asks
+  // first (app.js), whichever tab is open: its settings, what feeds it, its role in OBS.
+  cleanups.push(ctx.guardLeave(() => {
+    const parts = [canWrite && settingsDirty ? 'its settings' : '', fedChanged() ? 'what feeds it' : '', roleChanged() ? 'its role in OBS' : ''].filter(Boolean);
+    return parts.length ? `Your changes to ${andList(parts)} are lost; the overlay stays as it was saved.` : '';
+  }));
 
   mount(view, head, meta, showLine, notices, h('div.stack', previewCard, urlCard, tabList));
   return () => { for (const fn of cleanups.splice(0)) { try { fn(); } catch { /* gone */ } } };

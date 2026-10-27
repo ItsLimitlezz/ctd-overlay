@@ -40,20 +40,36 @@ broadcast advances with every browser closed and survives a restart mid-show.
   scene whose core is `program`, or a scene whose core is `auto` is on air at `goLiveAt`, which
   anchors it at `goLiveAt`) and cleared when it takes a scene whose core is `starting`; the
   operator can also start or reset it. Go-live counts while it is less than 12 hours ago: a
-  platform that was down at go-live, or a go-live moved into the past, anchors REC at `goLiveAt`
-  as soon as it can, and a go-live from an earlier date anchors nothing.
+  platform that was down at go-live while `auto` was on air, or a go-live moved into the past,
+  anchors REC at `goLiveAt` as soon as it can. A go-live from an earlier date anchors nothing,
+  and neither does one that passed before the show started on `auto` (the first scene, below).
+  A reset is the operator's: a go-live it came after doesn't anchor REC again, at a restart
+  either (the platform updated after the show), until `auto` is taken (from `goLiveAt`) or the
+  go-live moves; the show keeps when it was reset (`recResetAt`). A go-live after a reset counts.
 - A show is **live** while REC runs, for **12 hours** at most: a show "on air" longer than that
   was left so. What must not happen on air waits for a live show to end, such as an automatic
   template upgrade (04 §4.13), which reloads its pages.
 - **Scenes by core.** A take, a timed scene's `then` and a button name a scene by its id or by
   its core (04 §4.2). Each member gets the name its own template knows: the same id, else the
   core, so a horizontal and a vertical feed from different templates change together.
-- **The first scene.** A new show (or one that gets its first overlays before any scene is
-  taken) starts on `auto`, as v0 did: the countdown to `goLiveAt`, then live, when every member's
-  template has a scene `auto` (by id or core). It anchors no REC by itself; `auto` reaching
-  go-live does. Otherwise `scene` stays absent and each member shows its template's default.
+- **The first scene.** A show on no scene starts on `auto`, as v0 did (the countdown to
+  `goLiveAt`, then live), when every member's template has a scene `auto` (by id or core) and the
+  show isn't live: when it is made, when its overlays change (its first ones, or the last member
+  without `auto` leaving; the same list sent back isn't a change), and when the platform starts,
+  for a show saved before this rule.
+  Otherwise `scene` stays absent and each member shows its template's default (TAKEOVER's is its
+  live scene). A scene a show is on, taken or started, is never changed by this; a live show is
+  left as it is, and starts at a platform start once it isn't. Starting is live control: the
+  members get the scene as state, with no take, and the show's `rev` stays. It anchors no REC: a
+  go-live still to come does when it comes; one already passed doesn't, then or at a later
+  restart. TAKEOVER on `auto` after go-live shows its live scene, so such a show is shown live
+  with no REC until the operator starts REC (from then) or takes `auto` (from `goLiveAt`). A
+  platform start that starts a show says so in its log and the audit log (`show.first-scene`).
 - **Who's on** (`show.currentSlot`) is a lineup position the server keeps on the same act through
-  a lineup edit, and clears if the act is removed.
+  a lineup edit, and clears if the act is removed. Set to `null` (the operator's **Nobody on**),
+  nobody is on: the show says `nobodyOn: true` and publishes `show.nobodyOn`, so a template that
+  goes by the lineup's times when nobody is picked names no act either, until an act is put on.
+  A plan that becomes the show clears both: a new night has no pick yet.
 - What a show publishes must fit an envelope (02 §2.9): a lineup over 24 KiB as published is
   refused when saved, and a slot's `logo` is at most 500 characters.
 - **Acts.** The names in every show's lineup and in its plans (§9.6), B2B partners too, are the
@@ -123,6 +139,18 @@ its card shows (v0's DJ cues: set the DJ, fire the card), a cue is a `sequence` 
 ```
 
 The admin UI makes and changes that shape as one cue ("Put them on as it shows").
+
+**Who's on is the operator's.** The night's acts have an order (by start, then lineup position),
+and a cue the timeline fires never takes it back: a `show.slot` for an act before the act on
+does nothing, nor does a card about such an act (the cue is fired, with why in `error`). A cue the
+recipe made (§9.5) and the operator hasn't edited is about its act's set: besides the one that
+puts the act on, it plays only while that act is on, or while nobody is picked yet (not after
+the operator's **Nobody on**: `nobodyOn`, §9.1). A card made by hand is
+about every slot of the name it gives (a guest's card always shows), so it may name the act to
+come. Fired by hand, a cue plays anyway. When the operator puts an act on (`PUT
+/shows/{id}/slot`, an act early on **Next act**), every cue still to come that is only about acts
+before it is `skipped` at once, recorded as one override, and the answer says so: `cuesSkipped: {
+count, acts }`. Re-arm all (§9.4) brings them back, to be judged when they fire.
 
 A cue is set at an instant (an ISO date-time with its offset, a real calendar date) or at a time
 of the show (`"01:00"`, resolved by §9.2, and flagged `clockGap` / `clockOverlap` like a lineup

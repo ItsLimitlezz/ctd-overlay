@@ -411,6 +411,12 @@ dialog .form-actions { padding: 0 calc(var(--pad) * 1.25) calc(var(--pad) * 1.25
 .show-times { margin-bottom: var(--gap); }
 .show-times > p { margin: 0 0 8px; }
 
+/* ---- Live: overlays on an older version of their template (live.js upgradeNote) ---------- */
+/* A quiet line under a stream's status, on its card and in its console; a long name wraps. */
+.stream-card > .upgrade-slot, .card > .upgrade-slot { margin-top: 12px; }
+.upgrade-note { margin: 0; overflow-wrap: anywhere; }
+.upgrade-note + .upgrade-note { margin-top: 4px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }

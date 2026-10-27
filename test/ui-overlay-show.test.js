@@ -2,9 +2,12 @@
 // none, in a real browser (08 §8.3, §8.4): its page says so first, and Sample data says what it
 // makes up; "Make a show from this overlay" picks the show's night as New show does, brings its
 // twin of the same template along (one put in another show meanwhile is left out, in plain words)
-// and lands on the new show's Lineup; "Add it to a show" picks the show its template's other
-// overlay is in and sends the show's If-Match (a 412 says so, and adding again works); Live says it
-// on the overlay's card and first in its console, offers "Add it to a show" once a show exists, and
+// and lands on the new show's Lineup; a show plainly its (its twin's, or one with no overlays yet)
+// comes first, "Add it to <show>", said why; "Add it to a show" picks the show its template's other
+// overlay is in, marks a night that has passed, and sends the show's If-Match (a 412 says so, and
+// adding again works); in a show whose night has passed, its page says so and moves it on in one
+// tap; Live says it on the overlay's card and first in its console, offers to add it once a show
+// exists, and
 // says a title card was sent with no act to name; a clock that reads only a show's times gets a
 // quiet line on its page and nothing on Live; on a phone nothing scrolls sideways; a role that
 // can't make shows reads it without the buttons. And copy is per overlay: a saved change is offered
@@ -21,6 +24,13 @@ import { defer, DIAG, DIAG_DIR, FIXTURE_TEMPLATES, memoryLogger, packTemplate, s
 
 const OWNER = { username: 'juan', password: 'correct horse battery staple' };
 const SHOW = { date: '2026-10-17', timezone: 'America/Toronto' };
+// The show's night now in its zone, with a 12:00 day boundary (09 §9.2), as the page works it out;
+// a night before it has passed.
+const nightNow = () => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: SHOW.timezone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return new Date(Date.UTC(+p.year, +p.month - 1, +p.day - (+p.hour < 12 ? 1 : 0))).toISOString().slice(0, 10);
+};
+const passed = (ymd) => (ymd < nightNow() ? ' · passed' : '');
 const opts = { skip: browserSkip, timeout: 180000 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -92,7 +102,9 @@ test('an overlay that reads a show but is in none: its page says so first, Sampl
   const notice = await needsText(page);
   assert.match(notice, /^Set times, the countdown, REC and title cards come from a show\. This overlay isn't in one yet\.\n+Until it is, a title card has no act to name, so it shows nothing\./);
   assert.equal(await page.eval('!!(document.querySelector("[data-view] .needs-show").compareDocumentPosition(document.querySelector("[data-view] [role=tablist]")) & Node.DOCUMENT_POSITION_FOLLOWING)'), true, 'above the tabs');
-  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .needs-show button")].map((b) => b.textContent)'), ['Make a show from this overlay', 'Add it to a show']);
+  // A show made before, with no overlays yet: the one to add it to, named and first.
+  assert.match(notice, /"Testbed" has no overlays yet\. Add this overlay to it, so its set times reach it\./);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .needs-show button")].map((b) => [b.textContent, b.classList.contains("primary")])'), [['Add it to Testbed', true], ['Make a show from this overlay', false]]);
   // Sample data fills in a lineup, a countdown, REC and title cards: the preview says they are made up.
   assert.equal(await page.eval('[...document.querySelectorAll("[data-view] .notice")].some((n) => /Sample data makes up/.test(n.textContent))'), false);
   await page.eval('(() => { const l = [...document.querySelectorAll("[data-view] label")].find((x) => x.textContent === "Sample data"); document.getElementById(l.htmlFor).click(); })()');
@@ -176,13 +188,17 @@ test('"Add it to a show" picks the show its template\'s other overlay is in and 
   platform.shows.create({ name: 'Sneaky', overlays: [], ...SHOW, date: '2026-10-31' }, { actor: 'test' });
   await page.goto(`${platform.url}/?signed=1#/overlays/solo-h`);
   await page.waitFor('document.querySelector("[data-view] .needs-show")', 15000);
-  await click(page, '[data-view] .needs-show button', 'Add it to a show');
+  // The show its twin is in is plainly its own: named, and first.
+  assert.match(await needsText(page), /"room", of the same template, is in "Night"\. Add this overlay to it, so its set times reach it\./);
+  assert.deepEqual(await page.eval('[...document.querySelectorAll("[data-view] .needs-show button")].map((b) => b.textContent)'), ['Add it to Night', 'Make a show from this overlay']);
+  await click(page, '[data-view] .needs-show button', 'Add it to Night');
   await page.waitFor('document.querySelector("dialog[open] select")', 8000);
   const d = await page.eval('(() => { const s = document.querySelector("dialog[open] select"); return { title: document.querySelector("dialog[open] h2").textContent, options: [...s.options].map((o) => o.textContent), picked: s.value, hint: document.getElementById(s.getAttribute("aria-describedby"))?.textContent, intro: document.querySelector("dialog[open] .dialog-body p").textContent, top: document.querySelector("dialog[open]").scrollTop }; })()');
   assert.equal(d.title, 'Add "solo-h" to a show');
-  assert.deepEqual(d.options, ['Sneaky · Sat, Oct 31 · 0 overlays', 'Night · Sat, Oct 17 · 1 overlay']);
+  // A night that has passed is marked so (a phone's select cuts the label short: said under it too).
+  assert.deepEqual(d.options, [`Sneaky · Sat, Oct 31${passed('2026-10-31')} · 0 overlays`, `Night · Sat, Oct 17${passed('2026-10-17')} · 1 overlay`]);
   assert.equal(d.picked, night.id, 'the show "room" is in: overlays of one template change scenes together');
-  assert.equal(d.hint, '"room", of the same template, is in "Night".');
+  assert.equal(d.hint, `"room", of the same template, is in "Night".${passed('2026-10-17') ? ' Its night, Saturday, October 17, 2026, has passed: the countdown and set times stay that night\'s until it is moved to its next night, on its page.' : ''}`);
   assert.equal(d.intro, 'Then set times, the countdown, REC and title cards come from that show, and its scenes change with the show\'s other overlays.');
   assert.equal(d.top, 0);
   assert.deepEqual(await boxesIn(page, 'dialog[open] fieldset'), [['solo-v', true, false]], 'its twin, ticked');
@@ -210,6 +226,18 @@ test('"Add it to a show" picks the show its template\'s other overlay is in and 
   assert.match(second.ifMatch, /^"show_[0-9A-Z]+-r\d+"$/);
   assert.deepEqual(second.body, { overlays: ['room', 'solo-h', 'solo-v'].map((s) => platform.overlays.resolve(s).doc.id) });
   await page.waitFor('/In the show Night/.test(document.querySelector("[data-view] p.row")?.innerText || "") && !document.querySelector("[data-view] .needs-show")', 8000);
+
+  // Its show's night has passed: said where the overlay is, and moved on from there in one tap.
+  const days = (ymd) => Date.parse(`${ymd}T00:00:00Z`) / 86400000;
+  const tonight = nightNow();
+  const next = new Date((days(tonight) + ((((days('2026-10-17') - days(tonight)) % 7) + 7) % 7)) * 86400000).toISOString().slice(0, 10);
+  const short = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${next}T00:00:00Z`));
+  await page.waitFor('[...document.querySelectorAll("[data-view] .notice")].some((n) => n.innerText.includes("has passed"))', 8000);
+  assert.match(await viewText(page), /Its night, Saturday, October 17, 2026, has passed: the countdown and set times are still that night's\. Move it to its next Saturday, or plan the coming nights on the show's page\./);
+  await click(page, '[data-view] .notice button', `Move it to ${short}`);
+  await toastSeen(page, '/^"Night" is on .+ now: its set times and cues moved with it\\.$/');
+  assert.equal((await api('GET', `/shows/${night.id}`)).body.date, next);
+  await page.waitFor('!document.querySelector("[data-view]").innerText.includes("has passed")', 8000);
   assert.deepEqual(problems(), []);
 });
 
@@ -227,7 +255,7 @@ test('Live: an overlay that reads a show but is in none says so on its card and 
   const solo = await card('solo-h');
   assert.match(solo.text, /Overlay outside a show[\s\S]*Set times, the countdown, REC and title cards come from a show\. This overlay isn't in one yet\./);
   assert.doesNotMatch(solo.text, /Until it is/, 'the card keeps to one sentence');
-  assert.deepEqual(solo.buttons.map((b) => b[0]), ['Make a show from this overlay', 'Add it to a show']);
+  assert.deepEqual(solo.buttons.map((b) => b[0]), ['Add it to Night', 'Make a show from this overlay'], 'the show its twin is in, first');
   for (const [label, height] of solo.buttons) assert.ok(height >= 44, `${label}: ${height} px`);
   assert.deepEqual((await card('diag')).buttons, []);
   assert.deepEqual((await card('Night')).buttons, []);
@@ -244,11 +272,11 @@ test('Live: an overlay that reads a show but is in none says so on its card and 
   const consoleNotice = await needsText(page);
   assert.match(consoleNotice, /^Set times, the countdown, REC and title cards come from a show\. This overlay isn't in one yet\.\n+Until it is, a title card has no act to name, so it shows nothing\./);
   assert.equal(await page.eval('!!(document.querySelector("[data-view] .needs-show").compareDocumentPosition(document.querySelector("[data-view] .stream-status")) & Node.DOCUMENT_POSITION_FOLLOWING)'), true, 'before the stream\'s status');
-  assert.match(await page.eval('[...document.querySelectorAll("[data-view] section.card")].find((c) => c.querySelector("h2")?.textContent === "Actions").innerText'), /Title card[\s\S]*This overlay isn't in a show, so these have no act to name: a title card shows nothing\./);
+  assert.match(await page.eval('[...document.querySelectorAll("[data-view] section.card")].find((c) => c.querySelector("h2")?.textContent === "Actions").innerText'), /Title card[\s\S]*This overlay isn't in a show, so Title card has no act to name: it shows nothing\./);
   assert.equal(await page.eval('document.documentElement.scrollWidth > innerWidth + 1'), false, 'no sideways scrolling');
 
   // Added to a show from here: its console is the show's, with it chosen.
-  await click(page, '[data-view] .needs-show button', 'Add it to a show');
+  await click(page, '[data-view] .needs-show button', 'Add it to Night');
   await page.waitFor('document.querySelector("dialog[open] select")', 8000);
   assert.equal(await page.eval('document.querySelector("dialog[open]").scrollWidth <= document.querySelector("dialog[open]").clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth + 1'), true, 'the dialog fits');
   await click(page, 'dialog[open] button', 'Add to show');
@@ -397,10 +425,11 @@ test('Live: a show made meanwhile offers "Add it to a show" in the console; a ti
   assert.equal(fired.length, 1);
   assert.deepEqual(fired[0].body, {});
 
-  // A show made meanwhile (another tab, another phone): the console offers to add it there.
+  // A show made meanwhile (another tab, another phone), with no overlays yet: the console offers to
+  // add it there, first.
   platform.shows.create({ name: 'Later', overlays: [], ...SHOW }, { actor: 'test' });
-  await page.waitFor('[...document.querySelectorAll("[data-view] .needs-show button")].some((b) => b.textContent === "Add it to a show")', 10000);
-  assert.deepEqual(await buttons(), ['Make a show from this overlay', 'Add it to a show']);
+  await page.waitFor('[...document.querySelectorAll("[data-view] .needs-show button")].some((b) => b.textContent === "Add it to Later")', 10000);
+  assert.deepEqual(await buttons(), ['Add it to Later', 'Make a show from this overlay']);
 
   // The streams page: the clock may have a time of its own, so its card says nothing of a show.
   await page.eval('location.hash = "#/live"');
@@ -413,7 +442,7 @@ test('Live: a show made meanwhile offers "Add it to a show" in the console; a ti
   assert.equal(await needsText(page), '');
   const quiet = await page.eval('({ text: document.querySelector("[data-view] .show-times p").textContent, buttons: [...document.querySelectorAll("[data-view] .show-times button")].map((b) => [b.textContent, b.classList.contains("primary")]) })');
   assert.equal(quiet.text, 'With no time of its own, the countdown runs to a show\'s go-live, and the count-up from when it went live. This overlay isn\'t in a show.');
-  assert.deepEqual(quiet.buttons, [['Make a show from this overlay', false], ['Add it to a show', false]]);
+  assert.deepEqual(quiet.buttons, [['Add it to Later', false], ['Make a show from this overlay', false]]);
   await page.eval('(() => { const l = [...document.querySelectorAll("[data-view] label")].find((x) => x.textContent === "Sample data"); document.getElementById(l.htmlFor).click(); })()');
   await page.waitFor('[...document.querySelectorAll("[data-view] .notice")].some((n) => n.offsetParent && n.textContent === "Sample data makes up a show\'s times here. With no time of its own, on air this overlay has nothing to count to or from until it is in a show.")', 5000);
 
