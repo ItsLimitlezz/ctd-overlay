@@ -16,7 +16,7 @@ import { fakeClock, until } from './connector-helpers.js';
 import { startFakeMultistream } from './fixtures/fake-multistream.mjs';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
 
-const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.1.0' };
 const CHAT = { id: 'com.dprtmnt.chat', version: '1.0.0' };
 const SHARED = 'http://192.168.1.50:4850';
 

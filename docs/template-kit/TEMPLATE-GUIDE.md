@@ -172,6 +172,7 @@ Declare it in `consumes`; read it through `SK`. Patterns: an exact name, or a pr
 | `show.scene` | the overlay's current scene id (always delivered) |
 | `show.lineup` | `[{ time "HH:MM", name, b2b?, headliner?, closer?, logo?, startAt (epoch ms) }]`, in night order |
 | `show.currentSlot` | integer index into `show.lineup` of who is on, or absent |
+| `show.nobodyOn` | `true` while the operator said nobody is on: show no act, even if you go by the lineup's times when nobody is picked |
 | `show.headliner` | the name of the act flagged headliner (the headliner and the closer are different) |
 | `show.date` | `YYYY-MM-DD` |
 | `show.timezone` | the show's IANA time zone (`America/Toronto`) |

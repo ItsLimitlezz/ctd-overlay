@@ -34,8 +34,9 @@
   sample data, and they update themselves. Built in: Chat, Alerts, the TAKEOVER show package and
   [Text & Clock](docs/RUNNING.md#text--clock) (lines of text with a clock, countdown, stream run
   time or timecode). Make your own with the [template kit](docs/template-kit/TEMPLATE-GUIDE.md).
-- **Built for the night.** A phone-first Live console, Simulate buttons, alert Skip / Replay /
-  Pause, previews of every overlay, and roles for your crew.
+- **Built for the night.** A phone-first Live console (title cards, Now playing held until you
+  hide it, The Line's clip), Simulate buttons, alert Skip / Replay / Pause, previews of every
+  overlay, and roles for your crew.
 - **Yours.** One small Node server with no dependencies, on your NAS or PC. Overlay links carry
   keys, secrets are encrypted at rest, and sign-in has two-factor.
 
@@ -301,11 +302,12 @@ npm run skp -- show take "Saturday TAKEOVER" brb
 ```
 
 `show fire <show> titleCard` triggers an action, `show slot <show> VIKKSTAR` says who's on, and
-`show list` shows each show's scene and whether it's live. REC starts by itself at the first
-take of the live scene (or at go-live while `auto` is on air) and resets when you take
-`starting`; `show rec <show> start|reset` does it by hand. While a show is live, automatic
-template updates wait for it to end. An overlay that isn't in a show has its own scene:
-`overlay take <slug> <scene>`.
+`show list` shows each show's scene and whether it's live. A new show starts on `auto` (the
+countdown, then live at go-live) when its overlays' templates have it, as TAKEOVER's do. REC
+starts by itself at the first take of the live scene (or at go-live while `auto` is on air) and
+resets when you take `starting`; `show rec <show> start|reset` does it by hand. While a show is
+live, automatic template updates wait for it to end. An overlay that isn't in a show has its own
+scene: `overlay take <slug> <scene>`.
 
 ### The show runs itself
 
@@ -399,9 +401,10 @@ npm run skp -- import v0 path/to/v0/data --timezone America/Toronto --dry-run
 The dry run says what it would make and changes nothing; drop `--dry-run` to import. The night
 in `kit.json` becomes a show (its date, go-live and lineup; the event's headliner flagged on the
 lineup, the closer kept as the closer) with one TAKEOVER overlay in it, carrying v0's look, copy,
-ticker and event options, and The Line's clip from `uploads/` in the media library. The timeline
-is built the way v0 built its rundown (a title card at each set's start, the Event Intro and now
-playing at v0's minutes), and the cues v0's operator added by hand for that night come along.
+ticker, event options, card hold times, REC switch and title-card delay, and The Line's clip from
+`uploads/` in the media library. The timeline is built the way v0 built its rundown (a title card
+at each set's start, the Event Intro and now playing at v0's minutes), and the cues v0's operator
+added by hand for that night come along.
 Planned Saturdays in `shows.json` become planned dates. The Twitch and Kick credentials in
 `viewers.json` are kept, encrypted, and become connections (turned off until you check them)
 once this platform has Twitch and Kick connectors (step 17); they are never printed.
@@ -411,4 +414,5 @@ The summary ends with the overlay's two URLs (horizontal and vertical): they rep
 (`takeover` by default); without `--timezone` the show takes `TZ` or this computer's zone (v0
 used its server's). Importing again is refused while a show of that name exists, unless
 `--replace`, which replaces that show with its cues and plans and updates the overlay. v0's
-roster, its live state (scene, REC, counters), other uploads and `crash.log` stay behind.
+roster (the lineup offers the names of every lineup instead), its live state (scene, when REC
+started, the clip playing, counters), other uploads and `crash.log` stay behind.

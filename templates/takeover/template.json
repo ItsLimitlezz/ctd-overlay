@@ -2,7 +2,7 @@
   "standard": "skp/1",
   "id": "com.dprtmnt.takeover",
   "name": "D/PRTMNT TAKEOVER",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "The Saturday TAKEOVER show package (countdown, live in-set, BRB, timetable, intros, The Line, POV), with a gold headliner-event look.",
   "author": { "name": "D/PRTMNT", "url": "https://dprtmnt.com" },
   "license": "proprietary",
@@ -36,8 +36,12 @@
   "actions": [
     { "id": "titleCard", "label": "DJ title card", "durationMs": 7000 },
     { "id": "nowPlaying", "label": "Now playing", "durationMs": 22000 },
+    { "id": "nowPlayingHold", "label": "Now playing (hold)" },
+    { "id": "hideCards", "label": "Hide title card and now playing" },
     { "id": "chipOpening", "label": "Opening DJ chip", "durationMs": 10000 },
-    { "id": "chipOnAt", "label": "Headliner on-at chip", "durationMs": 10000 }
+    { "id": "chipOnAt", "label": "Headliner on-at chip", "durationMs": 10000 },
+    { "id": "linePlay", "label": "Play The Line's clip" },
+    { "id": "lineStop", "label": "Stop The Line's clip" }
   ],
   "fonts": ["https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap"],
   "definitions": {
@@ -72,7 +76,17 @@
           "type": "array", "title": "Ticker items", "items": { "type": "string", "maxLength": 60 }, "maxItems": 12,
           "default": ["DPRTMNT TAKEOVER", "EVERY SATURDAY", "TORONTO", "DOORS 10:30PM"], "x-skp-group": "Ticker"
         },
-        "lineClip": { "type": "string", "title": "The Line · clip", "description": "An uploaded video (the overlay can't play one from another site).", "pattern": "^/media/", "x-skp-widget": "media", "x-skp-accept": "video/*", "x-skp-group": "Media" },
+
+        "cardSec": { "type": "integer", "title": "Title card · seconds on screen", "description": "How long the DJ title card stays up, from its button or a cue.", "minimum": 2, "maximum": 60, "default": 7, "x-skp-group": "Title card and now playing" },
+        "npSec": { "type": "integer", "title": "Now playing · seconds on screen", "description": "How long Now playing stays up. Now playing (hold) stays until you press Hide. An OBS source that reloads meanwhile comes back without it: press it again.", "minimum": 3, "maximum": 120, "default": 22, "x-skp-group": "Title card and now playing" },
+        "autoCard": {
+          "type": "boolean", "title": "Title card when the act changes",
+          "description": "Some seconds after an act comes on (you pick who's on, or the clock reaches their set), their title card shows, then Now playing. Leave it off if the show's timeline was built from the lineup: that already shows each title card as the act comes on. An act whose title card already showed doesn't get a second one.",
+          "default": false, "x-skp-group": "Title card and now playing"
+        },
+        "autoCardSec": { "type": "integer", "title": "Seconds after the act comes on", "description": "0 shows it as they come on. 210 is three and a half minutes in.", "minimum": 0, "maximum": 3600, "default": 210, "x-skp-group": "Title card and now playing", "x-skp-showIf": { "field": "autoCard", "equals": true } },
+
+        "lineClip": { "type": "string", "title": "The Line · clip", "description": "An uploaded video (the overlay can't play one from another site). It plays on The Line, and Play The Line's clip shows it under every scene until Stop.", "pattern": "^/media/", "x-skp-widget": "media", "x-skp-accept": "video/*", "x-skp-group": "Media" },
 
         "headliner": { "type": "string", "title": "Headliner", "description": "Follows the lineup's headliner unless you type a name.", "maxLength": 60, "x-skp-bind": "show.headliner", "x-skp-group": "Copy" },
         "gold": { "type": "string", "format": "color", "title": "Event accent", "default": "#EFC33F", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
@@ -88,6 +102,8 @@
         "posterV": { "type": "string", "title": "Poster (vertical)", "x-skp-widget": "media", "x-skp-accept": "image/*", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
         "chip": { "type": "boolean", "title": "LIVE + date chip", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
         "lockup": { "type": "boolean", "title": "TONIGHT lockup", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "scheduleChips": { "type": "boolean", "title": "Opening and on-at chips", "description": "Off, the Opening DJ chip and the headliner's on-at chip show nothing, from their buttons or cues.", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
+        "nowPlayingBar": { "type": "boolean", "title": "Now playing lower third", "description": "Off, Now playing shows nothing in this look, from its buttons or cues.", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
         "vu": { "type": "boolean", "title": "VU bars on BRB", "default": true, "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
         "eventBrbTag": { "type": "string", "title": "BRB line", "maxLength": 60, "default": "MUSIC KEEPS RUNNING", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },
         "eventOutroPre": { "type": "string", "title": "Outro kicker", "maxLength": 60, "default": "THAT'S THE SET", "x-skp-group": "Headliner event", "x-skp-showIf": { "field": "look", "equals": "event" } },

@@ -1,6 +1,6 @@
 // The admin UI's building blocks. Pages build DOM with h() (text is always text, never HTML), and
-// use these for the things every page needs the same way: dialogs, menus, toasts, previews,
-// copying, busy buttons, time. See README.md for the conventions.
+// use these for the things every page needs the same way: dialogs (a form in one too), menus,
+// toasts, previews, copying, busy buttons, time. See README.md for the conventions.
 
 // h('button.btn.primary', { onclick, type: 'button', 'aria-label': … }, 'Save', child, [more])
 // A tag may carry classes after dots and an id after #. Attributes: on* are listeners, class,
@@ -178,6 +178,52 @@ export function prompt({ title, intro, fields, submitLabel = 'Save' }) {
     d.showModal();
     Object.values(inputs)[0]?.focus();
   });
+}
+
+// formDialog({ title, body, submitLabel, focus, submit, onError }): a form in a dialog that stays
+// open while it saves. The primary button runs submit() (busy, no double tap); a problem shows in
+// the dialog (one about a box, err.field, focuses it), success closes it. onError(err, { say, close }) may handle a problem itself (say(node)
+// shows it in the dialog, close() closes it) → true, or a promise of true. It opens at its top, its
+// title and what it is about in view, with the focus on `focus`. Resolves with submit's result
+// (true for none), or undefined when cancelled.
+export function formDialog({ title, body, submitLabel = 'Save', focus, submit, onError }) {
+  const message = h('div', { 'aria-live': 'polite' });
+  let result;
+  const pending = dialog({ title, body: h('div', body, message), actions: [{ label: 'Cancel', value: false }, { label: submitLabel, value: true, kind: 'primary' }] });
+  const d = message.closest('dialog');
+  const button = d?.querySelector('.form-actions .btn.primary');
+  const say = (node) => {
+    mount(message, node);
+    message.scrollIntoView?.({ block: 'nearest' });
+  };
+  const close = () => d?.close();
+  d?.addEventListener('click', async (e) => {
+    if (!button || !button.contains(e.target)) return;
+    // Ours, not the dialog's own handler (which would close it before the request is done).
+    e.stopPropagation();
+    e.preventDefault();
+    mount(message);
+    let failed = false;
+    let problem;
+    const out = await run(button, async () => (await submit()) ?? true, { onError: (err) => { failed = true; problem = err; } });
+    if (failed) {
+      if (!(await onError?.(problem, { say, close }))) say(notice(problem?.message || String(problem), 'danger'));
+      // A problem with one box (err.field): the focus on it, in view, its own words under it.
+      if (problem?.field?.isConnected && d.contains(problem.field)) {
+        problem.field.focus({ preventScroll: true });
+        problem.field.scrollIntoView?.({ block: 'nearest' });
+      }
+      return;
+    }
+    if (out !== undefined) {
+      result = out;
+      d.close();
+    }
+  }, true);
+  // dialog() focused Cancel, at the bottom, which scrolled a tall dialog down past its title.
+  focus?.focus({ preventScroll: true });
+  if (d) d.scrollTop = 0;
+  return pending.then(() => result);
 }
 
 // ---- menus ---------------------------------------------------------------------------------

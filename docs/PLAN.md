@@ -219,6 +219,53 @@ option that keeps a live show running with nobody touching it.
     forward: step 16 turns `pending_connections` into connections; the recipe gives the last set
     two hours of now playing (v0 gave one) and plays a generated Event Intro from program only
     (v0's played from any scene); the admin UI has no import page (the command line only).
+15b. **v0's show-night controls** (added 2026-10-26 at the operator's request, for the D/PRTMNT
+    TAKEOVER night run from a phone, in Safari). What v0's Live Control and setup did that the
+    platform didn't yet, and finding it on the night.
+    Done. TAKEOVER 1.1.0 (`templates/takeover`): the title card's and Now playing's hold times as
+    settings (`cardSec`, `npSec`: a trigger carrying the declared duration shows for the setting,
+    04 §4.6), Now playing held until Hide (`nowPlayingHold`, `hideCards`), the title card by itself
+    some time after an act comes on (`autoCard`, off by default, `autoCardSec`; timed from the
+    change on the server's clock, so both canvases show it on the same frame and a reload replays
+    nothing; an act whose card already showed gets no second one), Play and Stop The Line's clip
+    (`linePlay`, `lineStop`), and the event look's chips and Now playing switches
+    (`scheduleChips`, `nowPlayingBar`); the v0 import brings v0's values for them (11). Shows:
+    re-arm all cues still to come (`POST …/cues/rearm`, 09 §9.4), a cue that puts its act on and
+    shows its card (09 §9.3), the acts of every lineup and plan offered as names are typed
+    (`GET /acts`, v0's roster), a plan replaced whole (`PUT`) or made the show now (`…/apply`,
+    v0's "Load now"), and a show on no scene starts on `auto` (09 §9.1): when made, when its
+    overlays change, and at platform start for one saved before, with no REC for a go-live that
+    passed before it started (which also fixes REC set back to go-live at a restart for a show
+    made after it), and a REC the operator reset stays reset at a restart (`recResetAt`). Who's
+    on is the operator's (09 §9.3): no cue takes the night back to an act moved past, a recipe's
+    cue plays only while its act is on, an act put on early skips what was still to come for the
+    acts before (`cuesSkipped`, said on Live), and Nobody on means nobody (`show.nobodyOn`, which
+    TAKEOVER 1.1.0 reads). The admin UI (08): every time box is text (`time-field.js`: Safari's
+    time box looked set before its AM/PM was), its problem said right under it and in the same
+    words when its form is sent (`timeProblem`), the box focused; dates with quick picks
+    (`show-day.js`, one set of rules, each counted from tonight); a plan's own lineup and go-live,
+    edited in its tab; Details' hints follow what is typed, and an act before the go-live is
+    said; a night that has passed moved on in one tap, keeping unsaved edits, from the overlay's
+    page too; leaving a page or tab with unsaved edits asks first (`ctx.guardLeave`), keeping the
+    browser's history; an overlay whose template reads who's on and is in no show says so on its
+    page, on Live and in the Shows list, with Make a show from this overlay and Add it to a show,
+    "Add it to <show>" first for a show plainly its (`show-from-overlay.js`); a settings change
+    offered to the show's other overlays of the template ("Also change"); sample data saying what
+    it makes up; on Live, actions saying what they did (on air, on air until hidden, hidden or
+    stopped, sent; a clip not chosen; nothing shown with these settings, `action-needs.js`; an
+    overlay not reached), who's on by the lineup's times while nobody is picked, Auto past its
+    go-live with no REC said, and a quiet line for overlays on an older template version, to
+    upgrade before going live, whose dialog names the new buttons; signing in again after a
+    session ends returns to the page with its query. How to
+    run the night: RUNNING.md, "The D/PRTMNT TAKEOVER night". Carried forward: the title-card list is in `src/shows/timeline.js`, `pages/shows.js` and `pages/live-overlay.js`;
+    which actions a template draws only with some settings is known by template id in
+    `src/ui/action-needs.js`, not declared in the manifest; Back into history entries made before
+    this version (a tab open across the update) can't be told from a new one, so their address is
+    put back in place as before;
+    the overlay page's own reloads (after saving Fed by, Add it to a show, an upgrade, a revert, a
+    412) still drop unsaved settings without asking; Safari on iOS doesn't ask before a reload or
+    closing the tab; a show's console says a DJ title card is on air before anyone is on, though
+    TAKEOVER shows nothing until an act is.
 
 ### Milestone 4: connectors
 16. **Connector host.** Contract, backoff, health and `system.connection`, encrypted token

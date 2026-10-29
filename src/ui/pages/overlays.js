@@ -2,10 +2,16 @@
 // canvas, its URL for OBS, the settings form and what feeds it ("Fed by": every connection or only
 // some), its role in OBS (for the CTD OBS plugin), scenes outside a show (and "Follow OBS", obs.js),
 // the Simulate panel, template versions (upgrade, go back), and the More menu (rename, the key,
-// delete).
+// delete). An overlay whose template reads a show (set times, the countdown, title cards) but that
+// is in none says so first, with "Make a show from this overlay" and "Add it to a show"
+// (show-from-overlay.js); quietly, when it reads only a show's times (a clock may have its own).
+// One in a show offers a saved change to the show's other overlays of its template, since
+// settings (the copy too) are each overlay's own. Leaving with a change not saved asks first.
 import * as api from '../api.js';
+import { needsWords } from '../action-needs.js';
 import { ago, badge, confirm, copy, copyField, dialog, empty, field, h, isPhone, menu, mount, notice, pageHead, preview, prompt, run, settingsParam, tabs, toast } from '../dom.js';
 import { followObsCard } from '../obs.js';
+import { needsShow, passedLine, readsLineup, sampleWords, showNotice, showParts, showWords, wantsShowTimes } from '../show-from-overlay.js';
 import { bindingName, connectionChip, fedByForm, fedByWords } from '../streams.js';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -42,6 +48,9 @@ const overlayHref = (slug) => `#/overlays/${encodeURIComponent(slug)}`;
 const showHref = (ref) => `#/shows/${encodeURIComponent(ref)}`;
 // The same JSON whatever the key order, to tell edited settings from saved ones.
 const stable = (v) => JSON.stringify(v ?? {}, (k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
+// One setting's value against another's (absent is absent, not {}).
+const sameValue = (a, b) => stable([a === undefined ? null : a]) === stable([b === undefined ? null : b]);
+const andList = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 // SemVer precedence, as the platform orders versions (src/templates/registry.js).
 function compareVersions(a, b) {
@@ -272,20 +281,24 @@ async function load(slug, ctx) {
   const { id: tid, version: tversion } = overlay.template || {};
   const readTemplates = typeof tid === 'string' && ctx.can('templates:read');
   const templatePath = readTemplates ? `/api/v1/templates/${api.seg(tid)}` : undefined;
-  const [urls, pinned, versions, shows, formModule, health] = await Promise.all([
+  const [urls, pinned, versions, shows, formModule, health, overlays] = await Promise.all([
     api.get(`/api/v1/overlays/${api.seg(overlay.id)}/url`).then((r) => ({ list: Array.isArray(r?.urls) ? r.urls : [] }), (error) => ({ list: [], error })),
     // The version the overlay is pinned to (04 §4.10): its settings, scenes and canvases.
     templatePath && typeof tversion === 'string' ? api.get(`${templatePath}/versions/${api.seg(tversion)}`).catch(() => undefined) : undefined,
     // Every installed version, newest first: what it can upgrade to ([] when none is installed,
     // undefined when that couldn't be read).
     templatePath ? api.all(`${templatePath}/versions`).catch((err) => (err?.status === 404 ? [] : undefined)) : undefined,
-    overlay.show && ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
+    // Its show, or the shows it could join ("Add it to a show").
+    ctx.can('timeline:read') ? api.all('/api/v1/shows').catch(() => []) : [],
     // Written separately (README "Settings form"); the page works without it.
     import('../schema-form.js').catch(() => undefined),
     // The connections to choose from for "Fed by" (operators read them here, by name and status).
     api.get('/api/v1/system/health').then((r) => ({ list: Array.isArray(r?.connections) ? r.connections : [] }), (error) => ({ list: [], error })),
+    // The other overlays: those of its template in its show have settings of their own; outside a
+    // show, the show its twin is in is the one to add it to.
+    overlay.show || ctx.can('timeline:write') ? api.all('/api/v1/overlays').catch(() => []) : [],
   ]);
-  return { overlay, urls, pinned, versions, showId: shows.find((s) => s.name === overlay.show)?.id, formModule, health };
+  return { overlay, urls, pinned, versions, shows, showId: shows.find((s) => s.name === overlay.show)?.id, formModule, health, overlays };
 }
 
 export async function detail(view, ctx) {
@@ -475,6 +488,33 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   } else if (overlay.status === 'template-unusable') {
     notices.push(notice([`The template this overlay uses (${tplName} ${pinned.version || ''}) is installed but can't run, so OBS shows nothing. Upgrade to another version (Version, below), or install it again from `, h('a', { href: '#/templates' }, 'Templates'), '.'], 'danger'));
   }
+  // What its template reads from a show (set times, the countdown, title cards): outside a show
+  // it gets none of it, so that comes first, with the way into one; in a show, where to edit it.
+  // A template that reads only a show's times may have a time of its own: a quiet line instead.
+  const outsideShow = needsShow(overlay, manifest);
+  const timesOutside = wantsShowTimes(overlay, manifest);
+  const addable = { overlay, manifest, shows: data.shows, overlays: data.overlays, onAdded: () => reload() };
+  if (outsideShow) notices.push(showNotice(ctx, addable));
+  let showLine = timesOutside ? showNotice(ctx, { ...addable, times: true }) : null;
+  // Its show's night has passed (a weekly show left on last week's date): what it shows on air is
+  // that night's countdown and set times, which only the show's page said.
+  const myShow = overlay.show ? data.shows.find((s) => s.id === data.showId) : undefined;
+  if (myShow && showParts(manifest).length) {
+    const passed = passedLine(ctx, myShow, { onMoved: () => reload() });
+    if (passed) notices.push(passed);
+  }
+  if (overlay.show) {
+    const parts = showParts(manifest).map((p) => p.text);
+    const at = (tab) => `${showHref(data.showId || overlay.show)}?tab=${tab}`;
+    const links = [];
+    if (parts.includes('set times')) links.push([h('a', { href: at('lineup') }, 'Lineup'), ' (the acts and their set times)']);
+    if (parts.includes('the countdown')) links.push([h('a', { href: at('details') }, 'Details'), ' (the date and go-live time)']);
+    if (links.length) {
+      showLine = readsLineup(manifest)
+        ? h('p.small.muted', `${showWords(manifest)} Edit them on the show: `, links.map((l, i) => [i ? ', ' : '', l]), '.')
+        : h('p.small.muted', `${showWords(manifest).replace(/\ba show's\b/, 'the show\'s')} Its go-live time is on the show: `, links, '.');
+    }
+  }
 
   // ---- previews (H13) --------------------------------------------------------------------
   let previewSettingsParam; // ?settings= while edits are unsaved
@@ -508,13 +548,23 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const sceneSelect = h('select', { onchange: () => { state.scene = sceneSelect.value; refreshPreviews(); } },
     h('option', { value: '' }, 'As on air'),
     scenes.map((s) => h('option', { value: s.id, selected: s.id === state.scene }, s.label || s.id)));
-  const mockBox = h('input', { type: 'checkbox', checked: state.mock, onchange: () => { state.mock = mockBox.checked; refreshPreviews(); updateSimNote(); } });
+  const mockBox = h('input', { type: 'checkbox', checked: state.mock, onchange: () => { state.mock = mockBox.checked; refreshPreviews(); updateSimNote(); updateMockNote(); } });
+  // Sample data makes up everything a show gives (src/sdk/mock.js): outside a show, say what of it
+  // OBS doesn't have, so the preview doesn't pass for the real thing.
+  const mockNote = h('div', { 'aria-live': 'polite' });
+  function updateMockNote() {
+    const on = state.mock && (outsideShow || timesOutside);
+    mockNote.hidden = !on;
+    mount(mockNote, on ? notice(sampleWords(manifest), outsideShow ? 'warn' : undefined) : null);
+  }
+  updateMockNote();
   const previewCard = h('section.card.stack',
     h('div.card-head', h('h2', 'Preview'), h('div.actions', unsavedBadge)),
     !ok ? h('p.muted', 'No preview: the overlay can\'t run until its template is fixed.')
       : !boxes.length ? h('p.muted', 'This overlay has no canvas to preview.')
         : [
           h('div.inline-form', scenes.length ? field('Scene in the preview', sceneSelect) : null, field('Sample data', mockBox)),
+          mockNote,
           previewRow(boxes),
           h('p.small.muted', 'The scene and sample data change this preview only, never OBS.'),
         ]);
@@ -550,7 +600,9 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   const undoBtn = h('button.btn', { type: 'button', onclick: () => undo() }, 'Undo changes');
   undoBtn.hidden = true;
   const dirtyNote = h('span.small.muted', { 'aria-live': 'polite' });
+  let settingsDirty = false; // what "Unsaved changes" says, for leaving the page
   const markDirty = (dirty) => {
+    settingsDirty = dirty;
     undoBtn.hidden = !dirty;
     dirtyNote.textContent = dirty ? 'Unsaved changes' : '';
   };
@@ -576,6 +628,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
         return;
       }
       const values = form.values() || {};
+      const before = saved;
       try {
         overlay = await api.patch(ref(), { settings: values }, { ifMatch: overlay });
       } catch (err) {
@@ -583,6 +636,8 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
         throw err;
       }
       saved = isObj(overlay.settings) ? overlay.settings : values;
+      const changed = [...new Set([...Object.keys(before), ...Object.keys(saved)])].filter((k) => !sameValue(before[k], saved[k]));
+      if (changed.length) offerAlso(changed).catch((err) => console.warn(err));
       // What the overlay sees now, for the form's placeholders.
       try { form.reset(structuredClone(saved), overlay.resolvedSettings || {}); } catch (err) { console.warn(err); }
       clearTimeout(timer);
@@ -611,6 +666,117 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     toast('Settings reset to the template\'s defaults.');
     await reload();
   }
+
+  // ---- the same change on the show's other overlays of this template -----------------------
+  // Settings are each overlay's own, the copy too (a tagline is set on the landscape and on the
+  // vertical overlay). After a save, the other overlays of this template in the show it is in now
+  // (read fresh: it may have moved since the page was read) that hold something else in what
+  // changed are offered the same change: only those settings, and only those their own version of
+  // the template has (one on an older version is told what it lacks), each overlay with its own
+  // If-Match as read for the offer (H16). What failed is said overlay by overlay, and offered again
+  // on the overlay as it is now, unless its version can't take it (422: the same again would fail).
+  const alsoBox = h('div.also-box', { 'aria-live': 'polite' });
+  const pending = new Set(); // settings changed since the last offer was taken or left
+  const siblings = overlay.show ? data.overlays.filter((o) => o && o.id !== overlay.id && o.show === overlay.show && o.template?.id === pinned.id) : [];
+  const nameOf = (key) => settingName([manifest], `/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`);
+  // Whether an overlay's version has a setting: from its own manifest (any setting, when that
+  // can't be read: the server checks).
+  async function fitsOf(o) {
+    const version = o.template?.version;
+    const m = typeof version === 'string' ? await manifestOf(version) : undefined;
+    if (!m) return () => true;
+    const props = settingsSchemaOf(m)?.properties;
+    return (k) => has(props, k);
+  }
+  async function offerAlso(keys) {
+    if (!canWrite) return;
+    for (const k of keys) pending.add(k);
+    if (!overlay.show) { pending.clear(); mount(alsoBox); return; }
+    const show = await api.get(`/api/v1/shows/${api.seg(overlay.show)}`);
+    if (!(show.overlays || []).includes(overlay.id)) return;
+    const others = await Promise.all((show.overlays || []).filter((id) => id !== overlay.id).map((id) => api.get(`/api/v1/overlays/${api.seg(id)}`).catch(() => undefined)));
+    await drawAlso(others.filter((o) => o?.template?.id === pinned.id), show.name);
+  }
+  // Each of them with the changed settings it holds otherwise and its version has, and those its
+  // version doesn't have.
+  async function targetsOf(others) {
+    return Promise.all(others.map(async (o) => {
+      const fits = await fitsOf(o);
+      const differ = [...pending].filter((k) => !sameValue(isObj(o.settings) ? o.settings[k] : undefined, saved[k]));
+      return { o, keys: differ.filter(fits), lacks: differ.filter((k) => !fits(k)) };
+    }));
+  }
+  // "copy-v is on an older version of the template (1.0.0), which has no Tagline: upgrade it to
+  // set that there."
+  const lackWords = ({ o, lacks }) => {
+    const older = compareVersions(o.template?.version, pinned.version) < 0;
+    const what = andList(lacks.map(nameOf));
+    return `${o.slug} is on ${older ? 'an older' : 'another'} version of the template (${o.template?.version}), which has no ${what}${older ? `: upgrade ${o.slug} to set ${lacks.length === 1 ? 'it' : 'them'} there` : ''}.`;
+  };
+  async function drawAlso(others, showName, outcome) {
+    const all = await targetsOf(others);
+    const targets = all.filter((t) => t.keys.length);
+    const lacking = all.filter((t) => t.lacks.length);
+    const lackNote = lacking.length ? h('p.small.muted', lacking.map(lackWords).join(' ')) : null;
+    if (!targets.length) {
+      pending.clear();
+      mount(alsoBox, outcome, lackNote);
+      return;
+    }
+    const names = targets.map((t) => t.o.slug);
+    const fields = [...new Set(targets.flatMap((t) => t.keys))].map(nameOf);
+    const one = targets.length === 1;
+    const apply = h('button.btn.primary', { type: 'button', onclick: () => applyAlso(apply, targets, showName) }, `Also change: ${names.join(', ')}`);
+    const leave = h('button.btn', { type: 'button', onclick: () => { pending.clear(); mount(alsoBox); } }, one ? 'Leave it as it is' : 'Leave them as they are');
+    const offer = notice([
+      h('p', `${andList(names)} (also in "${showName}") ${one ? 'has its' : 'have their'} own ${andList(fields)}: change ${one ? 'it' : 'them'} the same way?`),
+      lackNote,
+      h('div.row', apply, leave),
+    ]);
+    offer.classList.add('also-change');
+    mount(alsoBox, outcome, offer);
+  }
+  async function applyAlso(button, targets, showName) {
+    await run(button, async () => {
+      const done = [];
+      const refused = [];
+      for (const t of targets) {
+        const next = isObj(t.o.settings) ? structuredClone(t.o.settings) : {};
+        for (const k of t.keys) {
+          if (has(saved, k)) next[k] = structuredClone(saved[k]);
+          else delete next[k];
+        }
+        try {
+          await api.patch(`/api/v1/overlays/${api.seg(t.o.id)}`, { settings: next }, { ifMatch: t.o });
+          done.push(t.o.slug);
+        } catch (err) {
+          refused.push({ t, err });
+        }
+      }
+      if (!refused.length) {
+        pending.clear();
+        mount(alsoBox);
+        toast(`Changed on ${andList(done)} too.`);
+        return;
+      }
+      // In plain words: a version that can't take a value is said as such, not in the server's terms.
+      const why = ({ t, err }) => (err?.status === 412 ? 'it changed since this page read it: someone else, or another tab'
+        : err?.status === 404 ? 'it was deleted meanwhile'
+          : err?.status === 422 ? `its version of the template, ${t.o.template?.version}, can't take ${t.keys.length === 1 ? 'that value' : 'those values'}`
+            : String(err?.message || err).replace(/[.\s]+$/, ''));
+      const outcome = notice([
+        done.length ? `Changed on ${andList(done)}. ` : 'Nothing was changed. ',
+        `Not changed on ${refused.map((r) => `${r.t.o.slug} (${why(r)})`).join(', ')}.`,
+      ], 'danger');
+      toast(`Not every overlay was changed: ${andList(refused.map((r) => r.t.o.slug))} ${refused.length === 1 ? 'was' : 'were'} not.`, { kind: 'error', ms: 10000 });
+      // The ones refused, as they are now: offered again, to make the change on what they hold. Not
+      // one deleted, nor one whose version refused it: the same again would fail the same way.
+      const again = refused.filter((r) => r.err?.status !== 404 && r.err?.status !== 422 && r.err?.status !== 400);
+      const now = await Promise.all(again.map((r) => api.get(`/api/v1/overlays/${api.seg(r.t.o.id)}`).catch(() => undefined)));
+      await drawAlso(now.filter(Boolean), showName, outcome);
+    });
+  }
+
   {
     const resetMenu = canWrite && schema ? menu('More', [{ label: 'Reset to defaults…', danger: true, onSelect: resetDefaults }], { buttonClass: 'btn ghost' }) : null;
     const parts = [h('div.card-head', h('h2', 'Settings'), resetMenu ? h('div.actions', resetMenu) : null)];
@@ -622,6 +788,10 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       parts.push(h('p.muted', 'This template has no settings.'));
     } else {
       if (!canWrite) parts.push(h('p.muted', 'Your role can see these settings but not change them.'));
+      else if (siblings.length) {
+        const one = siblings.length === 1;
+        parts.push(h('p.small.muted', `These settings are this overlay's own: ${andList(siblings.map((o) => o.slug))}, also in "${overlay.show}", ${one ? 'has its' : 'have their'} own. When you save, you can change ${one ? 'it' : 'them'} the same way.`));
+      }
       const make = data.formModule?.schemaForm;
       if (typeof make === 'function') {
         try {
@@ -641,7 +811,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       if (form?.el) {
         const actions = h('div.form-actions', dirtyNote, undoBtn, saveBtn);
         actions.style.alignItems = 'center';
-        parts.push(form.el, actions);
+        parts.push(form.el, actions, alsoBox);
       } else {
         form = undefined;
         parts.push(notice('The settings form could not load. Reload the page to try again; everything else here works.', 'warn'));
@@ -654,18 +824,21 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // Which connections feed it: every one (made later too), or only some, so two streams at once
   // each show their own chat, alerts and viewers. Saved with If-Match like the settings (H16).
   const fedByPanel = h('section.card.stack#fed-by', h('h2', 'Fed by'));
+  let fedChanged = () => false;
   {
     const binding = overlay.connections === 'all' ? 'all' : Array.isArray(overlay.connections) ? overlay.connections : 'all';
     const bound = Array.isArray(overlay.bound) ? overlay.bound : [];
-    fedByPanel.append(
+    // (append() writes a null out as "null": only what there is.)
+    fedByPanel.append(...[
       h('p', `Now: ${fedByWords(binding, bound)}`),
-      bound.length ? h('div.chips', bound.map(connectionChip)) : null);
+      bound.length ? h('div.chips', bound.map(connectionChip)) : null].filter(Boolean));
     if (data.health?.error) fedByPanel.append(notice(`The connections could not be read: ${data.health.error.message}`, 'warn'));
     if (!canWrite) {
       fedByPanel.append(h('p.muted', 'Your role can see what feeds this overlay but not change it.'));
     } else {
       const saveFed = h('button.btn.primary', { type: 'button', disabled: true, onclick: () => saveFedBy() }, 'Save connections');
       const fedForm = fedByForm({ connections: data.health?.list, value: binding, legend: 'Connections it shows', onChange: () => { saveFed.disabled = !fedForm.changed(); } });
+      fedChanged = () => fedForm.changed();
       const nameOf = (entry) => bindingName(data.health?.list, entry);
       async function saveFedBy() {
         const next = fedForm.value();
@@ -677,6 +850,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
             throw err;
           }
           toast(`"${overlay.slug}" is fed by ${next === 'all' ? 'every connection' : next.length ? next.map(nameOf).join(', ') : 'no connection'} now.`);
+          fedChanged = () => false; // saved: nothing to lose while the page is read again
           await reload();
         });
       }
@@ -689,9 +863,11 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
   // for the equivalent overlay of every CTD Relay profile, so switching profile re-points
   // its browser sources. Empty: the template's short name.
   const rolePanel = h('section.card.stack#role', h('h2', 'Role in OBS'));
+  let roleChanged = () => false;
   {
     const fallback = String(pinned.id || '').split('.').pop() || 'overlay';
     const input = h('input', { type: 'text', value: overlay.role || '', maxlength: '54', autocomplete: 'off', spellcheck: 'false', placeholder: fallback, disabled: !canWrite, pattern: '[a-z0-9][a-z0-9\\-]*' });
+    roleChanged = () => canWrite && input.value.trim().toLowerCase() !== (overlay.role || '');
     const saveRole = h('button.btn', { type: 'submit', disabled: !canWrite }, 'Save role');
     rolePanel.append(h('form', { onsubmit: async (e) => {
       e.preventDefault();
@@ -786,6 +962,23 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       default: return `${name} changes.`;
     }
   };
+  // What the new version brings beside its settings: its new scenes, and its new actions (buttons on
+  // Live, things a cue can do), each with what it needs of the settings (action-needs.js).
+  function newInVersion(target, ms) {
+    const had = (key) => new Set((Array.isArray(manifest?.[key]) ? manifest[key] : []).map((x) => x?.id));
+    const added = (key) => (Array.isArray(target?.[key]) ? target[key] : []).filter((x) => x && typeof x.id === 'string' && !had(key).has(x.id));
+    const scenes = added('scenes');
+    const actions = added('actions');
+    if (!scenes.length && !actions.length) return null;
+    return [
+      h('h3', 'New in this version'),
+      scenes.length ? h('p', `${scenes.length === 1 ? 'A scene' : 'Scenes'}: ${andList(scenes.map((s) => `"${s.label || s.id}"`))}, on Live and for cues.`) : null,
+      actions.length ? h('ul', actions.map((a) => {
+        const needs = needsWords(target.id, a.id, (name) => settingName(ms, `/${name}`));
+        return h('li', `"${a.label || a.id}": a new button on Live, and something a cue can do${needs ? `; ${needs}` : ''}.`);
+      })) : null,
+    ];
+  }
   function planBody(plan, migrateBox, target) {
     const ms = [target, manifest];
     const changes = Array.isArray(plan.changes) ? plan.changes : [];
@@ -797,6 +990,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
       gone.scenes?.length ? notice(`Scenes this version doesn't have: ${list(gone.scenes)}. A show, button or cue that takes them won't work.`, 'warn') : null,
       gone.actions?.length ? notice(`Actions this version doesn't have: ${list(gone.actions)}. Buttons and cues that fire them won't work.`, 'warn') : null,
       gone.canvases?.length ? notice(`Canvases this version doesn't have: ${list(gone.canvases)}. OBS sources using them show the default canvas.`, 'warn') : null,
+      newInVersion(target, ms),
       h('h3', 'Settings'),
       changes.length ? h('ul', changes.map((c) => h('li', describe(c, ms)))) : h('p.muted', 'No setting changes.'),
       plan.migrated === true ? h('p.muted', 'The version\'s update script carried your settings over.') : null,
@@ -880,7 +1074,13 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     { id: 'version', label: 'Version', render: (p) => { p.append(panels.version); } },
   ], { selected: state.tab, onChange: (id) => { state.tab = id; } });
   cleanups.push(() => tabList.destroy?.());
+  // Leaving the page (a link, Back, a reload) with a change on the Settings tab not saved yet asks
+  // first (app.js), whichever tab is open: its settings, what feeds it, its role in OBS.
+  cleanups.push(ctx.guardLeave(() => {
+    const parts = [canWrite && settingsDirty ? 'its settings' : '', fedChanged() ? 'what feeds it' : '', roleChanged() ? 'its role in OBS' : ''].filter(Boolean);
+    return parts.length ? `Your changes to ${andList(parts)} are lost; the overlay stays as it was saved.` : '';
+  }));
 
-  mount(view, head, meta, notices, h('div.stack', previewCard, urlCard, tabList));
+  mount(view, head, meta, showLine, notices, h('div.stack', previewCard, urlCard, tabList));
   return () => { for (const fn of cleanups.splice(0)) { try { fn(); } catch { /* gone */ } } };
 }

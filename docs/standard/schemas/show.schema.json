@@ -15,6 +15,10 @@
     "dayBoundary": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$", "default": "12:00" },
     "goLive": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
     "scene": { "type": "string" },
+    "sceneTakenAt": { "type": "string", "format": "date-time", "description": "When the show took its scene, or started on it (09 §9.1; read only)." },
+    "currentSlot": { "type": "integer", "minimum": 0, "description": "Who's on: a lineup position (09 §9.1; set with PUT /shows/{id}/slot)." },
+    "nobodyOn": { "const": true, "description": "The operator said nobody is on (slot null): no act, whatever the lineup's times say (09 §9.1; read only)." },
+    "recResetAt": { "type": "string", "format": "date-time", "description": "When the operator last reset REC: a go-live before it doesn't anchor REC again until \"auto\" is taken or the go-live moves (09 §9.1; read only)." },
     "lineup": {
       "type": "array",
       "items": {

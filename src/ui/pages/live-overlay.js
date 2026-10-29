@@ -3,18 +3,88 @@
 // canvas sizes, its template's actions, Simulate, what feeds it, and its scenes: its own outside a
 // show; inside one, scenes are the show's (members share them; the API refuses a scene on a member).
 //
-// overlayPanel(ctx, { ref, show, onWholeShow, onOverlay }) → { el, stop }. show: the show's name
-// when the overlay is in one. onOverlay(overlay): each time it is read (every 3 s), for the page's
-// status. Everything here is a command (no If-Match, README H16) but "Fed by", which links to the
-// overlay's settings, where it is edited.
+// overlayPanel(ctx, { ref, show, onWholeShow, onOverlay, onAdded }) → { el, needs, stop }. show:
+// the show's name when the overlay is in one. onOverlay(overlay): each time it is read (every 3 s),
+// for the page's status. needs: outside a show, when its template reads who's on from one (set
+// times, title cards), the notice that says so with "Make a show from this overlay" and "Add it to
+// a show" once there is a show (show-from-overlay.js; "Add it to <show>" first for the one plainly
+// its), for the page to put first; onAdded(show) once it is in one. A template that reads only a
+// show's times (a clock) gets no notice here.
+// Everything here is a command (no If-Match, README H16) but "Fed by", which links to the overlay's
+// settings, where it is edited.
+//
+// An action pressed says what it did (firedText, the show's console too): a timed one is on air,
+// a held card until hidden, Hide and Stop done, any other sent; outside a show, a card that names
+// the act on now is sent with no act to name. Play The Line's clip with no clip chosen says so
+// (withoutMedia), and an action the overlay's settings draw nothing for (TAKEOVER's chips outside
+// its event look, action-needs.js) is sent, "but it shows nothing", with why (readDrawn), said
+// under the buttons too (quietLine).
 import * as api from '../api.js';
+import { drawnOnlySo, MEDIA_ACTIONS, notDrawn } from '../action-needs.js';
 import { badge, copyField, empty, every, field, h, mount, notice, preview, run, toast } from '../dom.js';
 import { byObsWords } from '../obs.js';
+import { needsShow, showNotice, suggestedShow } from '../show-from-overlay.js';
 import { connectionChip, fedByWords } from '../streams.js';
 import { SIMULATIONS } from './overlays.js';
 
 const POLL_MS = 3000;
 const list = (v) => (Array.isArray(v) ? v : []);
+const andList = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+// ---- what an action's button says it did ---------------------------------------------------
+// The cards that name the act on now (the server's list is ACT_CARDS in src/shows/timeline.js, which
+// the UI can't import): fired from a button, with no act named, one names whoever is on, which
+// only a show has.
+export const ACT_CARDS = ['titleCard', 'nowPlaying', 'nowPlayingHold'];
+// An action that plays the media a setting names (TAKEOVER's Play The Line's clip, action-needs.js):
+// with none chosen it plays nothing, which is said instead of "sent".
+export { MEDIA_ACTIONS };
+// What an action did, after its label: a timed one (durationMs in the manifest) is on air for its
+// time; a card with no time stays until hidden (Now playing held); any other (Hide, Play, Stop) is
+// sent, and what it does is its template's.
+export const firedWords = (a) => (a?.durationMs > 0 ? 'on air' : ACT_CARDS.includes(a?.id) ? 'on air until hidden' : 'sent');
+// The whole sentence, its label first: an untimed one labelled "Hide …" or "Stop …" says it is done
+// ("Title card and now playing hidden", "The Line's clip stopped"), which its template does at once.
+export function firedText(a) {
+  const label = a?.label || a?.id || 'The action';
+  const m = !(a?.durationMs > 0) && !ACT_CARDS.includes(a?.id) ? /^(Hide|Stop) (.+)$/.exec(label) : null;
+  return m ? `${m[2][0].toUpperCase()}${m[2].slice(1)} ${m[1] === 'Hide' ? 'hidden' : 'stopped'}` : `${label} ${firedWords(a)}`;
+}
+// Of the overlays an action reached (refs), those with no media chosen for it, read now (a clip
+// chosen a moment ago counts): [] when it plays none, or their settings can't be read.
+export async function withoutMedia(name, refs) {
+  const media = MEDIA_ACTIONS[name];
+  if (!media) return [];
+  const read = await Promise.all(list(refs).map((ref) => api.get(`/api/v1/overlays/${api.seg(ref)}`).catch(() => undefined)));
+  return read.filter((o) => {
+    const s = o?.resolvedSettings || o?.settings;
+    return !!s && typeof s === 'object' && !(typeof s[media.setting] === 'string' && s[media.setting].trim());
+  });
+}
+
+// The overlays an action reached (refs), read now: [{ overlay, why }], why when it shows nothing
+// for it with its settings as they are (action-needs.js notDrawn: TAKEOVER's chips outside its
+// event look). [] for an action no template draws only so (nothing is read).
+export async function readDrawn(name, refs) {
+  if (!drawnOnlySo(name)) return [];
+  const read = await Promise.all(list(refs).map((ref) => api.get(`/api/v1/overlays/${api.seg(ref)}`).catch(() => undefined)));
+  return read.filter(Boolean).map((overlay) => ({ overlay, why: notDrawn(overlay, name) }));
+}
+// The actions the overlays show nothing for now (every one of them that has it: members, each
+// { overlay, manifest }), in a line: "Opening DJ chip and Headliner on-at chip show nothing now:
+// the chips show in the Headliner event look only." '' for none.
+export function quietLine(actions, members) {
+  const byWhy = new Map();
+  for (const a of actions) {
+    const having = members.filter((m) => list(m.manifest?.actions).some((x) => x?.id === a.id));
+    const whys = having.map((m) => notDrawn(m.overlay, a.id));
+    if (!having.length || !whys.every(Boolean)) continue;
+    if (!byWhy.has(whys[0])) byWhy.set(whys[0], []);
+    byWhy.get(whys[0]).push(a.label || a.id);
+  }
+  return [...byWhy].map(([why, labels]) => `${andList(labels)} ${labels.length === 1 ? 'shows' : 'show'} nothing now: ${why}.`).join(' ');
+}
+
 const shapeOf = (w, hh) => (!w || !hh ? undefined : w > hh ? 'Landscape' : w < hh ? 'Vertical' : 'Square');
 // "Landscape · 1920 × 1080": the template's name for the canvas, else its shape, and its size.
 const canvasLabel = (c, manifest) => {
@@ -22,30 +92,61 @@ const canvasLabel = (c, manifest) => {
   return c.width ? `${name} · ${c.width} × ${c.height}` : name;
 };
 
-export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
+export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay, onAdded } = {}) {
   const canControl = ctx.can('overlays:control');
   const canPreview = ctx.can('overlays:read');
   const canWrite = ctx.can('overlays:write');
   const el = h('div.stack', h('p.loading', 'Loading…'));
+  const needs = h('div', { hidden: true });
   let stopped = false;
   let box; // the preview
   let stopPoll;
   let overlay;
+  let manifest;
+  let known = { shows: [], overlays: [] }; // outside a show: the shows and overlays, for the notice
+  let drawNoAct = () => {}; // the Actions card's lines (title cards with no act, what shows nothing), once drawn
 
   async function load() {
     const path = `/api/v1/overlays/${api.seg(ref)}`;
     overlay = await api.get(path);
     const t = overlay.template || {};
-    const [urls, pinned] = await Promise.all([
+    const [urls, pinned, others] = await Promise.all([
       canPreview ? api.get(`${path}/url`).then((r) => ({ list: list(r?.urls).filter((u) => typeof u?.url === 'string') }), (error) => ({ list: [], error })) : { list: [] },
       typeof t.id === 'string' && typeof t.version === 'string' ? api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`).catch(() => undefined) : undefined,
+      // Outside a show: the shows to add it to, and the one plainly its (its twin's, or one with no
+      // overlays yet).
+      !show && !overlay.show ? readShows() : known,
     ]);
-    return { urls, manifest: pinned?.manifest };
+    manifest = pinned?.manifest;
+    known = others;
+    return { urls, manifest };
+  }
+  async function readShows() {
+    if (!ctx.can('timeline:read')) return known;
+    const [shows, overlays] = await Promise.all([api.all('/api/v1/shows').catch(() => known.shows), api.all('/api/v1/overlays').catch(() => known.overlays)]);
+    return { shows, overlays };
+  }
+
+  // ---- outside a show, a template that reads one: the notice, until it is in one -------------
+  // Drawn again only when it changes (a button pressed keeps its focus through the polls): when a
+  // show is made meanwhile, it offers "Add it to a show" too, and the show plainly its first.
+  let needsKey;
+  const needsOn = () => !show && needsShow(overlay, manifest);
+  function drawNeeds() {
+    const on = needsOn();
+    const suggested = on ? suggestedShow(overlay, known.shows, known.overlays) : undefined;
+    const key = on ? JSON.stringify([overlay.id, known.shows.length > 0, suggested?.show.id, suggested?.why]) : '';
+    if (key === needsKey) return;
+    needsKey = key;
+    needs.hidden = !on;
+    mount(needs, on ? showNotice(ctx, { overlay, manifest, shows: known.shows, overlays: known.overlays, onAdded }) : null);
   }
 
   function gone() {
     box?.unload();
     stopPoll?.();
+    needs.hidden = true;
+    mount(needs);
     mount(el, h('div.card', empty(`There is no overlay "${ref}"`, 'It was renamed or deleted meanwhile.', h('a.btn.primary', { href: '#/live' }, 'All streams'))));
   }
 
@@ -127,11 +228,46 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
             : h('p.muted', 'Its template has no scenes.'));
 
     // ---- actions -----------------------------------------------------------------------------
+    // Fired with no act named ({}): a title card names the act on now, which only a show has. Outside
+    // one, such a card is said to be sent with no act to name, and any other action to be sent (what
+    // it reads of a show isn't there either), not on air; in one, what it did (firedWords).
     const actions = list(manifest?.actions).filter((a) => a && typeof a.id === 'string');
+    const cards = actions.filter((a) => ACT_CARDS.includes(a.id)).map((a) => a.label || a.id);
+    const noAct = h('p.small.muted', cards.length ? `This overlay isn't in a show, so ${andList(cards)} ${cards.length === 1 ? 'has no act to name: it shows' : 'have no act to name: they show'} nothing.` : '');
+    const said = (a) => {
+      const label = a.label || a.id;
+      if (!needsOn()) return `${slug}: ${firedText(a)}`;
+      if (ACT_CARDS.includes(a.id)) return `${slug}: ${label} sent. It has no act to name until the overlay is in a show.`;
+      // A timed one (a chip) reads the show too: sent, never on air; Hide and Stop work as in one.
+      return a.durationMs > 0 ? `${slug}: ${label} sent` : `${slug}: ${firedText(a)}`;
+    };
+    const fire = (a) => {
+      const b = h('button.btn', { type: 'button', disabled: !canControl, onclick: async () => {
+        const out = await run(b, async () => {
+          await api.post(`${path()}/actions/${api.seg(a.id)}`, {});
+          const [unset, drawn] = await Promise.all([withoutMedia(a.id, [overlay.id]), readDrawn(a.id, [overlay.id])]);
+          return { unset, quiet: drawn.filter((x) => x.why) };
+        });
+        if (!out) return;
+        if (out.unset.length) toast(`${slug}: ${MEDIA_ACTIONS[a.id].what} isn't set, so nothing plays. Choose one in the overlay's settings.`, { kind: 'error' });
+        else if (out.quiet.length) toast(`${slug}: ${a.label || a.id} sent, but it shows nothing: ${out.quiet[0].why}.`);
+        else toast(said(a));
+      } }, a.label || a.id);
+      return b;
+    };
+    // Actions its settings draw nothing for now (TAKEOVER's chips outside the event look): said
+    // under the buttons, kept with its settings as it is read again.
+    const quiet = h('p.small.muted', { hidden: true });
     const actionsCard = h('section.card.stack', h('h2', 'Actions'),
       actions.length
-        ? h('div.pad', { role: 'group', 'aria-label': `Actions of ${slug}` }, actions.map((a) => button(a.label || a.id, () => api.post(`${path()}/actions/${api.seg(a.id)}`, {}), `${slug}: ${a.label || a.id} on air`)))
+        ? [h('div.pad', { role: 'group', 'aria-label': `Actions of ${slug}` }, actions.map(fire)), noAct, quiet]
         : h('p.muted', manifest ? 'Its template has no actions.' : 'Its template isn\'t available, so there are no actions.'));
+    drawNoAct = () => {
+      noAct.hidden = !(needsOn() && cards.length);
+      const words = quietLine(actions, [{ overlay, manifest }]);
+      quiet.hidden = !words;
+      if (quiet.textContent !== words) quiet.textContent = words;
+    };
 
     // ---- simulate (08 §8.5) ------------------------------------------------------------------
     const sims = SIMULATIONS.map((item) => {
@@ -155,13 +291,16 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
 
     drawFed();
     drawObsNote();
+    drawNeeds();
+    drawNoAct();
     mount(el,
       head,
       h('div.grid.wide', h('div.stack', scenesCard, actionsCard), h('div.stack', simCard, h('section.card', h('h2', 'Fed by'), fedBody))),
       obs);
   }
 
-  // Read again every 3 s: what feeds it, and its status for the page.
+  // Read again every 3 s: what feeds it, and its status for the page; while the notice is on,
+  // whether there is a show to add it to now.
   async function refresh() {
     if (stopped) return;
     try {
@@ -171,8 +310,14 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
       return;
     }
     if (stopped) return;
+    if (needsOn() && ctx.can('timeline:read')) {
+      known = await readShows();
+      if (stopped) return;
+    }
     drawFed();
     drawObsNote();
+    drawNeeds();
+    drawNoAct();
     onOverlay?.(overlay);
   }
 
@@ -193,6 +338,7 @@ export function overlayPanel(ctx, { ref, show, onWholeShow, onOverlay } = {}) {
 
   return {
     el,
+    needs,
     stop() {
       stopped = true;
       stopPoll?.();

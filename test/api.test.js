@@ -376,7 +376,7 @@ test('media: upload (streamed), list, delete (not while used)', async (t) => {
   assert.match(up.body.url, /^\/media\/[0-9a-f]{32}\/Logo\.png$/);
   assert.equal((await fetch(`${platform.url}${up.body.url}`)).status, 200);
   assert.equal((await api('GET', '/media')).body.items[0].id, up.body.id);
-  const tk = await api('POST', '/overlays', { slug: 'x', template: { id: 'com.dprtmnt.takeover', version: '1.0.0' }, settings: { look: 'event', eventMark: up.body.url } });
+  const tk = await api('POST', '/overlays', { slug: 'x', template: { id: 'com.dprtmnt.takeover', version: '1.1.0' }, settings: { look: 'event', eventMark: up.body.url } });
   assert.equal(tk.status, 201);
   assert.deepEqual((await api('GET', `/media/${up.body.id}`)).body.usedBy, ['x']);
   const inUse = await api('DELETE', `/media/${up.body.id}`);

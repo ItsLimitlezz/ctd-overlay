@@ -4,13 +4,14 @@
 // asks for AM or PM instead of guessing; a time that can't be read is refused, never taken as
 // empty or as morning, even after the lineup redraws. In a real browser: the lineup, Details and
 // a template's time setting (Text & Clock) save the times typed, and a refusal says why, once (a
-// second press doesn't stack the same toast).
+// second press doesn't stack the same toast), in the box's own words with the box focused, said
+// right under it; Details' hints follow what is typed, and an act before the go-live is said.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { formatTime, parseTime, timeError, twelveHour } from '../src/ui/time-field.js';
+import { formatTime, parseTime, timeError, timeProblem, twelveHour } from '../src/ui/time-field.js';
 import { browserSkip, launchBrowser } from './cdp.js';
 import { defer, memoryLogger, tempDir } from './helpers.js';
 
@@ -51,6 +52,13 @@ test('what is typed is read as a time, on a 12-hour and a 24-hour clock', () => 
   assert.equal(formatTime('nope', h12), '');
   assert.equal(twelveHour('en-US'), true);
   assert.equal(twelveHour('en-GB'), false);
+  // What a form says when it is sent: the box's own words, naming it; the words for an empty one
+  // only when a time is needed; never a 24-hour example on a 12-hour clock.
+  assert.equal(timeProblem('?10:30', 'Act 2, Headliner DJ', h12), 'Act 2, Headliner DJ: add AM or PM: 10:30 PM, or 10:30 AM.');
+  assert.equal(timeProblem('?soon', 'The go-live time', h12), 'The go-live time: "soon" isn\'t a time. Type it like 9:30 PM.');
+  assert.equal(timeProblem('', 'The go-live time', h12), undefined, 'optional');
+  assert.equal(timeProblem('', 'Act 1', { ...h12, missing: 'Act 1 needs a start time.' }), 'Act 1 needs a start time.');
+  assert.equal(timeProblem('22:30', 'Act 1', { ...h12, missing: 'x' }), undefined);
 });
 
 test('in a browser: the lineup and Details save the times typed; a time that can\'t be read is refused with why, once', { skip: browserSkip, timeout: 180000 }, async (t) => {
@@ -94,17 +102,23 @@ test('in a browser: the lineup and Details save the times typed; a time that can
   const asked = await box(0);
   assert.deepEqual([asked.value, asked.invalid], ['?10:30', 'true'], 'refused, not taken as empty or as 10:30 AM');
   assert.match(asked.why, /Add AM or PM/);
-  assert.match(await page.eval('document.querySelector("[data-view] fieldset").innerText'), /Add AM or PM: 10:30 PM, or 10:30 AM\./);
+  // Said right under its box (a phone's keyboard hides the foot of the row), not at the foot.
+  const said = (n) => page.eval(`(() => { const i = document.querySelectorAll('[data-view] input.time-field')[${n}]; const m = i.nextElementSibling; return m?.classList.contains('time-error') && !m.hidden ? m.textContent : ''; })()`);
+  assert.equal(await said(0), 'Add AM or PM: 10:30 PM, or 10:30 AM.');
+  assert.equal((await page.eval('document.querySelector("[data-view] fieldset").innerText')).match(/Add AM or PM/g).length, 1, 'once');
   // A redraw (adding an act) keeps it as typed, still asked: not turned into 10:30 AM.
   await press('Add an act');
   await page.waitFor('document.querySelectorAll("[data-view] input.time-field").length === 2', 5000);
   const redrawn = await box(0);
   assert.deepEqual([redrawn.shown, redrawn.value, redrawn.invalid], ['10:30', '?10:30', 'true']);
+  await page.eval('document.querySelectorAll("[data-view] input.time-field")[1].focus()');
   await press('Save lineup');
   await press('Save lineup');
   await page.waitFor('document.querySelector(".toast.error")', 5000);
   await new Promise((r) => setTimeout(r, 300));
-  assert.deepEqual(await toasts(), ['Act 1 needs a start time and a name.'], 'said once, not stacked');
+  // In the box's own words, naming the act; the focus on the box, not lost.
+  assert.deepEqual(await toasts(), ['Act 1, Trapment: add AM or PM: 10:30 PM, or 10:30 AM.'], 'said once, not stacked');
+  assert.equal(await page.eval('document.activeElement === document.querySelectorAll("[data-view] input.time-field")[0]'), true);
   assert.equal((await call('GET', `/shows/${show.id}`)).body.lineup[0].time, '21:00', 'nothing saved');
   // 10:30pm: read, written out in full; the new act's row goes; saved as 22:30.
   await type(0, '10:30pm');
@@ -126,8 +140,21 @@ test('in a browser: the lineup and Details save the times typed; a time that can
   const under = await page.eval(`(() => { const i = document.querySelectorAll('[data-view] input.time-field')[${goLiveIndex}]; const m = i.nextElementSibling; return { text: m?.textContent, hidden: m?.hidden, tied: (i.getAttribute('aria-describedby') || '').split(' ').includes(m?.id) }; })()`);
   assert.deepEqual(under, { text: '"soon" isn\'t a time. Type it like 9:30 PM.', hidden: false, tied: true });
   await press('Save details');
-  await page.waitFor('[...document.querySelectorAll(".toast.error span")].some((s) => /go-live time/.test(s.textContent))', 5000);
+  await page.waitFor('[...document.querySelectorAll(".toast.error span")].some((s) => s.textContent === "The go-live time: \\"soon\\" isn\'t a time. Type it like 9:30 PM.")', 5000);
   assert.equal((await call('GET', `/shows/${show.id}`)).body.goLive, undefined, 'nothing saved');
+  // The hints follow the form, not the show as saved: the night, the boundary, the go-live; an act
+  // set before the go-live is said.
+  const hintOf = (label) => page.eval(`(() => { const l = [...document.querySelectorAll('[data-view] label')].find((x) => x.textContent === ${JSON.stringify(label)}); return document.getElementById(l.htmlFor).closest('.field').querySelector('.hint').textContent; })()`);
+  await type(goLiveIndex, '11pm');
+  assert.match(await hintOf('Goes live at'), /^When the countdown ends: Sat, Oct 31, 11:00 PM\./);
+  assert.match(await page.eval('document.querySelector("[data-view] .card").innerText'), /Trapment starts at 10:30 PM, before the show goes live at 11:00 PM: on Auto the countdown covers their set\./);
+  const setDate = (ymd) => page.eval(`(() => { const d = document.querySelector('[data-view] input[type=date]'); d.value = ${JSON.stringify(ymd)}; d.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await setDate('2026-11-07');
+  assert.match(await hintOf('Goes live at'), /^When the countdown ends: Sat, Nov 7, 11:00 PM\./);
+  assert.match(await hintOf('Day boundary'), /plays after midnight, on Sun, Nov 8,/);
+  await type(goLiveIndex, '1:30 am');
+  assert.match(await hintOf('Goes live at'), /^When the countdown ends: Sun, Nov 8, 1:30 AM\./, 'before the day boundary: the next day');
+  await setDate('2026-10-31');
   await type(goLiveIndex, '1030 pm');
   assert.equal((await box(goLiveIndex)).shown, '10:30 PM');
   assert.equal(await page.eval(`document.querySelectorAll('[data-view] input.time-field')[${goLiveIndex}].nextElementSibling.hidden`), true, 'the words go once it\'s right');

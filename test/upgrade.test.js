@@ -567,7 +567,7 @@ test('upgrading the NAS: a CTD Relay connection paired for every profile that fo
   const before = await start(t, config);
   const token = ms.addToken({ profileId: null });
   const made = before.connectors.create({ connector: 'ctd-multistream', config: { baseUrl: `${ms.url}/api/v1`, profile: 'default' }, secrets: { token } });
-  before.overlays.create({ slug: 'takeover', template: { id: 'com.dprtmnt.takeover', version: '1.0.0' }, settings: {}, connections: 'all' });
+  before.overlays.create({ slug: 'takeover', template: { id: 'com.dprtmnt.takeover', version: '1.1.0' }, settings: {}, connections: 'all' });
   const was = () => before.connectors.get(made.id);
   await until(() => ['connected', 'degraded'].includes(was().health.status) && was().name === 'Relay · Miami or Bust', 8000, 'following the default profile');
   ms.emit('chat.message', { id: 'twitch:x1', platform: 'twitch', destinationId: 'd-tw', user: { id: 'twitch:1', name: 'Fan', roles: [] }, text: 'hi', fragments: [{ type: 'text', text: 'hi' }], kind: 'message', ts: Date.now() }, { platform: 'twitch', destination: 'd-tw' });

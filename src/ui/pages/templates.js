@@ -243,7 +243,7 @@ export async function list(view, ctx) {
     if (state.category) qs.set('category', state.category);
     if (state.q.trim()) qs.set('q', state.q.trim());
     const target = `#/templates${qs.toString() ? `?${qs}` : ''}`;
-    if (location.hash !== target) history.replaceState(null, '', target);
+    if (location.hash !== target) history.replaceState(history.state, '', target);
   }
 
   function renderGallery() {

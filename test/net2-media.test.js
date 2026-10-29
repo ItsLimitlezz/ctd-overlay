@@ -12,7 +12,7 @@ import { mediaUrl, mediaUsers } from '../src/media/library.js';
 import { defer, memoryLogger, signedIn, tempDir } from './helpers.js';
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(256, 7)]);
-const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.0.0' };
+const TAKEOVER = { id: 'com.dprtmnt.takeover', version: '1.1.0' };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const dayIn = (days) => new Date(Date.now() + days * DAY_MS).toISOString().slice(0, 10);
 // A sequence that stops what plays now, and plays a clip a minute later.

@@ -11,6 +11,21 @@
 //   #/live?overlay=<slug>           an overlay outside a show, on its own: the same overlay panel,
 //                                   with its own scenes
 //
+// An overlay outside a show whose template reads who's on from one (set times, title cards, and its
+// countdown and REC) says so on its card and first in its console, with "Make a show from this
+// overlay" and "Add it to a show" (show-from-overlay.js): its title cards have no act to name until
+// it is in one. A clock that reads only a show's times may have its own, so Live says nothing of it.
+//
+// An action pressed says what it did (live-overlay.js firedText): on air, on air until hidden,
+// hidden or stopped, or sent; in a show half upgraded, which overlays it didn't reach; one their
+// settings draw nothing for (TAKEOVER's chips outside its event look), that it shows nothing, and
+// why, said under the buttons too. Who's on: Next act early skips what was still to come for the
+// acts before (said with it); with nobody picked, it is the act the lineup's times are in.
+// An overlay on an older version of
+// its template than the newest installed says so quietly, on its stream's card and in the console,
+// with a link to its Version tab: a show's overlays of one template upgraded together, before
+// going live; while the stream runs, after the show.
+//
 // Everything here is a command (no If-Match, README H16). The streams page polls every 3 s, and at
 // once when a connection's status changes; a show's console polls the show and its cues every 2 s,
 // and updates the page in place, so focus, scroll and loaded previews stay; countdowns tick every
@@ -18,8 +33,9 @@
 import * as api from '../api.js';
 import { badge, clock, confirm, countdown, empty, every, field, h, isPhone, menu, mount, notice, pageHead, preview, run, toast } from '../dom.js';
 import { byObsWords } from '../obs.js';
+import { needsShow, showNotice, showWords, suggestedShow } from '../show-from-overlay.js';
 import { isRunning, streamStatus } from '../streams.js';
-import { overlayPanel } from './live-overlay.js';
+import { firedText, MEDIA_ACTIONS, overlayPanel, quietLine, readDrawn, withoutMedia } from './live-overlay.js';
 
 const PREVIEWS_KEY = 'skp.live.previews';
 const CUES_KEY = 'skp.live.cues';
@@ -30,6 +46,7 @@ const MAX_LIVE_PREVIEWS = 2; // H13
 const PREVIEW_BASIS_H = 90; // px: the height previews are laid out at before they grow
 const PREVIEW_MAX_H = 280; // px: the tallest they grow
 const GRACE_MS = 5 * 60 * 1000; // a cue later than this is missed, not fired (09 §9.4)
+const LIVE_MS = 12 * 60 * 60 * 1000; // a go-live counts this long (09 §9.1)
 const COOL_MS = 1200; // after "Trigger now", "Skip" or "Next act": a double tap can't hit the next one
 const NO_CONTROL = 'Your role can watch the show here but not run it, so its buttons are off. Ask the owner or an admin to make you an operator.';
 
@@ -40,6 +57,7 @@ const remembered = {
 };
 
 const list = (v) => (Array.isArray(v) ? v : []);
+const andList = (items, and = 'and') => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} ${and} ${items[items.length - 1]}`);
 const instant = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? t : undefined; };
 const actName = (s) => (s?.b2b ? `${s.name} b2b ${s.b2b}` : s?.name || 'An act');
 const set = (el, text) => { if (el.textContent !== text) el.textContent = text; };
@@ -68,7 +86,7 @@ function catalog(manifests) {
     }
     for (const a of list(m.actions)) {
       if (!a || typeof a.id !== 'string' || actions.some((x) => x.key === a.id)) continue;
-      actions.push({ key: a.id, label: a.label || a.id });
+      actions.push({ key: a.id, label: a.label || a.id, durationMs: a.durationMs });
     }
   }
   // A scene name (an id or a core) as the button that takes it: by id first, then by core.
@@ -120,6 +138,64 @@ async function loadMembers(slugs, { urls }) {
     complete,
     members: slugs.map((slug, i) => ({ slug, overlay: overlays[i], manifest: manifestOf(overlays[i]), urls: list(links[i]?.urls) })),
   };
+}
+
+// ---- template upgrades (04 §4.10) --------------------------------------------------------------
+// An overlay stays on the version of its template it was made with (a bundled template too), so a
+// newer version installed changes nothing until the overlay is upgraded, on its Version tab. Live
+// says so quietly, to whoever can upgrade: a show's overlays of one template go together, before
+// going live (half upgraded, an action reaches only some of them, a landscape one and not its
+// vertical twin, and their settings differ); while the stream runs, after the show (an upgrade
+// reloads it in OBS).
+
+// The installed templates by id, each with its versions newest first (GET /templates): an empty
+// Map for a role that can't upgrade, undefined when they couldn't be read (read again later).
+async function installedTemplates(ctx) {
+  if (!ctx.can('templates:read') || !ctx.can('overlays:write')) return new Map();
+  try {
+    return new Map((await api.all('/api/v1/templates')).filter((t) => typeof t?.id === 'string').map((t) => [t.id, t]));
+  } catch {
+    return undefined;
+  }
+}
+// The overlays on an older version of their template than the newest installed, by template:
+// [{ name, latest, behind: [overlay], of: how many of the overlays are of it }]. One whose version
+// isn't installed is left out: its template is missing, which its own page says.
+function olderOf(overlays, templates) {
+  const groups = new Map();
+  for (const o of overlays) {
+    const t = templates?.get(o?.template?.id);
+    const versions = list(t?.versions).map((v) => v?.version);
+    if (!t || !versions.includes(o.template.version)) continue;
+    if (!groups.has(t.id)) groups.set(t.id, { name: t.name || t.id, latest: versions[0], behind: [], of: 0 });
+    const g = groups.get(t.id);
+    g.of += 1;
+    if (o.template.version !== versions[0]) g.behind.push(o);
+  }
+  return [...groups.values()].filter((g) => g.behind.length);
+}
+const olderKey = (groups) => JSON.stringify(groups.map((g) => [g.name, g.latest, g.of, g.behind.map((o) => [o.slug, o.template.version])]));
+// A muted line per template, each overlay's name a link to its Version tab. show: the overlays are a
+// show's; live: its stream runs; compact: a stream's card, without the why.
+function upgradeNote(groups, { show = false, live = false, compact = false } = {}) {
+  return groups.map((g) => {
+    const n = g.behind.length;
+    const it = n === 1 ? 'it' : 'them';
+    const where = n === 1 ? 'on its Version tab' : 'each on its Version tab';
+    const versions = [...new Set(g.behind.map((o) => o.template.version))];
+    const all = n === g.of;
+    let advice;
+    if (live) advice = `upgrade ${it}${n === 1 ? ` ${where}` : `, ${where},`} after the ${show ? 'show' : 'stream'}, since an upgrade reloads ${it} in OBS.`;
+    else if (!show || g.of === 1) advice = `upgrade ${it} ${where} before going live.`;
+    else {
+      advice = `upgrade ${it} ${all ? 'together' : 'too'}, ${where}, before going live.`;
+      if (!compact) advice += ` ${all ? 'Half upgraded, an action reaches only some of them' : 'Until then, an action reaches only some of the show\'s overlays of that template'}, and their settings differ.`;
+    }
+    const names = g.behind.map((o) => h('a', { href: `#/overlays/${api.seg(o.slug)}?tab=version` }, o.slug));
+    return h('p.small.muted.upgrade-note',
+      names.flatMap((a, i) => (i === 0 ? [a] : [i === n - 1 ? ' and ' : ', ', a])),
+      ` ${n === 1 ? 'is' : 'are'} on ${versions.length === 1 ? `version ${versions[0]}` : 'older versions'} of ${g.name}, and ${g.latest} is installed: ${advice}`);
+  });
 }
 
 const ALL_STREAMS = { label: 'All streams', href: '#/live' };
@@ -176,20 +252,49 @@ async function streams(view, ctx) {
   let order = '';
   let lastOk = Date.now();
   let loaded = false;
+  let known = { shows: [], overlays: [] }; // as last read: the show to suggest for an overlay in none
   const grid = h('div.grid');
   const emptyBox = h('div', { hidden: true });
   const problemBox = h('div', { hidden: true });
   const intro = h('p.muted', 'A stream is a show (its overlays run together) or an overlay outside a show. Each is fed by its own connections, so several can be on air at once. Running streams come first.');
 
+  // The pinned template of each overlay outside a show, read once per version: whether it reads a
+  // show (set times, the countdown, title cards) that it isn't in.
+  const manifests = new Map(); // "id@version" → its manifest (null: none)
+  async function learnManifests(overlays) {
+    if (!ctx.can('templates:read')) return;
+    const wanted = new Map();
+    for (const o of overlays) {
+      const key = pinnedKey(o);
+      if (key && !manifests.has(key)) wanted.set(key, o.template);
+    }
+    await Promise.all([...wanted].map(async ([key, t]) => {
+      try {
+        manifests.set(key, (await api.get(`/api/v1/templates/${api.seg(t.id)}/versions/${api.seg(t.version)}`))?.manifest || null);
+      } catch (err) {
+        if (err?.status === 404) manifests.set(key, null); // not installed: the card says nothing of it
+      }
+    }));
+  }
+
+  // The installed templates, read once (again only if that failed): whose overlays are behind.
+  let templates;
   async function read() {
-    const [shows, overlays] = await Promise.all([canShows ? api.all('/api/v1/shows') : [], api.all('/api/v1/overlays')]);
+    const [shows, overlays, installed] = await Promise.all([canShows ? api.all('/api/v1/shows') : [], api.all('/api/v1/overlays'), templates || installedTemplates(ctx)]);
+    templates = installed;
+    const outside = overlays.filter((o) => o && typeof o.slug === 'string' && !o.show);
+    const bySlug = new Map(overlays.filter((o) => o && typeof o.slug === 'string').map((o) => [o.slug, o]));
+    await learnManifests(outside);
+    known = { shows, overlays };
     const all = [
       ...shows.filter((s) => s && typeof s.id === 'string').map((s) => ({
         key: `show:${s.id}`, show: true, name: s.name || 'Show', stream: s.stream, rec: instant(s.recStartedAt) !== undefined,
         overlays: list(s.members).length, href: `#${liveHref({ show: s.id })}`,
+        older: olderOf(list(s.members).map((slug) => bySlug.get(slug)).filter(Boolean), templates),
       })),
-      ...overlays.filter((o) => o && typeof o.slug === 'string' && !o.show).map((o) => ({
+      ...outside.map((o) => ({
         key: `overlay:${o.id}`, show: false, name: o.slug, stream: o.stream, rec: false, overlays: 1, href: `#${liveHref({ overlay: o.slug })}`,
+        overlay: o, manifest: manifests.get(pinnedKey(o)) || undefined, older: olderOf([o], templates),
       })),
     ];
     return all.map((s, i) => ({ s, i }))
@@ -201,10 +306,33 @@ async function streams(view, ctx) {
     const c = { status: streamStatus({ compact: true }) };
     c.title = h('h2.truncate');
     c.meta = h('p.small.muted');
+    c.needs = h('div.needs-show-slot', { hidden: true });
+    c.upgrade = h('div.upgrade-slot', { hidden: true });
     c.open = h('a.btn.primary', {}, 'Open');
-    c.el = h('article.card.stream-card', h('div.card-head', c.title), c.meta, c.status.el, h('div.open', c.open));
+    c.el = h('article.card.stream-card', h('div.card-head', c.title), c.meta, c.status.el, c.needs, c.upgrade, h('div.open', c.open));
     cards.set(key, c);
     return c;
+  }
+  // Its overlays on an older version of their template: a muted line, drawn again only when it
+  // changes (a link keeps its focus through the polls).
+  function drawUpgrade(c, s) {
+    const live = isRunning(s.stream, s.rec);
+    const key = s.older.length ? `${olderKey(s.older)}|${live}` : '';
+    if (key === c.upgradeKey) return;
+    c.upgradeKey = key;
+    c.upgrade.hidden = !key;
+    mount(c.upgrade, key ? upgradeNote(s.older, { show: s.show, live, compact: true }) : null);
+  }
+  // An overlay outside a show whose template reads one: the notice, drawn again only when it
+  // changes (a button pressed keeps its focus through the polls).
+  function drawNeeds(c, s) {
+    const on = !s.show && needsShow(s.overlay, s.manifest);
+    const suggested = on ? suggestedShow(s.overlay, known.shows, known.overlays) : undefined;
+    const key = on ? JSON.stringify([s.overlay.id, s.overlay.slug, showWords(s.manifest), known.shows.length > 0, suggested?.show.id, suggested?.why]) : '';
+    if (key === c.needsKey) return;
+    c.needsKey = key;
+    c.needs.hidden = !on;
+    mount(c.needs, on ? showNotice(ctx, { overlay: s.overlay, manifest: s.manifest, shows: known.shows, overlays: known.overlays, compact: true, onAdded: () => refresh() }) : null);
   }
   function draw(all) {
     const keys = new Set(all.map((s) => s.key));
@@ -216,6 +344,8 @@ async function streams(view, ctx) {
       c.open.setAttribute('href', s.href);
       c.open.setAttribute('aria-label', `Open ${s.name}`);
       c.status.update(s.stream, { rec: s.rec });
+      drawNeeds(c, s);
+      drawUpgrade(c, s);
       return c.el;
     });
     // Moved only when the order changed: moving a card takes the focus off its button.
@@ -278,8 +408,9 @@ async function streams(view, ctx) {
 // ---- an overlay outside a show -----------------------------------------------------------------
 async function overlayConsole(view, ctx, ref) {
   let overlay;
+  let templates;
   try {
-    overlay = await api.get(`/api/v1/overlays/${api.seg(ref)}`);
+    [overlay, templates] = await Promise.all([api.get(`/api/v1/overlays/${api.seg(ref)}`), installedTemplates(ctx)]);
   } catch (err) {
     if (err.status === 401) return undefined;
     if (err.status !== 404) { failed(view, ctx, 'Live', err); return undefined; }
@@ -297,13 +428,36 @@ async function overlayConsole(view, ctx, ref) {
   const canControl = ctx.can('overlays:control');
   const status = streamStatus();
   status.update(overlay.stream);
+  // On an older version of its template: a muted line under its status, as it is read every 3 s.
+  const upgradeBox = h('div.upgrade-slot', { hidden: true });
+  let upgradeKey;
+  const drawUpgrade = (o) => {
+    const older = olderOf([o], templates);
+    const live = isRunning(o.stream);
+    const key = older.length ? `${olderKey(older)}|${live}` : '';
+    if (key === upgradeKey) return;
+    upgradeKey = key;
+    upgradeBox.hidden = !key;
+    mount(upgradeBox, key ? upgradeNote(older, { live }) : null);
+  };
+  drawUpgrade(overlay);
   const alerts = alertsCard(ctx, { queue: overlay.id });
-  const panel = overlayPanel(ctx, { ref: overlay.id, onOverlay: (o) => status.update(o.stream) });
+  // Put in a show from here: its console is the show's now, with this overlay chosen.
+  const panel = overlayPanel(ctx, {
+    ref: overlay.id,
+    onOverlay: (o) => {
+      status.update(o.stream);
+      drawUpgrade(o);
+    },
+    onAdded: (show) => ctx.navigate(liveHref({ show: show.id, overlay: overlay.slug })),
+  });
   mount(view,
     pageHead(overlay.slug, { crumbs: [ALL_STREAMS] }),
     h('div.stack',
       canControl ? null : notice(NO_CONTROL, 'warn'),
-      h('section.card', h('h2.sr-only', 'Stream status'), status.el),
+      // Set times, the countdown and title cards need a show: said first (show-from-overlay.js).
+      panel.needs,
+      h('section.card', h('h2.sr-only', 'Stream status'), status.el, upgradeBox),
       alerts.el,
       panel.el));
   return () => {
@@ -323,9 +477,10 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
   let cmdSeq = 0; // a poll that started before a command finished is not applied
   const timers = new Set();
 
-  const [initialCues, loaded] = await Promise.all([
+  const [initialCues, loaded, templates] = await Promise.all([
     api.all(`${base}/cues`).then((items) => ({ items }), (err) => ({ err })),
     loadMembers(list(show.members), { urls: canPreview }),
+    installedTemplates(ctx),
   ]);
   let cues = list(initialCues.items);
   let members = loaded.members;
@@ -418,12 +573,19 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
     if (out) applyShow(out);
   }
   const goLiveChip = h('span.chip', { hidden: true });
+  // On Auto past its go-live with no REC (made, or started on Auto, after it; REC reset): its
+  // overlays show it live with no REC counter. Said, with what starts it counting.
+  const autoNote = h('p.small', { hidden: true });
   const stream = streamStatus();
+  // Members on an older version of their template: a muted line, to upgrade them before going live.
+  const upgradeBox = h('div.upgrade-slot', { hidden: true });
   const statusCard = h('div.card',
     h('h2.sr-only', 'Show status'),
     h('div.stack',
       h('div.spread', h('div.row', recBadge, recTime, recOff, goLiveChip), h('div.row', recStart, recMenu)),
-      stream.el));
+      autoNote,
+      stream.el,
+      upgradeBox));
 
   // ---- previews (H13: lite and on tap on a phone; at most two live at once) --------------------
   let previewsOpen = (() => {
@@ -530,7 +692,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
       mount(overlayBox);
       if (!initial) buildPreviews();
     }
-    if (!initial && ctx.alive()) history.replaceState(null, '', `#${liveHref({ show: show.id, overlay: slug })}`);
+    if (!initial && ctx.alive()) history.replaceState(history.state, '', `#${liveHref({ show: show.id, overlay: slug })}`);
   }
 
   // ---- scenes ----------------------------------------------------------------------------------
@@ -573,14 +735,61 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
   // ---- actions ---------------------------------------------------------------------------------
   const actionsBody = h('div');
   const actionsCard = h('div.card', h('div.card-head', h('h2', 'Actions')), actionsBody);
+  // Under the buttons: the actions the members' settings draw nothing for now (TAKEOVER's chips
+  // outside its event look), as the members were read; a press reads them again.
+  const quietNote = h('p.small.muted', { hidden: true });
+  function drawQuiet() {
+    const words = quietLine(cat.actions.map((a) => ({ id: a.key, label: a.label })), members.filter((m) => m.overlay));
+    quietNote.hidden = !words;
+    set(quietNote, words);
+  }
   function buildActions() {
     if (!cat.actions.length) {
       return mount(actionsBody, h('p.muted', members.length ? 'The show\'s templates have no actions.' : 'Actions appear once the show has overlays.'));
     }
-    return mount(actionsBody, h('div.pad', { role: 'group', 'aria-label': 'Actions' }, cat.actions.map((a) => {
-      const b = h('button.btn', { type: 'button', disabled: !canControl, onclick: () => command(b, () => api.post(`${base}/triggers/${api.seg(a.key)}`, {}), { done: `${a.label} on air` }) }, a.label);
+    mount(actionsBody, h('div.pad', { role: 'group', 'aria-label': 'Actions' }, cat.actions.map((a) => {
+      const b = h('button.btn', { type: 'button', disabled: !canControl, onclick: async () => {
+        const out = await command(b, async () => {
+          const sent = await api.post(`${base}/triggers/${api.seg(a.key)}`, {});
+          const [unset, drawn] = await Promise.all([withoutMedia(a.key, list(sent?.overlays)), readDrawn(a.key, list(sent?.overlays))]);
+          return { sent, unset, drawn };
+        });
+        if (out && !stopped) firedToast(a, out);
+      } }, a.label);
       return b;
-    })));
+    })), quietNote);
+    return drawQuiet();
+  }
+  // What an action did (firedText), and where it didn't: the overlays of a template it reached that
+  // it didn't (on a version without it: a show half upgraded), those with no media chosen for it
+  // (Play The Line's clip), nothing played when none has, and those whose settings draw nothing for
+  // it (read as they are now: the line under the buttons follows).
+  function firedToast(a, { sent, unset, drawn }) {
+    const reached = list(sent?.overlays);
+    const bare = unset.map((o) => o.slug);
+    const what = MEDIA_ACTIONS[a.key]?.what;
+    for (const { overlay } of drawn) {
+      const m = members.find((x) => x.overlay?.id === overlay.id);
+      if (m) m.overlay = overlay;
+    }
+    if (drawn.length) drawQuiet();
+    const quiet = drawn.filter((x) => x.why);
+    if (bare.length && bare.length >= reached.length) {
+      toast(`${what} isn't set on ${andList(bare, 'or')}, so nothing plays. Choose one in ${bare.length === 1 ? 'the overlay\'s' : 'each overlay\'s'} settings.`, { kind: 'error' });
+      return;
+    }
+    if (quiet.length && quiet.length >= reached.length) {
+      toast(`${a.label} sent, but it shows nothing: ${quiet[0].why}.`);
+      return;
+    }
+    const kinds = new Set(members.filter((m) => reached.includes(m.slug)).map((m) => m.overlay?.template?.id));
+    const missed = members.filter((m) => m.overlay && !reached.includes(m.slug) && kinds.has(m.overlay.template?.id)).map((m) => m.slug);
+    const more = [];
+    if (missed.length) more.push(`It didn't reach ${andList(missed)}: ${missed.length === 1 ? 'its' : 'their'} version of the template doesn't have it.`);
+    if (bare.length) more.push(`${what} isn't set on ${andList(bare, 'or')}, so nothing plays there: choose one in ${bare.length === 1 ? 'its' : 'their'} settings.`);
+    if (quiet.length) more.push(`It shows nothing on ${andList(quiet.map((q) => q.overlay.slug))}: ${quiet[0].why}.`);
+    const done = firedText({ id: a.key, label: a.label, durationMs: a.durationMs });
+    toast(more.length ? `${done}. ${more.join(' ')}` : done, more.length ? { ms: 8000 } : undefined);
   }
 
   // ---- timeline: the next cue ------------------------------------------------------------------
@@ -737,14 +946,24 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
   const slotOrder = () => list(show.lineup).map((s, i) => ({ s, i })).filter((x) => x.s && typeof x.s === 'object')
     .sort((a, b) => (instant(a.s.startAt) ?? 0) - (instant(b.s.startAt) ?? 0) || a.i - b.i);
   const currentSlot = () => (Number.isInteger(show.currentSlot) && show.currentSlot >= 0 && show.currentSlot < list(show.lineup).length ? show.currentSlot : undefined);
+  // The act whose set the lineup's times are in now, if any (what a template that goes by the
+  // clock shows while nobody is picked).
+  const byClock = () => slotOrder().filter((x) => (instant(x.s.startAt) ?? Infinity) <= api.serverNow()).pop();
+  // Next act: the one after the act on; with nobody on, the act whose set it is by the clock (else
+  // the first), so it never offers to go back to the opener mid-show.
   function nextActOf() {
     const ord = slotOrder();
     const cur = currentSlot();
-    const at = cur === undefined ? -1 : ord.findIndex((x) => x.i === cur);
-    return ord[at + 1];
+    if (cur === undefined) return byClock() || ord[0];
+    return ord[ord.findIndex((x) => x.i === cur) + 1];
   }
+  // An act put on skips what was still to come for the acts before it (09 §9.3): said with it.
+  const skippedWords = (s) => {
+    const n = Number.isInteger(s?.count) ? s.count : 0;
+    return n ? `. ${n} cue${n === 1 ? '' : 's'} still to come for ${andList(list(s.acts).map(String))} ${n === 1 ? 'was' : 'were'} skipped` : '';
+  };
   async function setSlot(index, button, name) {
-    const out = await command(button, () => api.put(`${base}/slot`, { slot: index }), { done: index === null ? 'Nobody is on now' : `${name} is on` });
+    const out = await command(button, () => api.put(`${base}/slot`, { slot: index }), { done: (r) => (index === null ? 'Nobody is on now' : `${name} is on${skippedWords(r?.cuesSkipped)}`) });
     if (out) applyShow(out);
     return out;
   }
@@ -778,11 +997,13 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
     const empty = lineup.length === 0;
     for (const el of [onNow, slotControls, lineupList]) el.hidden = empty;
     lineupEmpty.hidden = !empty;
-    set(onNow, cur === undefined ? 'Nobody is on.' : `On now: ${actName(lineup[cur])}`);
+    const clockAct = cur === undefined && show.nobodyOn !== true ? byClock() : undefined;
+    set(onNow, cur !== undefined ? `On now: ${actName(lineup[cur])}` : clockAct ? `Nobody picked yet: by the lineup's times, it is ${actName(clockAct.s)}'s set.` : 'Nobody is on.');
     const next = nextActOf();
     set(nextAct, next ? `Next act: ${actName(next.s)}` : 'Last act is on');
     setDisabled(nextAct, !canControl || !next);
-    setDisabled(nobody, !canControl || cur === undefined);
+    // With nobody picked, Nobody on still says so to a template that would go by the clock.
+    setDisabled(nobody, !canControl || (cur === undefined && !clockAct));
   }
 
   // ---- state from the server -------------------------------------------------------------------
@@ -795,6 +1016,23 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
     recOff.hidden = recOn;
     recStart.hidden = recOn;
     recMenu.hidden = !recOn;
+    const goLive = instant(show.goLiveAt);
+    const since = goLive === undefined ? undefined : api.serverNow() - goLive;
+    const liveNoRec = !recOn && cat.sceneKey(show.scene) === 'auto' && since >= 0 && since < LIVE_MS;
+    autoNote.hidden = !liveNoRec;
+    set(autoNote, liveNoRec ? `On Auto past its go-live (${clock(show.goLiveAt, tz())}), the overlays show the show live, with no REC timecode. Start REC counts from now; taking Auto again counts from ${clock(show.goLiveAt, tz())}.` : '');
+    renderUpgrade();
+  }
+  // Drawn again only when it changes (a link keeps its focus through the polls).
+  let upgradeKey;
+  function renderUpgrade() {
+    const older = olderOf(members.map((m) => m.overlay).filter(Boolean), templates);
+    const live = isRunning(show.stream, instant(show.recStartedAt) !== undefined);
+    const key = older.length ? `${olderKey(older)}|${live}` : '';
+    if (key === upgradeKey) return;
+    upgradeKey = key;
+    upgradeBox.hidden = !key;
+    mount(upgradeBox, key ? upgradeNote(older, { show: true, live }) : null);
   }
   // Every second: REC, go-live, the next cue's countdown and a timed scene's return, in server time.
   function tick() {
@@ -855,6 +1093,7 @@ async function showConsole(view, ctx, first, shows, { switchTo, reopen, overlay:
       if (urlsChanged) buildPreviews();
       renderScenes();
       renderTimeline();
+      renderUpgrade();
     } finally {
       reloading = false;
     }

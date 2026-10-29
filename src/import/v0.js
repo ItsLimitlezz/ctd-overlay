@@ -43,8 +43,15 @@ const CLIP = Symbol('the imported clip');
 const V0 = Object.freeze({
   golive: '23:00', venue: 'DPRTMNT · TORONTO', tagline: 'SATURDAYS · LIVE FROM TORONTO', doors: 'DOORS 10:30PM',
   presents: 'D/PRTMNT PRESENTS', scanlines: true, ticker: ['DPRTMNT TAKEOVER', 'EVERY SATURDAY', 'TORONTO', 'DOORS 10:30PM'],
-  cardSec: 7, npSec: 22, clubIntroMin: 5, npIntervalMin: 10, baseUrl: '', tickerOn: false, viewersMode: '', viewersText: '', event: '',
+  cardSec: 7, npSec: 22, delaySec: 210, clubIntroMin: 5, npIntervalMin: 10, baseUrl: '', tickerOn: false, viewersMode: '', viewersText: '', event: '',
 });
+// v0's timings as the template's settings: [v0 key, setting, least, most] (template.json's bounds,
+// whole seconds).
+const TIMINGS = [['cardSec', 'cardSec', 2, 60], ['npSec', 'npSec', 3, 120], ['delaySec', 'autoCardSec', 0, 3600]];
+// What an overlay still on TAKEOVER 1.0.0 does where 1.1.0 has a setting the import gives: v0's
+// defaults (the title card 7 s, Now playing 22 s, the chips and Now playing on; the card by itself
+// it hasn't, and v0's default delay is 1.1.0's). A v0 value that is one of these loses nothing.
+const BEFORE_1_1 = Object.freeze({ cardSec: V0.cardSec, npSec: V0.npSec, autoCardSec: V0.delaySec, scheduleChips: true, nowPlayingBar: true });
 const EV = Object.freeze({ star: 'a', scan: 1, chip: 1, lockup: 1, sched: 1, np: 1, vu: 1, poster: 1, stinger: 0, headliner: '', addr: '' });
 // v0's event packs (public/shared/events.js) and its star treatments.
 const PACKS = { vikstarr: { artist: 'VIKKSTAR' } };
@@ -239,7 +246,7 @@ function fieldsOf(setup, where, warn) {
       out[key] = V0[key];
     }
   }
-  for (const key of ['cardSec', 'npSec', 'clubIntroMin', 'npIntervalMin']) {
+  for (const key of ['cardSec', 'npSec', 'delaySec', 'clubIntroMin', 'npIntervalMin']) {
     const v = setup[key];
     if (v === undefined || v === null || v === '') out[key] = V0[key];
     else if ((typeof v === 'number' || typeof v === 'string') && Number.isFinite(Number(v))) out[key] = Number(v);
@@ -329,8 +336,9 @@ function headlinerOf(f, slots) {
 
 const flag = (v, fallback) => (v === undefined || v === null ? fallback : Boolean(v) && v !== '0');
 
-// The overlay's settings as v0 showed them (the template's defaults are taken out later).
-function settingsOf(f, look, headliner, where, warn) {
+// The overlay's settings as v0 showed them (the template's defaults are taken out later). showRec:
+// the REC switch on v0's control page (live.json), which is the overlay's every night.
+function settingsOf(f, look, headliner, where, warn, { showRec } = {}) {
   const s = { look, venue: f.venue, tagline: f.tagline, doors: f.doors, presents: f.presents, ticker: f.tickerOn, viewers: f.viewersMode === 'live' };
   const items = [];
   for (const t of f.ticker) {
@@ -338,6 +346,21 @@ function settingsOf(f, look, headliner, where, warn) {
     else warn(`${where}: the ticker item ${quote(t)} isn't text; left out.`);
   }
   s.tickerItems = items;
+  // Without live.json, v0 left no word on REC: the overlay keeps what it has.
+  if (showRec !== undefined) s.rec = showRec;
+  // The settings below are new in the template's 1.1.0, and each is given, its default too, so an
+  // import again puts back what v0 has now (fitTemplate keeps quiet about a default an overlay
+  // still on 1.0.0 can't take: that version shows it anyway).
+  // The title card's and Now playing's hold times, and the delay of the title card that shows by
+  // itself. v0 showed that card on its standalone links only: on the bus, which a show is, the
+  // operator and the rundown fired the cards, so it stays switched off and only its delay comes.
+  for (const [key, to, min, max] of TIMINGS) {
+    // v0 read a hold of 0 as its default (server.js: +cfg.cardSec || 7).
+    const v = key !== 'delaySec' && f[key] === 0 ? V0[key] : f[key];
+    const n = Math.min(max, Math.max(min, Math.round(v)));
+    if (n !== v) warn(`${where}: ${key} ${v} becomes ${n} (whole seconds, ${min} to ${max}).`);
+    s[to] = n;
+  }
   if (look === 'event') {
     const o = f.evOpts;
     // The event look had its own scanline switch (evOpts.scan); the setup's was hidden there.
@@ -350,6 +373,9 @@ function settingsOf(f, look, headliner, where, warn) {
     s.lockup = flag(o.lockup, true);
     s.vu = flag(o.vu, true);
     s.stinger = flag(o.stinger, false);
+    // Its opening / on-at chips and its Now playing (new in 1.1.0).
+    s.scheduleChips = flag(o.sched, true);
+    s.nowPlayingBar = flag(o.np, true);
     if (typeof o.addr === 'string' && o.addr.trim()) s.address = o.addr.trim();
     // A headliner who isn't on the lineup still shows by name, as v0 did.
     if (headliner && !headliner.matched) s.headliner = headliner.name;
@@ -358,14 +384,22 @@ function settingsOf(f, look, headliner, where, warn) {
 }
 
 // The values worth saving: those the template accepts that differ from its defaults. considered:
-// the keys whose values it accepted (an existing overlay's other settings are kept).
-export function settingsToSave(manifest, values, { where = 'the overlay', warn = () => {} } = {}) {
+// the keys whose values it accepted (an existing overlay's other settings are kept). asBefore: for
+// settings an older version lacks, the value it behaves as anyway (nothing to say if v0's is that).
+export function settingsToSave(manifest, values, { where = 'the overlay', warn = () => {}, asBefore = {} } = {}) {
   const defaults = resolveSettings(manifest, {});
   const saved = {};
   const considered = new Set();
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined) continue;
     const problems = validateSettings(manifest, { [key]: value });
+    // A setting a newer version has (an existing overlay on an older one): upgrading brings it.
+    if (problems.length && problems.every((p) => p.path === `/${key}` && /^is not a setting of this template/.test(p.message))) {
+      if (!(Object.hasOwn(asBefore, key) && same(value, asBefore[key]))) {
+        warn(`${where}: ${key} = ${quote(value)} is a setting of a newer ${manifest.name || manifest.id} than ${manifest.version}; upgrade the overlay, then import again to bring it.`);
+      }
+      continue;
+    }
     if (problems.length) {
       warn(`${where}: ${key} = ${quote(value)} doesn't fit the template (${problems.map((p) => `${p.path === `/${key}` ? '' : `${p.path} `}${p.message}`).join('; ')}); it keeps the template's default.`);
       continue;
@@ -380,8 +414,8 @@ export function settingsToSave(manifest, values, { where = 'the overlay', warn =
 // a warning for each value it refuses: overlay.saved and each plan's saved.
 export function fitTemplate(map, manifest) {
   const warn = (m) => map.warnings.push(m);
-  Object.assign(map.overlay, settingsToSave(manifest, map.overlay.settings, { where: 'the overlay', warn }));
-  for (const p of map.plans) Object.assign(p, settingsToSave(manifest, p.settings, { where: `the plan for ${p.date}`, warn }));
+  Object.assign(map.overlay, settingsToSave(manifest, map.overlay.settings, { where: 'the overlay', warn, asBefore: BEFORE_1_1 }));
+  for (const p of map.plans) Object.assign(p, settingsToSave(manifest, p.settings, { where: `the plan for ${p.date}`, warn, asBefore: BEFORE_1_1 }));
   return map;
 }
 
@@ -490,7 +524,10 @@ export function mapV0(read, { name, slug = 'takeover', timezone, timezoneSource 
   let look = 'takeover';
   if (f.event === 'vikstarr') look = 'event';
   else if (f.event) warn(`${from}: the event ${quote(f.event)} isn't one v0 had; the TAKEOVER look is used.`);
-  const settings = settingsOf(f, look, headliner, 'the overlay', warn);
+  // v0's REC switch was live state, but the overlay's on every night: it comes along (on unless
+  // switched off, as v0 had it).
+  const live = { showRec: isObject(read.live) ? read.live.showRec !== false : undefined };
+  const settings = settingsOf(f, look, headliner, 'the overlay', warn, live);
   const recipe = recipeOf(f, look, warn);
   const sched = !(look === 'event' && !flag(f.evOpts.sched, true));
 
@@ -590,7 +627,7 @@ export function mapV0(read, { name, slug = 'takeover', timezone, timezoneSource 
     if (pRecipe.introOffsetMin !== recipe.introOffsetMin || pRecipe.nowPlayingEveryMin !== recipe.nowPlayingEveryMin) {
       warn(`${where} had its own cue timings (Event Intro ${pRecipe.introOffsetMin} min in, now playing ${pRecipe.nowPlayingEveryMin === null ? 'off' : `every ${pRecipe.nowPlayingEveryMin} min`}); a plan keeps the show's.`);
     }
-    plans.push({ date: day, goLive: pGoLive ?? null, dayBoundary: DAY_BOUNDARY, lineup, headliner: ph, look: pLook, settings: settingsOf(pf, pLook, ph, where, warn) });
+    plans.push({ date: day, goLive: pGoLive ?? null, dayBoundary: DAY_BOUNDARY, lineup, headliner: ph, look: pLook, settings: settingsOf(pf, pLook, ph, where, warn, live) });
   }
 
   // ---- credentials
@@ -599,12 +636,11 @@ export function mapV0(read, { name, slug = 'takeover', timezone, timezoneSource 
   // ---- what isn't imported, and why
   const roster = Array.isArray(setup.roster) ? setup.roster.length : 0;
   if (roster) notImported.push(`the roster (${plural(roster, 'name')} for autocomplete): the lineup has the acts`);
-  if (read.live !== undefined) notImported.push('v0\'s live state (its scene, REC timer, and title and now-playing counters): the show starts fresh');
+  if (read.live !== undefined) notImported.push('v0\'s live state (its scene, when REC started, the clip playing, and the title and now-playing counters): the show starts fresh');
   if (f.viewersMode === 'manual') notImported.push(`the typed viewer number${f.viewersText ? ` (${quote(f.viewersText)})` : ''}: only a real count is ever shown (H6)`);
   const others = read.uploads.filter((n) => n !== read.clip?.name).length;
   if (others) notImported.push(`${plural(others, 'other upload')} in uploads/: v0 used only The Line's clip (skp media add brings one in)`);
   if (read.crashLog) notImported.push('crash.log: this platform keeps its own');
-  if (f.cardSec !== 7 || f.npSec !== 22) notImported.push(`v0's card durations (title card ${f.cardSec} s, now playing ${f.npSec} s): the template's are 7 s and 22 s`);
   if (f.baseUrl.trim()) notImported.push(`the address v0 put in OBS links (${quote(f.baseUrl.trim())}): this platform's is SKP_PUBLIC_URL`);
 
   const out = {

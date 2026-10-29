@@ -87,6 +87,8 @@ const ACTIONS = {
   'import.v0.overlay.create': 'Imported an overlay from v0', 'import.v0.overlay.update': 'Updated an overlay from v0',
   'import.v0.media.add': 'Imported v0\'s Line clip', 'import.v0.cues.build': 'Built a v0 show\'s cues', 'import.v0.cue.add': 'Imported a v0 cue',
   'import.v0.plan.add': 'Imported a v0 planned date', 'import.v0.connection.keep': 'Kept v0 credentials for a connection',
+  'show.first-scene': 'Put a show on Auto, its first scene', 'plan.apply': 'Used a planned date for a show',
+  'cue.rearm-all': 'Re-armed a show\'s cues', 'cue.skip-passed': 'Skipped cues for acts already played',
 };
 const REASONS = { password: 'wrong password', code: 'wrong code' };
 // What the audit log can be narrowed to: the server matches a whole action or its first part
@@ -207,7 +209,7 @@ function device(ua) {
 let signedOut;
 function leave() {
   if (signedOut) return signedOut();
-  history.replaceState(null, '', '#/login');
+  history.replaceState(history.state, '', '#/login');
   location.reload();
 }
 

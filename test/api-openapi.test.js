@@ -118,7 +118,7 @@ test('what 03 names: creates answer 201 (an install 201 or 200), every paged lis
   }
   assert.deepEqual(success(op('post', '/templates')), ['200', '201'], 'installed, or there already');
   assert.deepEqual(success(op('post', '/events')), ['202']);
-  for (const p of ['/auth/sessions', '/users', '/tokens', '/system/audit', '/overlays', '/shows', '/shows/{ref}/cues', '/shows/{ref}/plans', '/templates', '/templates/sources', '/templates/{id}/versions', '/media']) {
+  for (const p of ['/auth/sessions', '/users', '/tokens', '/system/audit', '/overlays', '/shows', '/shows/{ref}/cues', '/shows/{ref}/plans', '/acts', '/templates', '/templates/sources', '/templates/{id}/versions', '/media']) {
     assert.deepEqual(queryOf(op('get', p)).slice(0, 2), ['limit', 'cursor'], `GET ${p}`);
     assert.deepEqual(op('get', p).responses['200'].content['application/json'].schema.required, ['items'], `GET ${p}`);
   }
@@ -290,10 +290,16 @@ test('a tour of every route: each success it answers, the type it answers in, th
   await call('GET', `/shows/Night/cues/${cue.id}`);
   await call('PATCH', `/shows/Night/cues/${cue.id}`, { body: { label: 'BRB' } });
   for (const op of ['skip', 'rearm', 'fire']) await call('POST', `/shows/Night/cues/${cue.id}/${op}`, { body: {} });
+  await call('POST', '/shows/Night/cues/rearm', { body: {} });
   await call('POST', '/shows/Night/cues/build', { body: {} });
   await call('DELETE', `/shows/Night/cues/${cue.id}`);
   const plan = (await call('POST', '/shows/Night/plans', { body: { date: '2026-10-24', goLive: '21:00' } })).body;
   await call('GET', '/shows/Night/plans');
+  await call('GET', `/shows/Night/plans/${plan.id}`);
+  await call('PUT', `/shows/Night/plans/${plan.id}`, { body: { date: '2026-10-24', goLive: '21:30', lineup: [{ time: '22:00', name: 'Guest' }] } });
+  await call('GET', '/acts');
+  await call('POST', '/shows/Night/rec', { body: { action: 'reset' } }); // a plan never changes a live show
+  await call('POST', `/shows/Night/plans/${plan.id}/apply`, { body: {} });
   await call('DELETE', `/shows/Night/plans/${plan.id}`);
   await call('DELETE', '/shows/Night');
 
