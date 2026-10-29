@@ -83,6 +83,14 @@
 //   [{ scene, sceneUuid? }], when the plugin sends one (`scenes` in obs.scene, v1.6's GET …/obs;
 //   an event without it keeps the list), of the machine the canvas shows.
 //
+// - Spotify (its §13, v1.8): what a profile's Spotify plays, as that profile's music.nowPlaying (a
+//   Track, 02 §2.5.1, source "spotify"; absent when nothing plays or no Spotify is connected), so
+//   now-playing templates work with no Spotify app of their own. Read from GET /music on every
+//   connect and reset, then kept by music.nowplaying (another song, play/pause, a seek: never for
+//   steady progress, the runtime interpolates from progressAt, Relay's `at` on this server's
+//   clock). A Relay older than v1.8 (404) is asked once a start, quietly. Song requests (`!sr`)
+//   need nothing here: Relay's answer comes as a chat line (kind "event") with no alert after it.
+//
 // A relay: where a direct connection (Twitch, step 17) also sets viewers.twitch, the direct one
 // is shown (bus/index.js).
 import { readSse } from '../sse-client.js';
@@ -169,9 +177,9 @@ export const ctdMultistream = {
   id: 'ctd-multistream',
   name: 'CTD Relay',
   platform: 'custom',
-  platforms: [...PLATFORMS, 'obs'],
+  platforms: [...PLATFORMS, 'obs', 'spotify'],
   relay: true,
-  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status', 'obs'],
+  capabilities: ['chat.read', 'alerts', 'viewers', 'stream.status', 'obs', 'music'],
   auth: 'pairing',
   sharesOverlays: true,
   fields: {
@@ -190,7 +198,7 @@ export const ctdMultistream = {
     },
   },
   guide: {
-    before: 'CTD Relay streams to every platform at once and merges their chat. This connection follows its profiles (every one, or one): each profile\'s merged chat, alerts, viewer counts and live status, over your local network, each profile a stream of its own here. It also shares the overlays it feeds with the CTD OBS plugin through CTD Relay.',
+    before: 'CTD Relay streams to every platform at once and merges their chat. This connection follows its profiles (every one, or one): each profile\'s merged chat, alerts, viewer counts, live status and what its Spotify plays, over your local network, each profile a stream of its own here. It also shares the overlays it feeds with the CTD OBS plugin through CTD Relay.',
     steps: [
       'In CTD Relay, open Settings → API and copy the LAN URL (it ends in /api/v1, like http://192.168.1.50:30080/api/v1) into "API address".',
       'Press Connect: a code appears here.',
@@ -279,7 +287,8 @@ export const ctdMultistream = {
     const feeds = new Map();
     // clock: its last /clock answer ({ startedAt on CTD's clock, or null; fps }); clockKey: the
     // session (status and start) that answer was for. obs: what its OBS machines say (step 18).
-    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), clock: null, clockKey: undefined, obs: { apps: new Map(), ids: new Set(), shown: {}, listed: {}, keys: new Set(), seq: 0 } });
+    // music: a track is shown (music.nowPlaying set).
+    const newFeed = (id, scope) => ({ id, scope, view: undefined, dests: new Map(), startedAt: new Map(), session: null, shown: new Set(), clock: null, clockKey: undefined, obs: { apps: new Map(), ids: new Set(), shown: {}, listed: {}, keys: new Set(), seq: 0 }, music: false });
     const one = () => feeds.get('');
     const feedName = (f) => f.view?.name || f.id || '';
     // ?profile= on /status and /chat: following every profile, the feed's; following one with a
@@ -309,6 +318,7 @@ export const ctdMultistream = {
     let clockNext = null;
     let clockBusy = false;
     let clockAgain = false;
+    let musicOld = false; // no GET /music (older than v1.8, or not allowed): not asked again this start
 
     // ---- state -----------------------------------------------------------------------------
     function applyStatus(feed, s) {
@@ -411,6 +421,7 @@ export const ctdMultistream = {
       for (const p of feed.shown) for (const k of KEYS(p)) ctx.setState(k, undefined, as(feed));
       for (const k of feed.obs.keys) ctx.setState(k, undefined, { platform: 'obs', ...as(feed) });
       if (feed.clock) ctx.setState('stream.clock', undefined, as(feed));
+      if (feed.music) ctx.setState('music.nowPlaying', undefined, { platform: 'spotify', ...as(feed) });
       feeds.delete(feed.id);
       if (held?.feed === feed) { held.cancel(); held = null; }
     }
@@ -650,6 +661,34 @@ export const ctdMultistream = {
         for (const s of Array.isArray(app.scenes) ? app.scenes : []) if (s && typeof s === 'object') obsScene(feed, { ...s, appId: app.appId }, s.updatedAt);
         for (const o of Array.isArray(app.outputs) ? app.outputs : []) if (o && typeof o === 'object') obsOutput(feed, { ...o, appId: app.appId });
       }
+    }
+
+    // ---- Spotify (its §13, v1.8) ---------------------------------------------------------------
+    // A nowPlaying ({ playing, track, progressMs, at }, or null) as the feed's music.nowPlaying:
+    // Relay's `at` moved onto this server's clock (the stream clock's offset, else its Date's).
+    function showMusic(feed, np) {
+      const track = trackOf(np, clock ? clock.offset : skew);
+      if (track === undefined && !feed.music) return;
+      ctx.setState('music.nowPlaying', track, { platform: 'spotify', ...as(feed) });
+      feed.music = track !== undefined;
+    }
+
+    // What the profile's Spotify plays now (GET /music), on connecting and after a reset. A Relay
+    // without the route (older than v1.8) or a token that can't read it: not asked again this start.
+    async function readMusic(feed) {
+      if (!v12 || musicOld || !scopes.includes('status:read')) return;
+      const r = await get(pathFor('/music', feed), { retries: 0, acceptStatus: (s) => s === 404 || s === 403 }).catch((err) => {
+        if (err.status === 401) throw err;
+        ctx.log.debug('now playing could not be read', { profile: feed.id, status: err.status, err: err.message });
+        return undefined;
+      });
+      if (!r || (r.status === 404 && r.data?.code === 'unknown_profile')) return;
+      if (r.status === 404 || r.status === 403) {
+        musicOld = true;
+        ctx.log.info(r.status === 404 ? 'CTD Relay has no Spotify now playing (older than v1.8)' : 'The token can\'t read now playing');
+        return;
+      }
+      if (r.data && typeof r.data === 'object' && Object.hasOwn(r.data, 'nowPlaying')) showMusic(feed, r.data.nowPlaying);
     }
 
     // ---- the stream clock (its §4, v1.3) -------------------------------------------------------
@@ -900,6 +939,7 @@ export const ctdMultistream = {
         else obsOutput(feed, d);
         return undefined;
       }
+      if (type === 'music.nowplaying') return showMusic(feed, env.data);
       if (type === 'stream.status') {
         feed.session = d;
         sessionSeen(feed, d.status, d.startedAt);
@@ -931,6 +971,7 @@ export const ctdMultistream = {
         clockFrom(status);
         applyStatus(feed, status.data);
         await readObs(feed);
+        await readMusic(feed);
         if (withChat && cfg.chat) {
           const r = await get(pathFor('/chat?limit=200', feed));
           for (const env of Array.isArray(r.data?.items) ? r.data.items : []) if (env && env.type === 'chat.message') chat(env, { backfill: true, feed });
@@ -991,7 +1032,7 @@ export const ctdMultistream = {
     async function follow() {
       const types = [
         ...(cfg.chat ? ['chat.*'] : []), ...(cfg.alerts ? ['alert.*'] : []), 'stream.status', 'destination.status', 'destination.down', 'destination.up', 'system.notice',
-        ...(v12 ? ['profile.status', 'profiles.changed', 'obs.scene', 'obs.output'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
+        ...(v12 ? ['profile.status', 'profiles.changed', 'obs.scene', 'obs.output', 'music.nowplaying'] : []), ...(hub && scopes.includes('apps:read') ? ['app.message'] : []),
       ];
       const from = ctx.memory.get('cursor');
       // Every profile in one stream (?profile=*, its §4): each envelope says whose (src.profile).
@@ -1161,6 +1202,29 @@ function fragment(f) {
   if (str(f.userId)) out.userId = f.userId;
   if (Number.isInteger(f.amount)) out.amount = f.amount;
   return out;
+}
+
+// What Spotify plays (its §13 nowPlaying) as this standard's Track (02 §2.5.1, track.schema.json),
+// or undefined when nothing does (no Spotify connected, a podcast or an ad: the key is removed).
+// progressAt is Relay's `at` less offsetMs (its clock minus this server's); progress never past
+// the song's end.
+export function trackOf(np, offsetMs = 0) {
+  const t = np && typeof np === 'object' && np.track && typeof np.track === 'object' ? np.track : null;
+  const artists = (Array.isArray(t?.artists) ? t.artists.filter(str) : []).slice(0, 20).map((a) => a.slice(0, 200));
+  if (!t || !str(t.title) || !artists.length) return undefined;
+  const durationMs = Number.isInteger(t.durationMs) && t.durationMs > 0 ? t.durationMs : undefined;
+  const progressMs = Number.isFinite(np.progressMs) && np.progressMs >= 0 ? Math.round(Math.min(np.progressMs, durationMs ?? Infinity)) : undefined;
+  return {
+    title: t.title.slice(0, 300),
+    artists,
+    ...(str(t.album) ? { album: t.album.slice(0, 300) } : {}),
+    ...(https(t.artUrl) ? { art: t.artUrl } : {}),
+    ...(https(t.url) ? { url: t.url } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(progressMs !== undefined ? { progressMs, ...(Number.isFinite(np.at) ? { progressAt: Math.round(np.at - offsetMs) } : {}) } : {}),
+    playing: np.playing === true,
+    source: 'spotify',
+  };
 }
 
 // An alert in this standard's shape (02 §2.4, alert.schema.json): Twitch's tiers as 1, 2, 3 and

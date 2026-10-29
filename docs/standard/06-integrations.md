@@ -476,7 +476,7 @@ message is handled once (its id remembered across restarts); a request replayed 
 connection was away over two minutes is refused; at most 100 answers a minute (the hub takes 120).
 
 **Events:** `GET /events` (SSE) with `types=chat.*,alert.*,stream.status,destination.*,system.notice`
-(and `profile.status,profiles.changed,obs.scene,obs.output`, and `app.message` with `apps:read`; `profile=*` following
+(and `profile.status,profiles.changed,obs.scene,obs.output,music.nowplaying`, and `app.message` with `apps:read`; `profile=*` following
 every profile),
 resumed with `Last-Event-ID` from the last frame's id, kept between starts. On a first start, or
 when it says `system.reset` (the cursor left its buffer, or it restarted), the platform reads
@@ -529,6 +529,25 @@ has said anything about its outputs (02 §2.5).
   error holds them like any value (02 §2.8).
 - What OBS shows is on each stream (`stream.obs`, 03 §3.4: the Live strip "OBS · landscape: Live ·
   vertical: BRB · Streaming"), and drives the shows and overlays that follow OBS (09 §9.7).
+
+**Spotify** (its §13, v1.8). A profile can connect a Spotify account in CTD Relay (its Settings →
+Spotify, with that installer's own Spotify app, §6.8); the connection makes what it plays that
+profile's `music.nowPlaying` (capability `music`, `src.platform: "spotify"`), so now-playing
+templates work without a Spotify connection here.
+- It reads `GET /music` (with `?profile=` as `/status`, `status:read`) on every connect and
+  `system.reset`, and subscribes to `music.nowplaying`, which carries the same object: sent for
+  another song, a play or pause and a seek, never for steady progress.
+- `{ playing, track: { title, artists[], album, artUrl, durationMs, url, … } | null, progressMs, at }`
+  becomes a Track (02 §2.5.1): `art` from `artUrl` and `url` when `https`, `progressMs` no further
+  than `durationMs`, `progressAt` Relay's `at` on this platform's clock (less the stream clock's
+  offset, else the difference its `Date` shows), `source: "spotify"`. `nowPlaying: null` (no
+  Spotify connected) or `track: null` (nothing plays: a podcast, an ad) removes the key; a paused
+  song stays, `playing: false`. A track with no title or no artist is left out.
+- A Relay without the route (older than v1.8) answers `404`: asked once a start, quietly, nothing
+  else changes. A profile deleted there takes its track with it.
+- Song requests (`!sr`, its `music.request`, `chat:read`) need nothing here: with its chat replies
+  on, Relay answers in chat with a `chat.message` of `kind: "event"` ("🎵 NightOwl added One More
+  Time — Daft Punk") that no alert follows, so it shows like any event line.
 **Stream clock** (its §4, `GET /clock`, v1.3), with `status:read`: the connection measures CTD
 Relay's clock against its own, NTP-style, and publishes each profile's `stream.clock` (02 §2.5.2)
 as that profile's state (or the connection's, following one profile), so a template counts the
