@@ -21,9 +21,10 @@ const msg = (id, text, extra = {}) => ({
   text, fragments: [{ type: 'text', text }], reply: null, highlighted: false, action: false, kind: 'message', ts: Date.now(), ...extra,
 });
 
-async function start(t, { history = [] } = {}) {
+async function start(t, { history = [], setup } = {}) {
   const ms = await startFakeMultistream();
   defer(t, () => ms.close());
+  setup?.(ms);
   for (const m of history) ms.emit('chat.message', m, { platform: 'twitch', destination: 'd-tw' });
   const root = tempDir(t);
   const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
@@ -129,6 +130,35 @@ test('a reset (the cursor no longer buffered) reads /status and /chat again, qui
   await until(() => channel.snapshot().chat.recent.some((m) => m.id === 'twitch:b'), 3000, 'b in the buffer');
   assert.equal(liveOf(live, 'chat.message', 'twitch:b').length, 0, 'backfilled, not played');
   assert.equal(channel.snapshot().chat.recent.filter((m) => m.id === 'twitch:a').length, 1, 'no duplicate');
+});
+
+test('a reset right after a reconnect, with several profiles, stays under 20 requests a second and recovers', { timeout: 30000 }, async (t) => {
+  // Five profiles: a start reads each one's status, OBS and chat, and the reset reads them all
+  // again at once (more than 20 requests in a second, refused by the platform, on every retry).
+  const extra = ['p-a', 'p-b', 'p-c'];
+  const { ms, get, channel } = await start(t, {
+    setup: (m) => {
+      for (const id of extra) {
+        m.profiles.push({ ...m.profiles[1], id, name: id, slug: id });
+        m.statuses[id] = structuredClone(m.statuses['p-dprtmnt']);
+      }
+    },
+  });
+  const chats = () => ms.requests.filter((r) => r.path === '/api/v1/chat').length;
+  assert.equal(chats(), 5, 'every profile backfilled once');
+  ms.emit('chat.message', msg('a', 'one'), { platform: 'twitch', destination: 'd-tw' }); // a cursor
+  await until(() => channel.snapshot().chat.recent.some((m) => m.id === 'twitch:a'), 3000, 'a');
+  const from = ms.requests.length;
+  ms.dropStreams();
+  ms.emit('chat.message', msg('b', 'during the restart'), { platform: 'twitch', destination: 'd-tw' });
+  ms.forget();
+  await until(() => chats() === 10 && channel.snapshot().chat.recent.some((m) => m.id === 'twitch:b'), 10000, 'the backfill after the reset');
+  await until(() => ['connected', 'degraded'].includes(get().health.status), 5000, 'running');
+  assert.doesNotMatch(get().health.detail || '', /requests a second/);
+  // No second with more than 20 of them (the platform's limit).
+  const at = ms.requests.slice(from).map((r) => r.at);
+  const busiest = Math.max(...at.map((a) => at.filter((b) => b >= a && b - a < 1000).length));
+  assert.ok(busiest <= 20, `${busiest} requests in one second`);
 });
 
 test('a revoked token is needs-reauth, saying where to make a new one, with no retry loop; a 429 is waited out', { timeout: 30000 }, async (t) => {
