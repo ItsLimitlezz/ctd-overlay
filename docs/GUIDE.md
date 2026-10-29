@@ -93,6 +93,10 @@ Three apps work together. You stream through **CTD Relay**, **CTD Overlay** draw
      overlays as browser sources on the right canvas (main or vertical).
    - **By hand:** copy each overlay's URL from its page into an OBS **Browser** source, at the
      size the page shows.
+   - **A source per scene:** under **Add to OBS**, *A URL for one scene* gives a URL that always
+     shows one scene (BRB, Starting Soon…), whatever the show takes, its chat, alerts and
+     lineup still live. Use it when OBS switches scenes itself and each OBS scene has its own
+     source.
 
 | Overlay | Size in OBS |
 |---|---|

@@ -1,5 +1,5 @@
 // Overlays (08 §8.3, §8.5): every overlay as a card, and one overlay's page: previews at each
-// canvas, its URL for OBS, the settings form and what feeds it ("Fed by": every connection or only
+// canvas, its URL for OBS (and one for each scene), the settings form and what feeds it ("Fed by": every connection or only
 // some), its role in OBS (for the CTD OBS plugin), scenes outside a show (and "Follow OBS", obs.js),
 // the Simulate panel, template versions (upgrade, go back), and the More menu (rename, the key,
 // delete). An overlay whose template reads a show (set times, the countdown, title cards) but that
@@ -570,6 +570,44 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
         ]);
 
   // ---- the URL for OBS -------------------------------------------------------------------
+  // A URL for one scene (04 §4.9): it stays on that scene whatever the show or Live takes, with its
+  // data, chat, alerts and buttons live, for a source per scene in OBS. Not a timed scene (a
+  // moment that returns on its own): pinned, it would never return.
+  const pinnable = scenes.filter((s) => !(s.durationMs > 0 && s.then));
+  let sceneUrls = null;
+  if (!data.urls.error && canvases.length && pinnable.length > 1) {
+    const sceneUrl = (url, scene) => {
+      const u = new URL(url, location.origin);
+      u.searchParams.set('scene', scene);
+      return u.href;
+    };
+    const sceneName = (id) => pinnable.find((s) => s.id === id)?.label || id;
+    const pick = h('select', { onchange: () => fill() }, pinnable.map((s) => h('option', { value: s.id }, s.label || s.id)));
+    const rows = canvases.map((c, i) => {
+      const label = canvasLabel(c, i);
+      const shape = label.split(' · ')[0];
+      const input = h('input', { type: 'text', readonly: true, onfocus: (e) => e.target.select() });
+      const button = h('button.btn', { type: 'button', onclick: () => copy(input.value, `${shape} URL for ${sceneName(pick.value)} copied: paste it into an OBS browser source.`) }, 'Copy');
+      return { c, label, input, button, el: h('div', h('h4', label), h('div.copy-field', input, button)) };
+    });
+    function fill() {
+      for (const r of rows) {
+        r.input.value = sceneUrl(r.c.url, pick.value);
+        r.input.setAttribute('aria-label', `${r.label} URL for ${sceneName(pick.value)}`);
+        r.button.setAttribute('aria-label', `Copy the ${r.label} URL for ${sceneName(pick.value)}`);
+      }
+    }
+    fill();
+    sceneUrls = h('details.group.scene-urls',
+      h('summary', 'A URL for one scene'),
+      h('div.group-body.stack',
+        h('p.small', overlay.show
+          ? `It always shows this scene, whatever "${overlay.show}" or Live takes, so OBS can have a source per scene. Chat, alerts, viewers, the lineup and buttons stay live.`
+          : 'It always shows this scene, whatever this overlay is set to, so OBS can have a source per scene. Chat, alerts, viewers and buttons stay live.'),
+        field('Scene', pick),
+        rows.map((r) => r.el),
+        h('p.small.muted', 'A button shows only on the scenes its template draws it on. Scenes that end by themselves aren\'t listed: they would never end.')));
+  }
   const urlCard = h('section.card.stack',
     h('h2', 'Add to OBS'),
     data.urls.error
@@ -584,6 +622,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
           copier,
           h('p.small.muted', c.width ? `In OBS, add a Browser source with this URL and set Width ${c.width}, Height ${c.height}.` : 'In OBS, add a Browser source with this URL, at your canvas size.'));
       }) : h('p.muted', 'This overlay has no URL yet.'),
+    sceneUrls,
     h('p.small', 'This URL never changes when you change the settings, the theme or the template version. It changes only if you rename the overlay or make a new key.'),
     h('p.small.muted', overlay.keyRequired
       ? 'The URL carries the overlay\'s key: anyone who has it can show this overlay. Paste it only into OBS.'
@@ -987,7 +1026,7 @@ function renderOverlay(view, ctx, data, { state, flash, reload }) {
     return h('div',
       h('p', `From version ${plan.from} to ${plan.to}. The overlay's URL stays the same; OBS sources reload with the new version by themselves.`),
       plan.major ? notice('This is a major update: the overlay may look or behave differently. Check the preview after upgrading.', 'warn') : null,
-      gone.scenes?.length ? notice(`Scenes this version doesn't have: ${list(gone.scenes)}. A show, button or cue that takes them won't work.`, 'warn') : null,
+      gone.scenes?.length ? notice(`Scenes this version doesn't have: ${list(gone.scenes)}. A show, button or cue that takes them won't work, nor an OBS source with a URL for one of them.`, 'warn') : null,
       gone.actions?.length ? notice(`Actions this version doesn't have: ${list(gone.actions)}. Buttons and cues that fire them won't work.`, 'warn') : null,
       gone.canvases?.length ? notice(`Canvases this version doesn't have: ${list(gone.canvases)}. OBS sources using them show the default canvas.`, 'warn') : null,
       newInVersion(target, ms),

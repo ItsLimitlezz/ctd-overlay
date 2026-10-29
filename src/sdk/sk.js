@@ -56,7 +56,8 @@
   const sdkScript = document.currentScript;
   const version = (sdkScript && /[?&]v=([\w-]+)/.exec(sdkScript.src || '') || [])[1] || 'dev';
 
-  // Preview overrides (04 §4.9): the admin UI and development only, never in OBS links.
+  // URL overrides (04 §4.9): ?scene= pins a scene, in OBS too (a source per scene); the others are
+  // for the admin UI and development only, never in OBS links.
   const override = {
     scene: params.get('scene'),
     dark: params.get('bg') === 'dark',
@@ -71,8 +72,9 @@
   try { framed = window.self !== window.top; } catch (err) { /* cross-origin parent: framed */ }
   // OBS defines window.obsstudio in every page it loads, docks included, so only a top-level page
   // counts as an OBS source; a preview inside the admin UI (even in an OBS dock) is a preview, and
-  // so is any URL with a 04 §4.9 override (URLs generated for OBS never carry one).
-  const previewParams = ['scene', 'bg', 'lite', 'mock', 'debug', 'settings'].some((p) => params.has(p));
+  // so is any URL with a 04 §4.9 preview override (URLs generated for OBS never carry one). A
+  // pinned scene alone is an OBS source like any other.
+  const previewParams = ['bg', 'lite', 'mock', 'debug', 'settings'].some((p) => params.has(p));
   const obs = !framed && !previewParams && typeof window.obsstudio === 'object' && window.obsstudio !== null;
   const preview = !obs && (framed || previewParams);
   const env = Object.freeze({
