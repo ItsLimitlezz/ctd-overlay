@@ -94,7 +94,7 @@ v0 is the working prototype this standard generalizes. Mapping:
 |---|---|
 | `/overlay?feed=h&scene=bus` | `/o/<slug>?canvas=h` on an overlay that belongs to a show |
 | "Live Bus · H / V" | a **Show** with two member overlays |
-| Standalone scene links | overlays outside a show, or `?scene=` preview overrides |
+| Standalone scene links | overlays outside a show, or *A URL for one scene* (`?scene=`, 04 §4.9) |
 | `scene=main` / `auto` | core scene `auto` |
 | Event packs (`shared/events.js`) | **Templates** (`template.json`) |
 | `THEME_BUILDERS.vikstarr` | the VIKKSTAR template's scenes |

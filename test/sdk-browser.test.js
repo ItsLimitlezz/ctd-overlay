@@ -180,9 +180,10 @@ describe('scenes (04 §4.7, 05 §5.4)', () => {
     assert.equal(await page.eval('SK.scene'), 'program');
   });
 
-  test('?scene= pins a scene for previews, whatever the show does', opts, async (t) => {
+  test('?scene= pins a scene, whatever the show does, and alone is no preview (a source per scene in OBS)', opts, async (t) => {
     const { page, channel } = await open(t, { query: '?scene=brb' });
     assert.equal(await page.eval('SK.scene'), 'brb');
+    assert.equal(await page.eval('SK.env.preview'), false);
     channel.setLocalState('show.scene', 'outro');
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(await page.eval('SK.scene'), 'brb');

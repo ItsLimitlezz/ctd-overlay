@@ -53,7 +53,8 @@ The path a non-technical user takes: **browse → preview → use → copy into 
   default), or *Only these*, from the connections' names and status (`bound`, 03 §3.4). A show's
   page sets the same for every member at once (one change per overlay, each with its If-Match).
 - The URL, with **Copy**, **Add to OBS** (when OBS is connected, creates the browser source at
-  the right size), and the exact browser-source size to set.
+  the right size), and the exact browser-source size to set; and *A URL for one scene*: a
+  scene picked, the URL at each canvas that stays on it (`?scene=`, 04 §4.9).
 - A clear note that the URL never changes when settings, theme or template version change.
 - A template that reads who's on from a show (`show.lineup`, `show.currentSlot` or
   `show.headliner` in its `consumes`, a pattern such as `show.*` included: set times, the

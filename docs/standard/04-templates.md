@@ -342,13 +342,18 @@ origin on the platform's host.
 A template **MUST NOT** receive tokens, credentials, other overlays' data, or any state key it
 did not declare.
 
-## 4.9 Preview overrides
+## 4.9 URL overrides
 
-For development and the admin UI only, the overlay URL accepts:
-`?scene=<id>` (force a scene), `?bg=dark` (opaque backdrop), `?lite=1` (drop GPU-heavy layers —
-mobile previews), `?mock=1` (sample data, 08 §8.5), `?debug=1` (diagnostic HUD),
-`?settings=<base64>` (unsaved settings being edited). URLs generated for OBS **MUST NOT**
-include them.
+`?scene=<id>` pins the overlay to one scene: it ignores the scene its show (or the overlay, outside
+a show) takes, and keeps its live data, chat, alerts and actions. It is for OBS too, a source per
+scene: the admin UI offers it as *A URL for one scene* beside the overlay's URL (08 §8.3), and a
+URL with only `?scene=` is an OBS source like any other (`SK.env.preview` false). A scene that
+returns by itself (`durationMs` with `then`) is not offered: pinned, it would never return.
+
+For development and the admin UI only, the overlay URL also accepts:
+`?bg=dark` (opaque backdrop), `?lite=1` (drop GPU-heavy layers — mobile previews), `?mock=1`
+(sample data, 08 §8.5), `?debug=1` (diagnostic HUD), `?settings=<base64>` (unsaved settings
+being edited). These make the page a preview; URLs generated for OBS **MUST NOT** include them.
 
 ## 4.10 Versioning and migration
 

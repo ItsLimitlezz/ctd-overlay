@@ -204,5 +204,6 @@ SK.asset('assets/logo.png'); SK.preload(urls); SK.log.warn(msg)
    overlay (overlay page → **Version → Upgrade…**). Overlays stay on the version they were made
    with until upgraded. Never upgrade while live.
 
-Overrides for testing any overlay URL: `?mock=1` (sample data), `?scene=brb`, `?canvas=v`,
-`?bg=dark`, `?lite=1`, `?debug=1`.
+Overrides for testing any overlay URL: `?mock=1` (sample data), `?canvas=v`, `?bg=dark`,
+`?lite=1`, `?debug=1`. `?scene=brb` pins one scene, in OBS too (the overlay page's *A URL for one
+scene*), so every scene must work on its own with live data.

@@ -469,8 +469,10 @@ Fields that don't apply are left out. `user.anonymous: true` means show "Anonymo
    with sample data (a lineup, a chat with every role and a long name and a deleted message, every
    alert kind including a gift burst, a track, changing viewer counts). The URL works directly
    too: `/o/~p.<id>@<version>?mock=1&canvas=v&scene=brb` (signed in).
-4. **Overrides** on any overlay URL, for development only: `?scene=<id>`, `?mock=1`, `?bg=dark`,
-   `?lite=1`, `?debug=1` (a status panel), `?canvas=<id>`.
+4. **Overrides** on any overlay URL, for development only: `?mock=1`, `?bg=dark`, `?lite=1`,
+   `?debug=1` (a status panel), `?canvas=<id>`. `?scene=<id>` pins a scene, and is for OBS too
+   (the overlay page's *A URL for one scene*): make every scene look right on its own, with live
+   data and no show taking it.
 5. **Simulate** on a real overlay: the overlay page's Simulate panel sends a chat message, a
    follow, gifted subs, a raid, a track change, viewers going absent.
 6. In OBS: add a Browser source with the overlay's URL and the canvas size (Overlays → Copy URL
