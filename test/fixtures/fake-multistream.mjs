@@ -17,7 +17,7 @@
 //   ms.openStreams       how many event streams are open now (the real server allows maxStreams,
 //                        5 per token: a 6th gets 429 + Retry-After: 30)
 //   ms.skewMs = -90000   its clock runs that far from this machine's (envelope ts and Date header)
-//   ms.requests          [{ method, path, query, headers, body? }]
+//   ms.requests          [{ method, path, query, headers, at, body? }]
 //
 // ms.token is a token from before v1.2 (every profile), with ms.scopes and limited to
 // ms.tokenProfile (null). A token for every profile reads the default profile without ?profile=,
@@ -255,7 +255,7 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : undefined;
     let json;
     try { json = body?.length ? JSON.parse(body.toString('utf8')) : undefined; } catch { json = undefined; }
-    ms.requests.push({ method: req.method, path: u.pathname, query: Object.fromEntries(u.searchParams), headers: req.headers, ...(json !== undefined ? { body: json } : {}) });
+    ms.requests.push({ method: req.method, path: u.pathname, query: Object.fromEntries(u.searchParams), headers: req.headers, at: Date.now(), ...(json !== undefined ? { body: json } : {}) });
     if (ms.skewMs) res.setHeader('date', new Date(Date.now() + ms.skewMs).toUTCString());
     const send = (status, out) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(out)); };
     const json200 = (out) => send(200, out);

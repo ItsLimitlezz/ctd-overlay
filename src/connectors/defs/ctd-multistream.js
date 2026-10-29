@@ -99,6 +99,7 @@ const QUIET_TICKS = 3; // ticks of 15 s with nothing arriving (it sends a heartb
 const OLD_CHAT_MS = 60 * 1000;
 const OLD_ALERT_MS = 2 * 60 * 1000;
 const HOLD_MS = 300; // how long an event line waits for its alert (sent right after it)
+const PER_SECOND = 16; // requests a second at most, under the platform's 20 (paced())
 const NOTICE_MS = 10 * 60 * 1000;
 const CLOCK_SAMPLES = 6; // answers per sync, a second apart (its §4: 4–8); more when more profiles
 const CLOCK_GAP_MS = 1000;
@@ -129,6 +130,24 @@ function apiOf({ config, token, http }) {
   const base = String(config.baseUrl).replace(/\/+$/, '');
   const tls = config.tlsFingerprint256 ? { fingerprint256: config.tlsFingerprint256 } : undefined;
   return (path, { headers, ...rest } = {}) => http.request(`${base}${path}`, { egress: 'lan', ...(tls ? { tls } : {}), ...rest, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(headers || {}) } });
+}
+
+// Requests kept under the platform's 20 a second (06 §6.1), which refuses the one past it and
+// fails the connection: each waits for room. A start reads every profile (status, OBS, chat), and
+// a system.reset right after it (a cursor older than CTD's buffer) reads them all again: with a
+// few profiles, more than 20 at once, failed on every retry from the same cursor.
+function paced(get, { now, schedule }) {
+  const sent = []; // when the requests of the last second went
+  return async (path, opts) => {
+    for (;;) {
+      const t = now();
+      while (sent.length && t - sent[0] >= 1000) sent.shift();
+      if (sent.length < PER_SECOND) break;
+      await new Promise((resolve) => { schedule(sent[0] + 1000 - t, resolve); });
+    }
+    sent.push(now());
+    return get(path, opts);
+  };
 }
 
 // A profile as the connection shows it (its info, the Live page): nothing it doesn't need.
@@ -244,7 +263,7 @@ export const ctdMultistream = {
   create(ctx) {
     const cfg = ctx.connection.config;
     const token = ctx.connection.secrets.token;
-    const get = apiOf({ config: cfg, token, http: ctx.http });
+    const get = paced(apiOf({ config: cfg, token, http: ctx.http }), { now: () => ctx.now(), schedule: (ms, fn) => ctx.schedule(ms, fn) });
 
     let scopes = [];
     let v12 = false; // the server has profiles (its GET / names the token's profile)
