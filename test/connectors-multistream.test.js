@@ -231,6 +231,20 @@ test('an event line shows unless its alert follows; a ban by name only removes t
   await until(() => liveOf(live, 'chat.message', 'twitch:after').length === 1, 3000, 'the next line');
   await new Promise((r) => setTimeout(r, 500));
   assert.deepEqual([liveOf(live, 'alert.subscription').length, liveOf(live, 'chat.message', 'twitch:e2').length], [1, 0]);
+  // A Twitch follow (its v1.7): its "followed" line, then the alert with that line's id; the alert
+  // shows as the platform's follow (no amount, tier or message), the line doesn't.
+  ms.emit('chat.message', msg('follow-52174911', 'NightOwl followed', { kind: 'event' }), { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('alert.follow', { kind: 'follow', user: { id: 'twitch:52174911', name: 'NightOwl' }, platform: 'twitch', destinationId: 'd-tw', messageId: 'twitch:follow-52174911', ts: Date.now() }, { platform: 'twitch', destination: 'd-tw' });
+  ms.emit('chat.message', msg('after-follow', 'after the follow'), { platform: 'twitch', destination: 'd-tw' });
+  await until(() => liveOf(live, 'chat.message', 'twitch:after-follow').length === 1, 3000, 'the line after the follow');
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(liveOf(live, 'chat.message', 'twitch:follow-52174911').length, 0, 'the follow line is left out');
+  // Alerts play one at a time: the follow comes once the sub's turn is over.
+  await until(() => liveOf(live, 'alert.follow').length === 1, 15000, 'the follow, after the sub');
+  const follows = liveOf(live, 'alert.follow');
+  const { display, ...follow } = follows[0].data; // display: its turn in the overlay's queue
+  assert.ok(display);
+  assert.deepEqual(follow, { kind: 'follow', user: { id: 'twitch:52174911', name: 'NightOwl' }, platform: 'twitch', destinationId: 'd-tw', messageId: 'twitch:follow-52174911' });
   // A ban that names the user only ("kick:name:…"): their line, which carries an id, goes; others stay.
   const kick = (id, user) => ({ ...msg(id, 'spam'), id: `kick:${id}`, platform: 'kick', destinationId: 'd-kk', user: { roles: [], ...user } });
   ms.emit('chat.message', kick('k1', { id: 'kick:777', login: 'spammer', name: 'Spammer' }), { platform: 'kick', destination: 'd-kk' });

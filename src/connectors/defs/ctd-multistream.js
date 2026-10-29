@@ -38,7 +38,8 @@
 //   and which there are, for every profile). A cursor kept from the other kind of stream (one
 //   profile, or every one) is never resumed from: it starts afresh.
 // - chat.message, its deletions, bans and clears, and alert.<kind> become this platform's events,
-//   with src.platform from the envelope and its id as the dedupe key. A platform this standard
+//   with src.platform from the envelope and its id as the dedupe key. Every kind passes: Twitch
+//   sends follows since its v1.7 (no amount, tier or message), cheers, subs, gifts and raids. A platform this standard
 //   doesn't know becomes "custom". An alert's chat line is left out while alerts are on and "Hide
 //   an alert's chat line" is (the alert shows instead): CTD sends the alert right after its line,
 //   with the line's id as its messageId, so a kind "event" line waits for the next frame (300 ms
