@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Starter</title>
+  <!-- Relative URLs only: the runtime adds <base> so they resolve to this package's files. -->
+  <link rel="stylesheet" href="template.css">
+</head>
+<body>
+  <!-- One <template> per scene id in template.json. Add a scene there, then its <template> here. -->
+  <template data-skp-scene="program">
+    <!-- Transparent: OBS shows the camera underneath ("transparent": true). -->
+    <div class="scene">
+      <div class="bug" data-bug>
+        <b class="title" data-title></b>
+        <span class="chip" data-onnow hidden><span class="k">ON NOW</span> <b></b></span>
+        <span class="chip" data-viewers hidden><b></b> watching</span>
+      </div>
+      <div class="cards" data-cards></div>
+    </div>
+  </template>
+  <script src="template.js"></script>
+</body>
+</html>

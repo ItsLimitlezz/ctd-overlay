@@ -1,0 +1,41 @@
+{
+  "standard": "skp/1",
+  "id": "com.example.starter",
+  "name": "Starter",
+  "version": "1.0.0",
+  "description": "A small starting point for a new overlay: a corner bug with a title, who's on and the viewer count, and a title card button.",
+  "author": { "name": "Your Name" },
+  "license": "MIT",
+  "category": "widget",
+  "tags": ["starter"],
+  "entry": "index.html",
+  "previews": ["previews/preview.svg"],
+  "engines": { "obs": ">=30" },
+  "canvases": [
+    { "id": "h", "width": 1920, "height": 1080, "default": true },
+    { "id": "v", "width": 1080, "height": 1920 }
+  ],
+  "scenes": [
+    { "id": "program", "label": "Live", "core": "program", "transparent": true }
+  ],
+  "consumes": {
+    "state": ["show.lineup", "show.currentSlot", "viewers.total", "viewers.stale"]
+  },
+  "actions": [
+    { "id": "card", "label": "Title card", "durationMs": 7000 }
+  ],
+  "settings": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "title": { "type": "string", "title": "Title", "maxLength": 40, "default": "MY SHOW" },
+      "accent": { "type": "string", "format": "color", "title": "Accent", "default": "#16E0FF" },
+      "corner": {
+        "type": "string", "title": "Corner", "default": "tl",
+        "enum": ["tl", "tr", "bl", "br"], "x-skp-labels": ["Top left", "Top right", "Bottom left", "Bottom right"]
+      },
+      "showOnNow": { "type": "boolean", "title": "Show who's on", "default": true },
+      "showViewers": { "type": "boolean", "title": "Show the viewer count", "default": true }
+    }
+  }
+}

@@ -5,8 +5,9 @@ a designer, a developer or an AI assistant can produce a template that installs 
 time. The normative source is [docs/standard/04-templates.md](../standard/04-templates.md) (and 02,
 05); where this guide and the standard disagree, the standard wins.
 
-A complete, working example that uses every feature sits beside this file: [`mega/`](mega/). Start
-from it.
+A complete, working example that uses every feature sits beside this file: [`mega/`](mega/). For a
+small overlay, start from [`starter/`](starter/) instead; [NEW-OVERLAY.md](NEW-OVERLAY.md) is a
+brief to fill in and hand to an AI assistant.
 
 ---
 
