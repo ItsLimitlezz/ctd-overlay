@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <rect width="1920" height="1080" fill="#2a3038"/>
+  <g font-family="Arial, sans-serif">
+    <rect x="48" y="40" width="210" height="56" fill="#16e0ff"/>
+    <text x="66" y="79" font-size="28" font-weight="900" fill="#0a0b0d">MY SHOW</text>
+    <rect x="272" y="40" width="330" height="56" fill="#0a0b0d" fill-opacity=".8"/>
+    <text x="290" y="76" font-size="18" font-weight="800" letter-spacing="4" fill="#16e0ff">ON NOW</text>
+    <text x="400" y="78" font-size="24" font-weight="600" fill="#ffffff">DJ Example</text>
+    <rect x="616" y="40" width="210" height="56" fill="#0a0b0d" fill-opacity=".8"/>
+    <text x="634" y="78" font-size="24" font-weight="600" fill="#ffffff">1,284 watching</text>
+    <rect x="610" y="770" width="700" height="170" fill="#0a0b0d" fill-opacity=".8"/>
+    <rect x="610" y="934" width="700" height="6" fill="#16e0ff"/>
+    <text x="960" y="820" font-size="22" font-weight="800" letter-spacing="7" fill="#16e0ff" text-anchor="middle">ON NOW</text>
+    <text x="960" y="900" font-size="72" font-weight="900" fill="#ffffff" text-anchor="middle">DJ EXAMPLE</text>
+  </g>
+</svg>

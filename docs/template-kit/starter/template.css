@@ -1,0 +1,38 @@
+/* Starter. Lay out in canvas pixels (1920 x 1080, or 1080 x 1920 under [data-skp-canvas="v"]):
+   the runtime scales the stage to the browser source. OBS's browser is Chromium 103: no
+   color-mix(), :has(), CSS nesting or container queries. */
+:root { --accent: #16e0ff; --ink: #ffffff; --panel: rgba(10, 11, 13, .8); }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body, [data-skp-stage] { font-family: system-ui, 'Segoe UI', Arial, sans-serif; color: var(--ink); }
+[hidden] { display: none !important; }
+
+.scene { position: absolute; inset: 0; }
+
+/* ---- the corner bug: its corner comes from the "corner" setting (data-corner) ---------------- */
+.bug { position: absolute; display: flex; align-items: center; gap: 14px; }
+.bug[data-corner="tl"] { left: 48px; top: 40px; }
+.bug[data-corner="tr"] { right: 48px; top: 40px; flex-direction: row-reverse; }
+.bug[data-corner="bl"] { left: 48px; bottom: 40px; }
+.bug[data-corner="br"] { right: 48px; bottom: 40px; flex-direction: row-reverse; }
+[data-skp-canvas="v"] .bug { flex-direction: column; align-items: flex-start; }
+[data-skp-canvas="v"] .bug[data-corner="tr"], [data-skp-canvas="v"] .bug[data-corner="br"] { align-items: flex-end; }
+[data-skp-canvas="v"] .bug[data-corner="tl"], [data-skp-canvas="v"] .bug[data-corner="tr"] { top: 140px; }
+
+.title { padding: 8px 18px; background: var(--accent); color: #0a0b0d; font-weight: 900; font-size: 28px; letter-spacing: .04em; }
+.title:empty { display: none; }
+.chip { display: inline-flex; align-items: baseline; gap: 8px; padding: 9px 16px; background: var(--panel); font-size: 24px; font-weight: 600; max-width: 640px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip .k { color: var(--accent); font-size: 18px; font-weight: 800; letter-spacing: .2em; }
+.chip.stale { opacity: .55; } /* viewers held through an error: shown quieter */
+
+/* ---- title cards: motion only on the runtime's states (enter → idle → exit) ------------------ */
+.cards { position: absolute; left: 0; right: 0; bottom: 140px; display: flex; justify-content: center; }
+[data-skp-canvas="v"] .cards { bottom: 420px; }
+.card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 22px 48px; background: var(--panel); border-bottom: 6px solid var(--accent); max-width: 1500px; }
+[data-skp-canvas="v"] .card { max-width: 960px; }
+.card .k { color: var(--accent); font-size: 22px; font-weight: 800; letter-spacing: .3em; }
+.card b { font-size: 72px; font-weight: 900; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }
+.card[data-skp-state="enter"] { animation: cardIn .5s cubic-bezier(.2, .7, .2, 1) both; }
+.card[data-skp-state="exit"] { animation: cardOut .45s ease-in both; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(40px); } }
+@keyframes cardOut { to { opacity: 0; transform: translateY(40px); } }
+[data-skp-reduced-motion] .card { animation-duration: .01s !important; }
