@@ -110,6 +110,12 @@ connection keeps working; choose per overlay which profile feeds it when you are
 
 If CTD Relay says the token was revoked, press **Connect again** on the connection's page.
 
+**Spotify now playing:** connect Spotify for a profile in **CTD Relay → Settings → Spotify**
+(CTD Relay v1.8 or newer). What it plays then feeds that profile's overlays as **now playing**
+(title, artists, album art, progress), for any template that shows the track, with no Spotify
+connection in CTD Overlay. Viewers' `!sr` song requests are handled by CTD Relay; its replies
+("🎵 NightOwl added One More Time — Daft Punk") show in chat like any event line.
+
 ### The CTD OBS plugin
 
 A connection made with Connect also shares the overlays it feeds with the **CTD OBS plugin**,

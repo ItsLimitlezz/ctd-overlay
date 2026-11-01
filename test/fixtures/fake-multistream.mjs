@@ -46,13 +46,17 @@
 //                test's fake clock), so its t3 is t0 + outMs + procMs + backMs
 //     fps        the feed's frame rate (30)
 //     missing    true: answers 404 as a Relay older than v1.3 }
+//   Spotify (its §13, v1.8): ms.music[profile] is what GET /music?profile= answers as nowPlaying
+//        (null: none connected); ms.setMusic({ profile, playing, track, progressMs, at, emit })
+//        keeps one and (emit, the default) sends music.nowplaying; ms.noMusicRoute = true answers
+//        404 there (a Relay older than v1.8)
 //   The session's startedAt is Date.parse(status.session.startedAt): on its clock, as written.
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import { createUlid } from '../../src/ids.js';
 
 const NO_PROFILE = new Set(['profiles.changed', 'apps.changed', 'system.reset']);
-const SCOPE_OF = [[/^(chat|alert)\./, 'chat:read'], [/^(stream|feed|destination|profile|profiles|obs)\.|^system\.notice$/, 'status:read'], [/^apps?\./, 'apps:read']];
+const SCOPE_OF = [[/^(chat|alert)\.|^music\.request$/, 'chat:read'], [/^(stream|feed|destination|profile|profiles|obs|music)\.|^system\.notice$/, 'status:read'], [/^apps?\./, 'apps:read']];
 const CODE_CHARS = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval = 1 } = {}) {
@@ -170,6 +174,15 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     return obsEmit('obs.output', { output, ...(canvas ? { canvas } : {}), state }, profile, appId, eventId);
   };
   ms.obsOffline = (appId = 'ctd-obs-plugin-studio', profile = 'default') => { obsApp(profile, appId).online = false; };
+
+  // ---- Spotify (its §13) ----------------------------------------------------------------------------
+  ms.music = {}; // profile → nowPlaying (absent or null: no Spotify connected)
+  ms.noMusicRoute = false;
+  ms.setMusic = ({ profile = 'default', playing = true, track = null, progressMs = 0, at = Date.now() + ms.skewMs, emit = true } = {}) => {
+    const np = { playing, track, progressMs, at };
+    ms.music[profile] = np;
+    return emit ? ms.emit('music.nowplaying', np, { profile }) : undefined;
+  };
   ms.forget = () => { ms.buffer = []; };
   Object.defineProperty(ms, 'openStreams', { get: () => streams.size });
 
@@ -362,6 +375,13 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
         session: { status: session.status || 'idle', startedAt: running ? started : null, elapsedMs: running ? sentAt - started : null },
         fps: c.fps, fpsSource: 'landscape', timecode: { run: null, utc: '00:00:00:00', local: '00:00:00:00' },
       });
+    }
+
+    if (path === '/api/v1/music') {
+      if (ms.noMusicRoute) return problem(res, 404, 'not_found', 'Unknown path');
+      if (needs('status:read')) return undefined;
+      const p = pick();
+      return p && json200({ nowPlaying: ms.music[p] ?? null });
     }
 
     if (path === '/api/v1/profiles') {
