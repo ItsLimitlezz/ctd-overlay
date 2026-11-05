@@ -24,7 +24,7 @@ No build step and no `npm install`. Non-Apple, so run on the **PC** (Node >= 24)
 - Demo: `npm run demo` (port 4950); diagnostics: `npm run diag` (port 4949)
 - UI check: `node scripts/ui-smoke.js /live /overlays --phone --shots shots` (needs headless Chrome or Edge)
 - Image: `docker build` from `Dockerfile` (whether the PC has Docker: TBD (owner to confirm)).
-- Cloud sessions can run `npm test` if Node 24 and ffmpeg are present; otherwise tag the PR `Needs local build: PC`.
+- Cloud sessions can run `npm test` if Node 24 and ffmpeg are present; otherwise tag the PR `needs-build:pc`.
 
 ## Release
 **TBD (owner to confirm).** The repo has no LICENSE, so under the hub's rule it is not open-source and prod builds are local-only. Existing practice (not policy-compliant until licensed): `.github/workflows/image.yml` builds and pushes `ghcr.io/itslimitlezz/ctd-overlay` (`:latest` + `:sha-...` on every push to `main`; `:release-...` on `release/**`; `:X.Y.Z`, `:X.Y`, `:X` on tags `vX.Y.Z`), which TrueNAS pulls. Templates are released separately as GitHub releases: `docs/template-releases.md`. Do not run or edit these workflows without a Senior.
