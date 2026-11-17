@@ -416,3 +416,7 @@ used its server's). Importing again is refused while a show of that name exists,
 `--replace`, which replaces that show with its cues and plans and updates the overlay. v0's
 roster (the lineup offers the names of every lineup instead), its live state (scene, when REC
 started, the clip playing, counters), other uploads and `crash.log` stay behind.
+
+## License
+
+CTD Overlay is licensed under the GNU AGPL v3.0 only; see [LICENSE](LICENSE).
