@@ -3,7 +3,7 @@
 
 ## What this is
 **CTD Overlay** (package `ctd-overlay` v0.0.0): self-hosted stream-overlay platform for OBS browser sources: merged chat, alerts, scenes, timed shows and templates, fed by CTD Relay. Implements the Stream Kit Platform Standard (`skp/1`); successor to the D/PRTMNT Stream Kit (v0).
-Plain Node.js 24 server (no runtime npm dependencies, `node:sqlite`); runs on the PC that runs OBS or as a Linux container (TrueNAS). Public repo with **no LICENSE file** (so not open-source under the hub's rule).
+Plain Node.js 24 server (no runtime npm dependencies, `node:sqlite`); runs on the PC that runs OBS or as a Linux container (TrueNAS). Public repo licensed **AGPL-3.0-only** (see `LICENSE`; same as CTD Relay, which Overlay will merge into later), so it is open-source under the hub's rule.
 
 ## Layout
 | Path | What |
@@ -27,7 +27,7 @@ No build step and no `npm install`. Non-Apple, so run on the **PC** (Node >= 24)
 - Cloud sessions can run `npm test` if Node 24 and ffmpeg are present; otherwise tag the PR `needs-build:pc`.
 
 ## Release
-**TBD (owner to confirm).** The repo has no LICENSE, so under the hub's rule it is not open-source and prod builds are local-only. Existing practice (not policy-compliant until licensed): `.github/workflows/image.yml` builds and pushes `ghcr.io/itslimitlezz/ctd-overlay` (`:latest` + `:sha-...` on every push to `main`; `:release-...` on `release/**`; `:X.Y.Z`, `:X.Y`, `:X` on tags `vX.Y.Z`), which TrueNAS pulls. Templates are released separately as GitHub releases: `docs/template-releases.md`. Do not run or edit these workflows without a Senior.
+**TBD (owner to confirm).** The repo is AGPL-3.0-only, so it is open-source and prod builds may use GitHub Actions (hub TEAM.md build policy). Current practice: `.github/workflows/image.yml` builds and pushes `ghcr.io/itslimitlezz/ctd-overlay` (`:latest` + `:sha-...` on every push to `main`; `:release-...` on `release/**`; `:X.Y.Z`, `:X.Y`, `:X` on tags `vX.Y.Z`), which TrueNAS pulls. Templates are released separately as GitHub releases: `docs/template-releases.md`. Do not run or edit these workflows without a Senior.
 
 ## Conventions & gotchas
 - Plain JavaScript ES modules, **no runtime npm packages** (docs/PLAN.md decision 8); dev-only tools are fine.
