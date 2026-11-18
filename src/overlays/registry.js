@@ -82,6 +82,12 @@ export function checkRole(value) {
 // secrets: encrypts overlay keys at rest (secrets.js); without it (some tests), overlays have no
 // key and need none. exposure: in public mode every overlay needs its key. readOnly: a look that
 // changes nothing (a dry run): an overlay without a key isn't given one at startup.
+// The scenes of a template a URL can stay on (?scene=, 04 §4.9): every scene but one that returns
+// by itself (durationMs with then), which pinned would never return.
+export function pinnableScenes(manifest) {
+  return (manifest?.scenes || []).filter((s) => s && typeof s.id === 'string' && s.id && !(s.durationMs > 0 && s.then));
+}
+
 export function createOverlays({ store, bus, templates, log, secrets, exposure = 'local', readOnly = false }) {
   const bySlug = new Map(); // slug → id
   const resolved = new Map(); // id → the settings the overlay sees
@@ -354,18 +360,27 @@ export function createOverlays({ store, bus, templates, log, secrets, exposure =
       return update(ref, { keyRequired: required });
     },
 
-    // The overlay's URLs for OBS, one per canvas (01 §1.4): base is the platform's address.
+    // The overlay's URLs for OBS, one per canvas (01 §1.4): base is the platform's address. With
+    // each, `scenes`: a URL per scene of its template that stays on that scene (?scene=, 04 §4.9),
+    // the same key and canvas; left out for a template with fewer than two such scenes (its one
+    // scene is the URL itself), as the admin UI's "A URL for one scene" is (08 §8.3).
     urls(ref, base) {
       const doc = byIdOrSlug(ref);
       const t = templates.get(doc.data.template.id, doc.data.template.version);
       const key = keyRequired(doc) ? keyOf(doc) : undefined;
       const canvases = t?.manifest.canvases || [{ id: 'default' }];
+      const pinnable = pinnableScenes(t?.manifest);
+      const scenes = pinnable.length > 1 ? pinnable : [];
       return canvases.map((c, i) => {
         const q = new URLSearchParams();
         if (key) q.set('key', key);
         if (i > 0 || !c.default) q.set('canvas', c.id);
-        const qs = q.toString();
-        return { canvas: c.id, ...(c.width ? { width: c.width, height: c.height } : {}), url: `${base}/o/${doc.data.slug}${qs ? `?${qs}` : ''}` };
+        const at = (query) => { const qs = query.toString(); return `${base}/o/${doc.data.slug}${qs ? `?${qs}` : ''}`; };
+        const pinned = (scene) => { const p = new URLSearchParams(q); p.set('scene', scene); return at(p); };
+        return {
+          canvas: c.id, ...(c.width ? { width: c.width, height: c.height } : {}), url: at(q),
+          ...(scenes.length ? { scenes: scenes.map((s) => ({ id: s.id, name: s.label || s.id, url: pinned(s.id) })) } : {}),
+        };
       });
     },
 

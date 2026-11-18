@@ -22,6 +22,10 @@ test('Add to OBS gives a URL for one scene at each canvas, and that URL stays on
   const res = await fetch(`${platform.url}/api/v1/overlays/bed/url`, { headers: signedIn(platform) });
   const { urls } = await res.json();
   const pinned = (url, scene) => { const u = new URL(url); u.searchParams.set('scene', scene); return u.href; };
+  // The API gives the same URLs (what CTD Relay's hub gets as meta.scenes): one per scene that
+  // doesn't return by itself, at each canvas.
+  for (const u of urls) assert.deepEqual(u.scenes.map((s) => [s.id, s.url]), ['starting', 'program', 'brb', 'lineup', 'outro', 'opener'].map((id) => [id, pinned(u.url, id)]));
+  assert.equal(urls[0].scenes.find((s) => s.id === 'brb').name, 'Be Right Back');
 
   const browser = await launchBrowser(t);
   const page = await browser.open(`${platform.url}/#/login`, { width: 1280, height: 900 });
