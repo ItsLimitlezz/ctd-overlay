@@ -11,7 +11,7 @@ import path from 'node:path';
 import { shareBase, startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { canvasKind } from '../src/connectors/share.js';
-import { appIdFor, resourcesOf } from '../src/connectors/defs/ctd-multistream-hub.js';
+import { appIdFor, createHub, resourcesOf } from '../src/connectors/defs/ctd-multistream-hub.js';
 import { fakeClock, until } from './connector-helpers.js';
 import { startFakeMultistream } from './fixtures/fake-multistream.mjs';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
@@ -200,8 +200,15 @@ test('the overlays it feeds are registered in the hub: a resource per canvas, ke
   assert.match(body.version, /^\d+\.\d+\.\d+/);
   const tk = platform.store.list('overlays', { limit: 100 }).find((d) => d.data.slug === 'takeover');
   const key = platform.overlays.key('takeover');
-  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:h`), { type: 'overlay', id: `${tk.id}:h`, name: 'takeover — landscape', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover?key=${key}`, width: 1920, height: 1080, meta: { canvas: 'landscape', slot: 'takeover-landscape', transparent: true } });
-  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:v`).meta, { canvas: 'vertical', slot: 'takeover-vertical', transparent: true });
+  // meta.scenes: the scenes a source can stay on, each with its URL (the resource's with
+  // scene=<id>); never a scene that returns by itself (Event Intro, Headliner Intro).
+  const SCENES = [['auto', 'Auto (countdown, then live)', 'auto'], ['starting', 'Starting Soon', 'starting'], ['program', 'Live · In-set', 'program'], ['brb', 'Be Right Back', 'brb'], ['lineup', 'Tonight\'s Lineup', 'lineup'], ['outro', 'Outro', 'outro'], ['bg', 'Animated Background', 'bg'], ['line', 'The Line'], ['pov', 'POV (glasses cam)']];
+  const scenesAt = (url) => SCENES.map(([id, name, core]) => ({ id, name, ...(core ? { core } : {}), url: `${url}&scene=${id}` }));
+  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:h`), { type: 'overlay', id: `${tk.id}:h`, name: 'takeover — landscape', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover?key=${key}`, width: 1920, height: 1080, meta: { canvas: 'landscape', slot: 'takeover-landscape', transparent: true, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}`) } });
+  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:v`).meta, { canvas: 'vertical', slot: 'takeover-vertical', transparent: true, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}&canvas=v`) });
+  assert.ok(Buffer.byteLength(JSON.stringify(body.resources.find((r) => r.id === `${tk.id}:v`).meta)) <= 4096, 'Takeover\'s scenes fit an older CTD Relay');
+  // A template with one scene has none to pick: its URL is that scene.
+  assert.ok(body.resources.filter((r) => r.name.startsWith('chat')).every((r) => !('scenes' in r.meta)));
   assert.match(body.resources.find((r) => r.id === `${tk.id}:v`).url, new RegExp(`^${SHARED}/o/takeover\\?key=skp_ovl_\\w+&canvas=v$`));
   // Chat's role in OBS; its tall "side" column is the landscape output's, its "v" the vertical one's.
   assert.deepEqual(body.resources.filter((r) => r.name.startsWith('chat')).map((r) => [r.width, r.height, r.meta.canvas, r.meta.slot]), [[560, 1000, 'landscape', 'chat-main-landscape'], [1080, 720, 'vertical', 'chat-main-vertical']]);
@@ -219,6 +226,7 @@ test('the overlays it feeds are registered in the hub: a resource per canvas, ke
   assert.deepEqual(last().resources.filter((r) => r.name.startsWith('elsewhere')).map((r) => r.meta.slot), ['takeover-b-landscape', 'takeover-b-vertical']);
   const fresh = platform.overlays.rotateKey('takeover');
   await until(() => last().resources.find((r) => r.id === `${tk.id}:h`).url.endsWith(fresh), 5000, 'the new key');
+  assert.ok(last().resources.find((r) => r.id === `${tk.id}:h`).meta.scenes.every((x) => x.url.includes(`key=${fresh}&`)), 'the scene URLs carry the new key too');
   // A role that can't be a slot is refused.
   assert.equal((await api('PATCH', '/overlays/elsewhere', { role: 'Has Spaces' })).status, 422);
 
@@ -291,7 +299,8 @@ test('overlay.create from another app makes one, bound to this connection only a
   assert.deepEqual([a.to, a.from, a.type, a.profileId, a.data.ok], ['ctd-obs-plugin-studio', 'ctd-overlay-dprtmnt', 'overlay.created', 'p-dprtmnt', true], JSON.stringify(a));
   const made = platform.overlays.resolve('takeover-dprtmnt').doc;
   assert.deepEqual(made.data.connections, [conn.id]);
-  assert.deepEqual(a.data.resource, { type: 'overlay', id: `${made.id}:v`, name: 'takeover-dprtmnt — vertical', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover-dprtmnt?key=${platform.overlays.key('takeover-dprtmnt')}&canvas=v`, width: 1080, height: 1920, meta: { canvas: 'vertical', slot: 'takeover-vertical', transparent: true } });
+  assert.deepEqual(a.data.resource, { type: 'overlay', id: `${made.id}:v`, name: 'takeover-dprtmnt — vertical', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover-dprtmnt?key=${platform.overlays.key('takeover-dprtmnt')}&canvas=v`, width: 1080, height: 1920, meta: { canvas: 'vertical', slot: 'takeover-vertical', transparent: true, scenes: a.data.resource.meta.scenes } });
+  assert.deepEqual(a.data.resource.meta.scenes.find((x) => x.id === 'brb'), { id: 'brb', name: 'Be Right Back', core: 'brb', url: `${a.data.resource.url}&scene=brb` });
   // Registered before the answer went.
   const at = ms.messages.indexOf(a);
   assert.ok(ms.registrations.some((r) => r.at <= a.at && r.body.resources.some((x) => x.id === `${made.id}:v`)), 'in the hub when answered');
@@ -333,4 +342,50 @@ test('where OBS reaches the platform; app ids; resources and canvases as the hub
   assert.deepEqual([canvasKind(square, square[0]), canvasKind([{ id: 'tall', width: 500, height: 900 }], { id: 'tall', width: 500, height: 900 })], ['landscape', 'vertical']);
   const two = resourcesOf({ id: 'ovl_1', slug: 'x', template: { id: 'com.a.b' }, canvases: [{ id: 'a', kind: 'landscape', width: 1920, height: 1080, url: 'http://h/o/x' }, { id: 'b', kind: 'landscape', width: 1280, height: 720, url: 'http://h/o/x?canvas=b' }, { id: 'c', kind: 'vertical', width: 1, height: 2 }] }, null);
   assert.deepEqual(two.map((r) => [r.name, r.meta.slot, r.profileId]), [['x — landscape (a)', 'b-landscape', null], ['x — landscape (b)', 'b-landscape-2', null]], 'a canvas without a URL is left out');
+  assert.ok(two.every((r) => !('scenes' in r.meta)), 'no scenes, no meta.scenes');
+  // meta.scenes: the overlay's scenes as { id, name, core? } and nothing else, on every canvas; left
+  // out when there are none or they aren't wanted; cut from the end so meta stays within 4096 bytes.
+  const item = { id: 'ovl_2', slug: 'y', template: { id: 'com.a.b' }, scenes: [{ id: 'brb', name: 'BRB', core: 'brb', extra: 1 }, { id: 'pov', name: 'POV' }], canvases: [{ id: 'h', kind: 'landscape', width: 1920, height: 1080, url: 'http://h/o/y?key=k' }, { id: 'v', kind: 'vertical', width: 1080, height: 1920, url: 'http://h/o/y?key=k&canvas=v' }] };
+  assert.deepEqual(resourcesOf(item, 'p1').map((r) => r.meta.scenes), ['http://h/o/y?key=k', 'http://h/o/y?key=k&canvas=v'].map((u) => [{ id: 'brb', name: 'BRB', core: 'brb', url: `${u}&scene=brb` }, { id: 'pov', name: 'POV', url: `${u}&scene=pov` }]));
+  assert.equal(resourcesOf({ ...item, canvases: [{ ...item.canvases[0], url: 'http://h/o/y' }] }, 'p1')[0].meta.scenes[0].url, 'http://h/o/y?scene=brb', 'an overlay that needs no key');
+  assert.deepEqual(resourcesOf(item, 'p1', { scenes: false }).map((r) => 'scenes' in r.meta), [false, false]);
+  const many = resourcesOf({ ...item, scenes: manyScenes() }, 'p1')[0].meta;
+  assert.ok(many.scenes.length > 10 && many.scenes.length <= 50 && many.scenes[0].id === 's0');
+  assert.ok(Buffer.byteLength(JSON.stringify(many)) <= 4096);
+});
+
+const manyScenes = () => Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, name: `Scene ${i} ${'x'.repeat(60)}` }));
+const hubRun = async (list, answer = () => ({ status: 200, data: {} })) => {
+  const puts = [];
+  const logs = [];
+  const ctx = {
+    overlays: { baseUrl: 'http://h', list: () => list, onChange: () => () => {} },
+    setInfo: () => {}, memory: { get: () => undefined, set: () => {} }, now: () => 0,
+    log: { warn: (msg, d) => logs.push([msg, d]) }, schedule: () => {}, every: () => {},
+  };
+  const hub = createHub(ctx, { request: async (p, o) => { puts.push(o.json); return answer(o.json); }, appId: 'ctd-overlay', profileId: 'p1', version: '1.0.0', allowMaking: () => false, isOld: () => false, onChange: () => {}, reauth: () => {} });
+  hub.start();
+  await new Promise((r) => setTimeout(r, 20));
+  hub.stop();
+  return { puts, body: puts.at(-1), warning: hub.warning, logs };
+};
+
+test('the hub registration: scenes cut to 4 KB of meta are logged once; they go before any overlay when the body is too big, or when the hub refuses them', async () => {
+  const items = Array.from({ length: 120 }, (_, i) => ({ id: `ovl_${i}`, slug: `o${i}`, template: { id: 'com.a.b' }, profiles: null, scenes: manyScenes(), canvases: [{ id: 'h', kind: 'landscape', width: 1920, height: 1080, url: `http://h/o/o${i}?key=k` }] }));
+  const big = await hubRun(items);
+  assert.equal(big.body.resources.length, 120, 'every overlay is still there');
+  assert.ok(big.body.resources.every((r) => !('scenes' in r.meta)));
+  assert.ok(Buffer.byteLength(JSON.stringify(big.body)) <= 256 * 1024);
+  assert.match(big.warning, /without their scenes/);
+  const small = await hubRun(items.slice(0, 2));
+  assert.ok(small.body.resources[0].meta.scenes.length > 10);
+  assert.equal(small.warning, undefined);
+  assert.deepEqual(small.logs.map((l) => l[1]), [{ overlays: 'o0, o1' }], 'cut scenes are logged, by slug');
+  // A hub that refuses them (an older one): once more without, and said.
+  const few = [{ ...items[0], scenes: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] }];
+  // (CTD Relay answers 400 to a registration it finds invalid or too large.)
+  const old = await hubRun(few, (json) => (json.resources.some((r) => r.meta.scenes) ? { status: 400, data: { code: 'invalid', detail: 'resources.0.meta: at most 4096 bytes of JSON' } } : { status: 200, data: {} }));
+  assert.deepEqual(old.puts.map((b) => 'scenes' in b.resources[0].meta), [true, false]);
+  assert.match(old.warning, /refused them/);
+  assert.equal((await hubRun(few)).puts.length, 1);
 });

@@ -4,7 +4,11 @@
 //
 // - Registration: PUT /apps/<appId> with every overlay bound to this connection ("all" counts),
 //   one resource per canvas: its URL for OBS (absolute, key included), size, and meta { canvas:
-//   landscape | vertical, slot, transparent }. slot is the overlay's role in OBS, the same for the
+//   landscape | vertical, slot, transparent, scenes? }. scenes: [{ id, name, core?, url }], the scenes
+//   of its template a browser source can stay on: url is the resource's URL with scene=<id> (04
+//   §4.9: that page shows only that scene and never follows the show or OBS). Only with two or
+//   more, never a scene that returns by itself; at most 50, cut so meta stays within 4096 bytes, and left out
+//   when the body is too big or the hub refuses it. slot is the overlay's role in OBS, the same for the
 //   equivalent overlay of every profile: its "Role in OBS", else the template's short name, plus
 //   the canvas ("takeover-landscape"). Sent again every 30 s (the hub counts an app offline after
 //   90 s) and a second after overlays change (made, deleted, renamed, re-keyed, re-bound). At most
@@ -36,6 +40,8 @@ const EVERY_MS = 30000;
 const SOON_MS = 1000;
 const MAX_RESOURCES = 200;
 const MAX_BODY = 256 * 1024;
+const MAX_META = 4096; // a resource's meta, as JSON (CTD Relay's limit up to v0.2.10, scenes included)
+const MAX_SCENES = 50; // CTD Relay's, since it checks them
 const REPLIES_PER_MINUTE = 100;
 const MAKES_PER_MINUTE = 10;
 const HANDLED_KEEP = 50;
@@ -51,10 +57,23 @@ export function appIdFor({ limited, slug, id }) {
   return tail ? `ctd-overlay-${tail}` : 'ctd-overlay';
 }
 
+// meta with the scenes that fit: the hub takes at most MAX_META bytes of meta per resource, so
+// the last scenes are left out past that (the first ones are the template's main ones). Each has
+// its URL (the resource's with scene=<id>): a CTD Relay that checks scenes requires one.
+function withScenes(meta, scenes, url) {
+  if (!Array.isArray(scenes) || !scenes.length) return meta;
+  const at = (id) => `${url}${url.includes('?') ? '&' : '?'}scene=${encodeURIComponent(id)}`;
+  let list = scenes.slice(0, MAX_SCENES).map((s) => ({ id: s.id, name: s.name, ...(s.core ? { core: s.core } : {}), url: at(s.id) }));
+  const size = () => Buffer.byteLength(JSON.stringify({ ...meta, scenes: list }));
+  while (list.length && size() > MAX_META) list = list.slice(0, -1);
+  return list.length ? { ...meta, scenes: list } : meta;
+}
+
 // One overlay's resources, one per canvas that has a URL, assigned to profileId. tag: the profile,
 // in the id ("<overlay id>:<canvas id>:<profile id>"), when the connection follows every profile
-// (the same overlay may be registered for several).
-export function resourcesOf(item, profileId, { tag } = {}) {
+// (the same overlay may be registered for several). meta.scenes: the overlay's scenes (item.scenes),
+// [{ id, name, core?, url }], unless scenes: false.
+export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
   const base = item.role || tidy(shortName(item.template?.id), 54) || 'overlay';
   const canvases = (item.canvases || []).filter((c) => str(c.url));
   const labels = canvases.map((c) => c.label || c.kind);
@@ -71,7 +90,7 @@ export function resourcesOf(item, profileId, { tag } = {}) {
       url: c.url,
       width: c.width,
       height: c.height,
-      meta: { canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true },
+      meta: withScenes({ canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true }, scenes ? item.scenes : undefined, c.url),
     };
   });
 }
@@ -84,11 +103,11 @@ export function resourcesOf(item, profileId, { tag } = {}) {
 // overlays by profileId, GET /profiles/{id}/overlays, never the unassigned ones): bound to some of
 // its profiles, those; bound to the whole connection (or "all"), every profile it follows now
 // (profiles). The same URL, canvas and slot for each.
-export function resourcesFor(items, { every, profileId, profiles = [] }) {
+export function resourcesFor(items, { every, profileId, profiles = [], scenes = true }) {
   return items.flatMap((item) => {
-    if (!every) return resourcesOf(item, profileId);
+    if (!every) return resourcesOf(item, profileId, { scenes });
     const list = Array.isArray(item.profiles) ? item.profiles : profiles;
-    return list.flatMap((p) => resourcesOf(item, p, { tag: p }));
+    return list.flatMap((p) => resourcesOf(item, p, { tag: p, scenes }));
   });
 }
 
@@ -96,6 +115,8 @@ export function resourcesFor(items, { every, profileId, profiles = [] }) {
 // profile it follows then, or undefined; profiles(): the ids of every profile it follows now.
 export function createHub(ctx, { request, appId, profileId, profileSlug, every = false, profileOf = () => undefined, profiles = () => [], version, allowMaking, isOld, onChange, reauth }) {
   let warning;
+  let refused = false; // the hub refused a registration that had scenes: they are left out from then on
+  let cutSaid = ''; // the overlays whose scenes were last logged as cut
   let busy = null; // the registration under way
   let next = null; // the one asked for while it was
   let soonTimer = null;
@@ -115,15 +136,27 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
 
   // ---- registration ----------------------------------------------------------------------------
   function payload() {
-    const all = resourcesFor(ctx.overlays.list(), { every, profileId, profiles: profiles() });
+    const items = ctx.overlays.list();
+    const from = { every, profileId, profiles: profiles() };
+    let all = resourcesFor(items, from);
     const body = (resources) => ({
       name: 'CTD Overlay', kind: 'ctd-overlay', version,
       ...(ctx.overlays.baseUrl ? { baseUrl: ctx.overlays.baseUrl } : {}),
       capabilities: ['overlays', 'overlay.create'], resources,
     });
+    const fits = (resources) => Buffer.byteLength(JSON.stringify(body(resources))) <= MAX_BODY;
+    // Too much for the hub, or refused by it with them (an older one): the scenes go before any
+    // overlay does.
+    const noScenes = all.some((r) => r.meta.scenes) && (refused || !fits(all.slice(0, MAX_RESOURCES)));
+    if (noScenes) all = resourcesFor(items, { ...from, scenes: false });
+    else {
+      const cut = items.filter((i) => i.scenes && all.some((r) => r.id.split(':')[0] === i.id && (r.meta.scenes?.length || 0) < i.scenes.length)).map((i) => i.slug).join(', ');
+      if (cut && cut !== cutSaid) ctx.log.warn('some scenes are not shared with the OBS plugin: CTD Relay takes 4 KB of details per overlay', { overlays: cut });
+      cutSaid = cut;
+    }
     let kept = all.slice(0, MAX_RESOURCES);
     while (kept.length && Buffer.byteLength(JSON.stringify(body(kept))) > MAX_BODY) kept = kept.slice(0, Math.floor(kept.length * 0.9));
-    return { body: body(kept), total: all.length, kept: kept.length, overlays: new Set(kept.map((r) => r.id.split(':')[0])).size };
+    return { body: body(kept), total: all.length, kept: kept.length, noScenes, overlays: new Set(kept.map((r) => r.id.split(':')[0])).size };
   }
 
   async function put() {
@@ -138,6 +171,13 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
       return;
     }
     if (stopped) return;
+    // A hub that refuses the registration for what it holds (not for who sends it) may be one that
+    // can't take the scenes: once more without them, and without them from then on.
+    if ([400, 413, 422].includes(r.status) && !refused && p.body.resources.some((x) => x.meta.scenes)) {
+      refused = true;
+      ctx.log.warn('CTD Relay refused the overlays with their scenes; registering them without', { status: r.status });
+      return put();
+    }
     if (r.status >= 400) {
       const code = r.data?.code;
       const said = str(r.data?.detail) ? r.data.detail.slice(0, 200) : `it answered ${r.status}`;
@@ -153,6 +193,7 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
     const notes = [];
     if (!ctx.overlays.baseUrl) notes.push(`The OBS plugin sees no overlay URLs: ${ctx.overlays.baseProblem}`);
     if (p.kept < p.total) notes.push(`Only ${p.kept} of ${p.total} overlay URLs are shared with the OBS plugin: CTD Relay takes ${MAX_RESOURCES} per app. Bind fewer overlays to this connection.`);
+    if (p.noScenes) notes.push(refused ? 'The OBS plugin gets the overlays without their scenes: this CTD Relay refused them (update CTD Relay).' : `The OBS plugin gets the overlays without their scenes: with them they are more than CTD Relay takes per app (${MAX_BODY / 1024} KB). Bind fewer overlays to this connection.`);
     show({ status: 'shared', overlays: p.overlays, resources: p.kept, at: new Date(ctx.now()).toISOString() }, notes[0]);
   }
 

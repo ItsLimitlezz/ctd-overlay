@@ -71,6 +71,10 @@ test('overlay keys: the page and its data need the key; files don\'t; rotate, an
   assert.deepEqual(urls.map((u) => u.canvas), ['h', 'v']);
   assert.equal(urls[0].url, `${platform.url}/o/main?key=${key}`);
   assert.equal(urls[1].url, `${platform.url}/o/main?key=${key}&canvas=v`);
+  // A URL per scene that stays on it (?scene=, 04 §4.9), same key and canvas; never a scene that returns by itself.
+  assert.deepEqual(urls[1].scenes.map((s) => s.id), ['starting', 'program', 'brb', 'lineup', 'outro', 'opener']);
+  assert.deepEqual(urls[0].scenes[2], { id: 'brb', name: 'Be Right Back', url: `${platform.url}/o/main?key=${key}&scene=brb` });
+  assert.equal(urls[1].scenes[2].url, `${platform.url}/o/main?key=${key}&canvas=v&scene=brb`);
   const rotated = await api('POST', '/overlays/main/key/rotate', {});
   const fresh = platform.overlays.key('main');
   assert.notEqual(fresh, key);
@@ -78,6 +82,7 @@ test('overlay keys: the page and its data need the key; files don\'t; rotate, an
   assert.equal((await o('/snapshot', key)).status, 401, 'the old URL stops working');
   assert.equal((await o('/snapshot', fresh)).status, 200);
   assert.equal((await api('PATCH', '/overlays/main', { keyRequired: false })).body.keyRequired, false);
+  assert.equal((await api('GET', '/overlays/main/url')).body.urls[0].scenes[2].url, `${platform.url}/o/main?scene=brb`, 'no key required, none in the scene URLs either');
   assert.equal((await o('/snapshot', undefined)).status, 200);
   assert.equal((await api('PATCH', '/overlays/main', { name: 'x' })).status, 422, 'an unknown field');
   assert.equal((await api('GET', '/overlays/nope/url')).status, 404);

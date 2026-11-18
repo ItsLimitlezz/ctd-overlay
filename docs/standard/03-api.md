@@ -118,7 +118,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `POST /overlays/{id}/upgrade` | Move to a newer installed version of the same template (settings migrated, 04 §4.10): `dryRun` returns the plan; a major version, or one that drops anything the overlay uses, needs `confirm`; an installed package's `migrate.js` runs only with `runMigrate`. `dryRun`, `confirm` and `runMigrate` are `true` or `false`; anything else is a `422` |
 | `POST /overlays/{id}/revert` | Back to the version and settings the overlay had before its last upgrade (04 §4.10) |
 | `POST /overlays/{id}/key/rotate` | New overlay key — **breaks the OBS URL** and ends streams opened with the old key; UI must confirm; never replayed for an `Idempotency-Key` (its answer holds the key) |
-| `GET /overlays/{id}/url` | Production URL(s) per canvas |
+| `GET /overlays/{id}/url` | Production URL(s) per canvas: `urls: [{ canvas, width, height, url, scenes? }]`. `scenes: [{ id, name, url }]` is a URL per scene that shows only that scene (`?scene=<id>`, 04 §4.9: it never follows the show or OBS), with the same key and canvas; left out for a template with fewer than two scenes to pin |
 | `PUT /overlays/{id}/scene` | `{ "scene": "brb", "transition": "fade" }` |
 | `POST /overlays/{id}/actions/{name}` | Fire a template action (04 §4.6) |
 | `POST /overlays/{id}/simulate` | Inject sample events into this overlay only (08 §8.5): `kind` and that kind's options (`name`, `text`, `roles`, `months`, `count`, `viewers`, `bits`, `title`, `artist`, `value`, `url`, `mediaId`); any other field is refused |

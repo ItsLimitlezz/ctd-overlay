@@ -8,8 +8,10 @@
 //   ctx.overlays.list()        the overlays bound to this connection ("all" counts, and a binding to
 //                              one of its profiles), by slug, each { id, slug, role?, template: {
 //                              id, version, name }, canvases: [{ id, label, kind: landscape |
-//                              vertical, width, height, url }], profiles: null (bound whole) | [the
-//                              profile ids it is bound to] }; one whose template can't run is left out
+//                              vertical, width, height, url }], scenes?: [{ id, name, core? }]
+//                              (its template's scenes a URL can stay on, ?scene=, 04 §4.9, when
+//                              there are two or more), profiles: null (bound whole) | [the profile
+//                              ids it is bound to] }; one whose template can't run is left out
 //   ctx.overlays.onChange(fn)  fn() after an overlay is made, deleted, renamed, re-keyed, re-bound…
 //   ctx.overlays.create({ template, canvas?, slugBase?, from, profile? })   an overlay bound to this
 //                              connection only ("<connection>/<profile>" with a profile), recorded
@@ -19,7 +21,7 @@
 // The URLs carry the overlays' keys: they go only to the service this connection reaches, which
 // the owner set up (07 §7.6).
 import { feedKey } from '../bus/owners.js';
-import { scopeOf } from '../overlays/registry.js';
+import { pinnableScenes, scopeOf } from '../overlays/registry.js';
 import { compareVersions } from '../templates/registry.js';
 
 const SLUG_CHARS = 56; // room for "-99" under the 63 a slug may have
@@ -66,19 +68,24 @@ export function createShare({ overlays, templates, audit, log, base = () => unde
     if (!t) return undefined;
     const list = t.manifest.canvases || [];
     const urls = baseUrl ? overlays.urls(doc.id, baseUrl) : [];
+    const scenes = pinnableScenes(t.manifest);
     return {
       id: doc.id,
       slug: doc.data.slug,
       ...(doc.data.role ? { role: doc.data.role } : {}),
       template: { id: t.id, version: t.version, name: t.manifest.name || t.id },
-      canvases: list.map((c) => ({
-        id: c.id,
-        ...(typeof c.label === 'string' && c.label ? { label: c.label } : {}),
-        kind: canvasKind(list, c),
-        width: c.width,
-        height: c.height,
-        ...(urls.find((u) => u.canvas === c.id)?.url ? { url: urls.find((u) => u.canvas === c.id).url } : {}),
-      })),
+      ...(scenes.length > 1 ? { scenes: scenes.map((x) => ({ id: x.id, name: x.label || x.id, ...(x.core ? { core: x.core } : {}) })) } : {}),
+      canvases: list.map((c) => {
+        const u = urls.find((x) => x.canvas === c.id);
+        return {
+          id: c.id,
+          ...(typeof c.label === 'string' && c.label ? { label: c.label } : {}),
+          kind: canvasKind(list, c),
+          width: c.width,
+          height: c.height,
+          ...(u?.url ? { url: u.url } : {}),
+        };
+      }),
     };
   }
 
