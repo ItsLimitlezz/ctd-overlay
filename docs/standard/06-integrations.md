@@ -448,14 +448,15 @@ profile made or deleted there registers them again.
 `url` is the overlay's URL for OBS, its key included, at `baseUrl`: `SKP_PUBLIC_URL`, else the
 first `SKP_HOSTS` name with its port (lan and public modes; `192.168.1.50:4850` →
 `http://192.168.1.50:4850`); without one the connection warns and shares no URLs.
-`meta.scenes` (additive; an older plugin ignores it) is `[{ id, name, core? }]`: the scenes of
-the overlay's template a browser source can stay on (`name` is the scene's label). The reader
-makes a scene's URL itself by adding `scene=<scene id>` to the resource's `url`
-(`…/o/<slug>?key=<key>[&canvas=<canvas id>]&scene=<scene id>`): that page shows only that scene
-and never follows the show's or Follow OBS's scene changes (04 §4.9), under the same key rules as
-`url`. Only with two or more such scenes; a scene that returns by itself (`durationMs` with
-`then`) is not listed. The list is cut from its end so `meta` stays within 4096 bytes of JSON
-(logged once), and left out entirely when the registration would pass 256 KB (before any overlay
+`meta.scenes` (additive; an older plugin ignores it) is `[{ id, name, core?, url }]`: the scenes
+of the overlay's template a browser source can stay on (`name` is the scene's label). A scene's
+`url` is the resource's `url` with `scene=<scene id>` added
+(`…/o/<slug>?key=<key>[&canvas=<canvas id>]&scene=<scene id>`; a reader may as well add it
+itself): that page shows only that scene and never follows the show's or Follow OBS's scene
+changes (04 §4.9), under the same key rules as `url`. Only with two or more such scenes; a scene
+that returns by itself (`durationMs` with `then`) is not listed. At most 50, and the list is cut
+from its end so `meta` stays within 4096 bytes of JSON (logged once; CTD Relay up to v0.2.10
+takes no more), and left out entirely when the registration would pass 256 KB (before any overlay
 is) or the hub refuses it with them (400, 413 or 422: sent once more without, with a warning). `canvas` is
 `landscape` or `vertical`: a canvas id `h`/`v` says so, else in a template with a `v` canvas the
 others are the main output's, else its shape (width ≥ height). `slot` is the overlay's **Role in

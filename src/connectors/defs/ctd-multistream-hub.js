@@ -4,10 +4,10 @@
 //
 // - Registration: PUT /apps/<appId> with every overlay bound to this connection ("all" counts),
 //   one resource per canvas: its URL for OBS (absolute, key included), size, and meta { canvas:
-//   landscape | vertical, slot, transparent, scenes? }. scenes: [{ id, name, core? }], the scenes of
-//   its template a browser source can stay on: the reader adds scene=<id> to the resource's URL
-//   (04 §4.9: that page shows only that scene and never follows the show or OBS). Only with two or
-//   more, never a scene that returns by itself; cut so meta stays within 4096 bytes, and left out
+//   landscape | vertical, slot, transparent, scenes? }. scenes: [{ id, name, core?, url }], the scenes
+//   of its template a browser source can stay on: url is the resource's URL with scene=<id> (04
+//   §4.9: that page shows only that scene and never follows the show or OBS). Only with two or
+//   more, never a scene that returns by itself; at most 50, cut so meta stays within 4096 bytes, and left out
 //   when the body is too big or the hub refuses it. slot is the overlay's role in OBS, the same for the
 //   equivalent overlay of every profile: its "Role in OBS", else the template's short name, plus
 //   the canvas ("takeover-landscape"). Sent again every 30 s (the hub counts an app offline after
@@ -40,7 +40,8 @@ const EVERY_MS = 30000;
 const SOON_MS = 1000;
 const MAX_RESOURCES = 200;
 const MAX_BODY = 256 * 1024;
-const MAX_META = 4096; // a resource's meta, as JSON (CTD Relay's limit)
+const MAX_META = 4096; // a resource's meta, as JSON (CTD Relay's limit up to v0.2.10, scenes included)
+const MAX_SCENES = 50; // CTD Relay's, since it checks them
 const REPLIES_PER_MINUTE = 100;
 const MAKES_PER_MINUTE = 10;
 const HANDLED_KEEP = 50;
@@ -57,10 +58,12 @@ export function appIdFor({ limited, slug, id }) {
 }
 
 // meta with the scenes that fit: the hub takes at most MAX_META bytes of meta per resource, so
-// the last scenes are left out past that (the first ones are the template's main ones).
-function withScenes(meta, scenes) {
+// the last scenes are left out past that (the first ones are the template's main ones). Each has
+// its URL (the resource's with scene=<id>): a CTD Relay that checks scenes requires one.
+function withScenes(meta, scenes, url) {
   if (!Array.isArray(scenes) || !scenes.length) return meta;
-  let list = scenes.map((s) => ({ id: s.id, name: s.name, ...(s.core ? { core: s.core } : {}) }));
+  const at = (id) => `${url}${url.includes('?') ? '&' : '?'}scene=${encodeURIComponent(id)}`;
+  let list = scenes.slice(0, MAX_SCENES).map((s) => ({ id: s.id, name: s.name, ...(s.core ? { core: s.core } : {}), url: at(s.id) }));
   const size = () => Buffer.byteLength(JSON.stringify({ ...meta, scenes: list }));
   while (list.length && size() > MAX_META) list = list.slice(0, -1);
   return list.length ? { ...meta, scenes: list } : meta;
@@ -68,8 +71,8 @@ function withScenes(meta, scenes) {
 
 // One overlay's resources, one per canvas that has a URL, assigned to profileId. tag: the profile,
 // in the id ("<overlay id>:<canvas id>:<profile id>"), when the connection follows every profile
-// (the same overlay may be registered for several). meta.scenes: the overlay's scenes (item.scenes,
-// [{ id, name, core? }]), unless scenes: false.
+// (the same overlay may be registered for several). meta.scenes: the overlay's scenes (item.scenes),
+// [{ id, name, core?, url }], unless scenes: false.
 export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
   const base = item.role || tidy(shortName(item.template?.id), 54) || 'overlay';
   const canvases = (item.canvases || []).filter((c) => str(c.url));
@@ -87,7 +90,7 @@ export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
       url: c.url,
       width: c.width,
       height: c.height,
-      meta: withScenes({ canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true }, scenes ? item.scenes : undefined),
+      meta: withScenes({ canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true }, scenes ? item.scenes : undefined, c.url),
     };
   });
 }
