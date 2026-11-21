@@ -367,3 +367,34 @@ test('skp template follow --tag-prefix: once per prefix; sources shows each; upd
   assert.equal((await cli('template', 'unfollow', KIT)).code, 0, 'followed once now');
   assert.deepEqual(auditOf(config).filter((e) => e.action === 'template.follow').map((e) => e.details.tagPrefix), ['takeover-v', 'gta-v']);
 });
+
+test('a first release can\'t take a template installed from a release another prefix owns, a longer sibling prefix or, with no prefix, a sibling\'s', async (t) => {
+  const gh = await fakeGithub(t);
+  const NEST = 'ItsLimitlezz/nested-claims';
+  const VERT = 'com.dprtmnt.vertical';
+  gh.release(NEST, 'takeover-vertical-v1.0.0', { assets: [{ name: 'vertical-1.0.0.skp', data: pkg(VERT, '1.0.0') }] });
+  gh.release(KIT, ...gta('1.0.0'));
+  const { config } = dirs(t);
+  const d = data(t, config, gh);
+  for (const ref of [`${NEST}@takeover-vertical-v1.0.0`, `${KIT}@gta-v1.0.0`]) {
+    const got = await fetchPackage(ref, { dir: d.templates.downloadDir, fetch: gh.fetch, lookup: gh.lookup });
+    d.templates.install(got.file, { name: got.label, origin: got.origin });
+  }
+  // The longer prefix is followed but hasn't checked yet; the shorter one's release is that template.
+  d.sources.add(NEST, { tagPrefix: 'takeover-vertical-v' });
+  const short = d.sources.add(NEST, { tagPrefix: 'takeover-v' });
+  gh.release(NEST, 'takeover-v1.1.0', { assets: [{ name: 'vertical-1.1.0.skp', data: pkg(VERT, '1.1.0') }] });
+  let [r] = await d.sources.check(short.id);
+  assert.equal(r.error?.code, 'id-taken');
+  assert.match(r.error.message, /installed from ItsLimitlezz\/nested-claims's release takeover-vertical-v1\.0\.0, which isn't one of this source's \("takeover-v…"\)/);
+  assert.equal(d.templates.get(VERT, '1.1.0'), undefined);
+  // No prefix, beside two: GTA was installed from gta-v1.0.0, a sibling's.
+  d.sources.add(KIT, { tagPrefix: 'gta-v' });
+  d.sources.add(KIT, { tagPrefix: 'takeover-v' });
+  const plain = d.sources.add(`${KIT}#`);
+  gh.release(KIT, 'v9.0.0', { assets: [{ name: 'x-9.0.0.skp', data: pkg(GTA, '9.0.0') }] });
+  [r] = await d.sources.check(plain.id);
+  assert.equal(r.error?.code, 'id-taken');
+  assert.match(r.error.message, /release gta-v1\.0\.0, which another source of it follows/);
+  assert.equal(d.templates.get(GTA, '9.0.0'), undefined);
+});

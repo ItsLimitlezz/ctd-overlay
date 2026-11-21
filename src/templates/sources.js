@@ -645,10 +645,15 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     if (d.claim === id) return undefined;
     const foreign = versions.find((t) => !sameOrigin(t.receipt?.source, d));
     if (foreign) return `${id} is already installed from ${originOf(foreign)}. To have this source update it, follow it with --template ${id}.`;
-    // From this repository, but from a release of another of its tag prefixes: another template's.
-    if (d.kind === 'github' && d.tag === undefined && d.tagPrefix) {
-      const elsewhere = versions.find((t) => typeof t.receipt?.source?.tag === 'string' && !t.receipt.source.tag.startsWith(d.tagPrefix));
-      if (elsewhere) return `${id} is installed from ${d.repo}'s release ${elsewhere.receipt.source.tag}, whose tag doesn't start with "${d.tagPrefix}". To have this source update it, follow it with --template ${id}.`;
+    // From this repository, but from a release that isn't this source's (another tag prefix's,
+    // a longer sibling prefix's, or, for one with no prefix, a sibling's): another template's.
+    if (d.kind === 'github' && d.tag === undefined) {
+      const others = prefixesBeside(d, doc.id);
+      const elsewhere = versions.find((t) => typeof t.receipt?.source?.tag === 'string' && !ownsTag(d.tagPrefix, t.receipt.source.tag, others));
+      if (elsewhere) {
+        const whose = d.tagPrefix ? `which isn't one of this source's ("${d.tagPrefix}…")` : 'which another source of it follows';
+        return `${id} is installed from ${d.repo}'s release ${elsewhere.receipt.source.tag}, ${whose}. To have this source update it, follow it with --template ${id}.`;
+      }
     }
     return undefined;
   }
