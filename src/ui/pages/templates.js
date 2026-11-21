@@ -15,7 +15,7 @@
 //   /o/~p.<id>@<version>?mock=1&canvas=&scene=               the live preview with sample data
 import * as api from '../api.js';
 import { ago, badge, bytes, confirm, dialog, empty, field, focusBack, h, menu, mount, notice, pageHead, preview, run, tabs, toast } from '../dom.js';
-import { CONNECT_ROUTE, problemNotice, repoOf, repoTest } from '../github.js';
+import { CONNECT_ROUTE, problemNotice, repoOf, repoTest, tagPrefixOf } from '../github.js';
 
 // ---- words -----------------------------------------------------------------------------------
 const CATEGORIES = {
@@ -296,15 +296,31 @@ export async function list(view, ctx) {
     // A GitHub repository: Test reads it (with the GitHub token, for a private one) and lists its
     // releases to pick one and its file from, instead of typing the tag.
     let choice;
-    const tester = repoTest({ input: link, pick: true, onChange: (c) => { choice = c; update(); }, onLink: () => d.close() });
+    // The tag prefix to follow: the chosen release's (takeover-v1.3.0 → takeover-v) until typed in.
+    const prefix = h('input', { type: 'text', name: 'tagPrefix', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'takeover-v' });
+    let prefixTyped = false;
+    prefix.addEventListener('input', () => { prefixTyped = true; });
+    const tester = repoTest({
+      input: link,
+      pick: true,
+      onChange: (c) => {
+        choice = c;
+        if (!prefixTyped) prefix.value = c?.tag ? tagPrefixOf(c.tag) : '';
+        update();
+      },
+      onLink: () => d.close(),
+    });
     const followBox = h('input', { type: 'checkbox', name: 'follow' });
     // The whole row a 44 px target, the box keeping its size when the words wrap.
     const followRow = h('label.field.check', followBox, h('span', 'Install its new releases by themselves', h('br'),
       h('span.hint', 'Follows the repository (Automatic updates, below the gallery), checked every hour.')));
+    const prefixRow = field('Release tag prefix (optional)', prefix, { hint: 'Only releases whose tag starts with it, for a repository that releases several templates: takeover-v for takeover-v1.3.0. Empty: every release.' });
     const update = () => {
       install.disabled = busy || (mode === 'file' ? !(file && passed) : !(choice || link.value.trim()));
       followRow.hidden = !repoOf(link.value);
+      prefixRow.hidden = followRow.hidden || !followBox.checked;
     };
+    followBox.addEventListener('change', () => update());
     link.addEventListener('input', () => { mount(linkStatus); tester.reset(); update(); });
     link.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!install.disabled) go(); } });
 
@@ -358,6 +374,7 @@ export async function list(view, ctx) {
             h('p.small.muted', { id: `${id}-link-hint` }, 'owner/name from github.com/owner/name, then Test to pick a release. Or owner/name@v1.2.0 for one release, or an https link to a .skp or .zip.'),
             tester.results,
             followRow,
+            prefixRow,
             linkStatus);
           update();
         },
@@ -371,6 +388,7 @@ export async function list(view, ctx) {
       const url = usedMode === 'link' ? choice?.url || link.value.trim() : undefined;
       const repo = usedMode === 'link' ? choice?.repo || repoOf(link.value) : undefined;
       const follow = usedMode === 'link' && repo && followBox.checked;
+      const tagPrefix = follow ? prefix.value.trim() : '';
       busy = true;
       cancel.disabled = true;
       if (usedMode === 'link') mount(status, h('p.muted', 'Downloading and checking… this can take a minute.'));
@@ -393,15 +411,18 @@ export async function list(view, ctx) {
       let name = out.id;
       try { name = (await api.get(apiOf(out.id)))?.name || out.id; } catch { /* the id will do */ }
       toast(out.installed ? `Installed "${name}" version ${out.version}` : `"${name}" version ${out.version} was already installed`);
-      // Followed after installing: its tag prefix and file name come from what was installed, and
-      // it may update this template even if it was first installed from a file (installing this
-      // release and ticking the box says so); otherwise its next release is refused as id-taken.
+      // Followed after installing: its tag prefix (the field, else from what was installed) and
+      // file name come from what was installed, and it may update this template even if it was
+      // first installed from a file (installing this release and ticking the box says so);
+      // otherwise its next release is refused as id-taken. A repository with several templates is
+      // followed once per prefix.
       if (follow) {
+        const which = tagPrefix ? `${repo} (releases ${tagPrefix}…)` : repo;
         try {
-          await api.post('/api/v1/templates/sources', { source: repo, template: out.id });
-          toast(`Following ${repo}: its new releases install by themselves`);
+          await api.post('/api/v1/templates/sources', { source: repo, template: out.id, ...(tagPrefix ? { tagPrefix } : {}) });
+          toast(`Following ${which}: its new releases install by themselves`);
         } catch (err) {
-          if (err.status === 409) toast(`${repo} was already followed`);
+          if (err.status === 409) toast(`${which} was already followed`);
           else toast(err);
         }
         refreshSources().catch(() => {});
@@ -439,8 +460,14 @@ export async function list(view, ctx) {
     renderSources();
   }
 
+  // A source as people read it: the repository with its tag prefix (a repository with several
+  // templates is followed once per prefix), the pinned release, or the link.
+  const sourceName = (s) => (s.kind === 'github'
+    ? `${s.repo || s.label}${s.tag !== undefined ? ` (release ${s.tag} only)` : s.tagPrefix ? ` · releases ${s.tagPrefix}…` : ''}`
+    : s.url || s.label || s.id);
+
   function sourceItem(s) {
-    const title = s.kind === 'github' ? `${s.repo || s.label}${s.tag !== undefined ? ` (release ${s.tag} only)` : ''}` : s.url || s.label || s.id;
+    const title = sourceName(s);
     const pending = arr(s.pending).length;
     const facts = [
       s.checkedAt ? `Checked ${ago(s.checkedAt)}` : 'Not checked yet',
@@ -449,10 +476,13 @@ export async function list(view, ctx) {
     return h('li',
       h('div.grow',
         h('div.truncate', { title }, h('strong', title)),
-        h('div.row', badge(s.kind === 'github' ? 'GitHub' : 'Link'), s.autoUpgrade === 'off' ? badge('Overlays upgrade by hand') : badge('Overlays follow safe updates', 'ok')),
+        h('div.row', badge(s.kind === 'github' ? 'GitHub' : 'Link'),
+          s.kind === 'github' && s.tag === undefined ? badge(s.tagPrefix ? `Tag prefix ${s.tagPrefix}` : 'No tag prefix') : null,
+          s.autoUpgrade === 'off' ? badge('Overlays upgrade by hand') : badge('Overlays follow safe updates', 'ok')),
         h('div.small',
           s.templateId ? ['Updates ', h('a', { href: pageOf(s.templateId) }, nameOf(s.templateId)), s.version ? `, newest ${s.version}` : ''] : 'Nothing installed from it yet'),
         h('div.small.muted', facts),
+        s.warning?.message ? h('div.notice.warn.small', s.warning.message) : null,
         s.error?.message ? h('div.notice.danger.small', `The last check failed: ${s.error.message}`,
           s.error.fix === 'connect-github' && canWrite ? [' ', h('a', { href: CONNECT_ROUTE }, 'Connect GitHub in Settings')] : null) : null),
       canWrite ? menu('Options', [
@@ -510,6 +540,7 @@ export async function list(view, ctx) {
             { value: 'off', label: 'Stay where they are: I upgrade them myself' },
           ],
         },
+        { name: 'tagPrefix', label: 'Release tag prefix (optional)', placeholder: 'takeover-v', autocapitalize: 'none', spellcheck: 'false', hint: 'For a repository that releases several templates, each under its own tags: only releases whose tag starts with it, like takeover-v for takeover-v1.3.0. Follow the repository once per template, each with its prefix. Empty: every release (or the prefix of its first one).' },
         { name: 'template', label: 'Template it updates (optional)', autocapitalize: 'none', spellcheck: 'false', hint: 'Only when this template is already installed from a file or a link: its id, like com.example.lower-third. Leave empty otherwise.' },
       ],
       submitLabel: 'Follow',
@@ -517,20 +548,21 @@ export async function list(view, ctx) {
         const source = values.source.trim();
         if (!source) throw new Error('Enter a GitHub repository (owner/name) or an https link.');
         const template = values.template.trim().toLowerCase();
-        return api.post('/api/v1/templates/sources', { source, autoUpgrade: values.autoUpgrade, ...(template ? { template } : {}) });
+        const tagPrefix = values.tagPrefix.trim();
+        return api.post('/api/v1/templates/sources', { source, autoUpgrade: values.autoUpgrade, ...(tagPrefix ? { tagPrefix } : {}), ...(template ? { template } : {}) });
       },
     });
     if (!added) return;
     const c = added.check;
     await Promise.all([c?.installed && !c.installed.noop ? refreshTemplates().catch(() => {}) : null, refreshSources().catch(() => {})]);
-    const label = added.repo || added.url || added.label;
+    const label = sourceName(added);
     if (c?.error) toast(`Following ${label}. Its first check failed: ${c.error.message}`, { kind: 'error' });
     else if (c?.installed) toast(`Following ${label}: ${c.installed.noop ? `${nameOf(c.installed.id)} ${c.installed.version} was already installed` : `installed ${nameOf(c.installed.id)} version ${c.installed.version}`}`);
     else toast(`Following ${label}`);
   }
 
   async function unfollow(s) {
-    const label = s.repo || s.url || s.label;
+    const label = sourceName(s);
     const ok = await confirm({
       title: `Stop following ${label}?`,
       consequence: 'Its new releases won\'t install any more. Templates already installed from it stay, and overlays keep working.',

@@ -37,6 +37,13 @@ export function repoOf(text) {
   return undefined;
 }
 
+// A release tag's prefix before its version ("takeover-v1.3.0" → "takeover-v"), when it says more
+// than "v" (templates/sources.js tagPrefixOf): the releases a source follows. '' for "v1.0.0".
+export function tagPrefixOf(tag) {
+  const m = /^(.*?)\d+\.\d+/.exec(String(tag ?? ''));
+  return m && !/^v?$/i.test(m[1]) ? m[1] : '';
+}
+
 // The link that installs a release's file: its download link, which the platform reads through
 // GitHub's API with the token (a private repository too). No file: the release by its tag.
 const choiceUrl = (repo, tag, asset) => (asset
@@ -52,7 +59,7 @@ function day(iso) {
 let seq = 0;
 
 // "Test" for a repository field: whether the platform can read it, as whom, and its releases,
-// newest first. pick: choose a release and its file, to install (onChange({ url, label, repo }),
+// newest first. pick: choose a release and its file, to install (onChange({ url, label, repo, tag }),
 // or undefined when nothing is chosen). here: on Settings → Integrations (no link to itself).
 // Returns { button, results, reset(), choice() }.
 export function repoTest({ input, pick = false, onChange, here = false, onLink }) {
@@ -101,19 +108,19 @@ export function repoTest({ input, pick = false, onChange, here = false, onLink }
       const assets = r.assets;
       if (!assets.length) {
         mount(files, h('p.small.muted', 'This release has no .zip or .skp attached: its source code is installed, which works when template.json is at the repository\'s root.'));
-        set({ url: choiceUrl(out.repo, r.tag), label: `${out.repo} ${r.tag}`, repo: out.repo });
+        set({ url: choiceUrl(out.repo, r.tag), label: `${out.repo} ${r.tag}`, repo: out.repo, tag: r.tag });
         return;
       }
       const fileGroup = `file-${++seq}`;
       const radios = assets.map((a) => {
         const radio = h('input', { type: 'radio', name: fileGroup, value: a.name, checked: assets.length === 1 });
-        radio.addEventListener('change', () => { if (radio.checked) set({ url: choiceUrl(out.repo, r.tag, a.name), label: `${a.name} from ${r.tag}`, repo: out.repo }); });
+        radio.addEventListener('change', () => { if (radio.checked) set({ url: choiceUrl(out.repo, r.tag, a.name), label: `${a.name} from ${r.tag}`, repo: out.repo, tag: r.tag }); });
         const row = h('label.field.check', radio, h('span', a.name, h('br'), h('span.hint', bytes(a.size))));
         row.style.marginBottom = '4px';
         return row;
       });
       mount(files, h('fieldset', h('legend', `File from ${r.tag}`), radios));
-      if (assets.length === 1) set({ url: choiceUrl(out.repo, r.tag, assets[0].name), label: `${assets[0].name} from ${r.tag}`, repo: out.repo });
+      if (assets.length === 1) set({ url: choiceUrl(out.repo, r.tag, assets[0].name), label: `${assets[0].name} from ${r.tag}`, repo: out.repo, tag: r.tag });
       else set(undefined);
     }
     mount(results, head, h('fieldset', h('legend', 'Release'), rows.map((x) => x.row)), files);

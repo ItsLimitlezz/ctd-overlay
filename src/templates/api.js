@@ -8,7 +8,9 @@
 //                                                 (an https URL or a GitHub repository, 04 §4.13)
 //   DELETE /api/v1/templates/:id                  uninstall every version, or ?version= one
 //   POST   /api/v1/templates/validate             lint a package without installing it (04 §4.11)
-//   GET    /api/v1/templates/sources · POST { source, autoUpgrade?, template? } · DELETE …/sources/:ref
+//   GET    /api/v1/templates/sources · POST { source, autoUpgrade?, template?, tagPrefix? } · DELETE …/sources/:ref
+//                                                 (a repository is followed once per tag prefix;
+//                                                 :ref is the id, owner/name, or owner/name#prefix)
 //   POST   /api/v1/templates/sources/check        check followed sources now (?source=one)
 import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -49,7 +51,8 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
   // route serves (a version installed before previews had to be images in previews/ may list others).
   const previewsOf = (t) => (t.manifest.previews || []).filter(previewType)
     .map((p) => `/api/v1/templates/${encodeURIComponent(t.id)}/versions/${encodeURIComponent(t.version)}/${p.split('/').map(encodeURIComponent).join('/')}`);
-  const sourceView = (doc) => ({ id: doc.id, ...doc.data });
+  // Its record, its tagPrefix (null for none) and any warning (04 §4.13).
+  const sourceView = (doc) => sources.view(doc);
   const record = (who, req, action, details) => audit.record({ action, actor: who.label, ip: req.client?.ip, ...details });
 
   async function install(body, req, who) {
@@ -77,7 +80,7 @@ export function templateRoutes({ api, templates, overlays, sources, audit, confi
   // The sources first: /templates/sources would otherwise be read as a template id.
   return [
     r({ method: 'GET', path: '/api/v1/templates/sources', scope: 'templates:read', summary: 'Followed template sources', paged: true, run: ({ url }) => api.paginate(sources.list().map(sourceView), url, (s) => s.id) }),
-    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL (tagPrefix: only releases whose tag starts with it)', body: { fields: ['source', 'autoUpgrade', 'template', 'tagPrefix'] }, status: 201, run: async ({ body, req, who }) => {
+    r({ method: 'POST', path: '/api/v1/templates/sources', scope: 'templates:write', summary: 'Follow a GitHub repository or an https URL (tagPrefix: only releases whose tag starts with it; one source per repository and prefix)', body: { fields: ['source', 'autoUpgrade', 'template', 'tagPrefix'] }, status: 201, run: async ({ body, req, who }) => {
       if (typeof body.source !== 'string') throw new ApiError(422, 'invalid', '"source" is owner/name or an https URL.');
       const s = sources.add(body.source, { autoUpgrade: body.autoUpgrade, actor: who.label, claim: body.template, tagPrefix: body.tagPrefix ?? undefined });
       record(who, req, 'template.follow', { target: s.data.label });

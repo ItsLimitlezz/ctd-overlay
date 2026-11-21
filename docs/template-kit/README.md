@@ -12,6 +12,10 @@ Everything to design overlay templates for CTD Overlay, or to have an AI assista
   `npm run skp -- template install docs/template-kit/mega`).
 - [PROMPT.md](PROMPT.md): a ready-to-use prompt; give it, the guide and `mega/` to an assistant with
   your brief.
+- [../template-releases.md](../template-releases.md): publishing a template as GitHub releases that
+  platforms install by themselves, including
+  [several templates in one repository](../template-releases.md#several-templates-in-one-repository)
+  (a folder and a tag prefix each, `takeover-v1.3.0`, followed once per prefix).
 
 The bundled templates are good smaller examples: `templates/chat`, `templates/alerts`,
 `templates/viewers`, and the full D/PRTMNT show package `templates/takeover`.
