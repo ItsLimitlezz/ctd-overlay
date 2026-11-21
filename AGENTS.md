@@ -2,7 +2,7 @@
 > Team rules live in the hub: github.com/ItsLimitlezz/CTD-Software-Suite → AGENTS.md (read it first). This file is repo-specific.
 
 ## What this is
-**CTD Overlay** (package `ctd-overlay` v0.5.0): self-hosted stream-overlay platform for OBS browser sources: merged chat, alerts, scenes, timed shows and templates, fed by CTD Relay. Implements the Stream Kit Platform Standard (`skp/1`); successor to the D/PRTMNT Stream Kit (v0).
+**CTD Overlay** (package `ctd-overlay` v0.10.0): self-hosted stream-overlay platform for OBS browser sources: merged chat, alerts, scenes, timed shows and templates, fed by CTD Relay. Implements the Stream Kit Platform Standard (`skp/1`); successor to the D/PRTMNT Stream Kit (v0).
 Plain Node.js 24 server (no runtime npm dependencies, `node:sqlite`); runs on the PC that runs OBS or as a Linux container (TrueNAS). Public repo licensed **AGPL-3.0-only** (see `LICENSE`; same as CTD Relay, which Overlay will merge into later), so it is open-source under the hub's rule.
 
 ## Layout
