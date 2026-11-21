@@ -579,7 +579,8 @@ export function createTemplateSources({ store, templates, overlays, log, github,
         const auth = authOf({ github, token });
         const rel = await githubRelease(fetchFn, d, { auth, etag: known.etag, pattern: d.assetPattern, tagPrefix: d.tagPrefix, signal: stopping.signal, max, net });
         if (rel.unchanged || (!force && rel.tag === known.release && (d.version || d.failed))) {
-          if (rel.etag && !d.failed) update(doc, { etag: rel.etag });
+          // The same release, its notes edited since (a new ETag): keep the new notes.
+          if (rel.etag && !d.failed) update(doc, { etag: rel.etag, ...(rel.notes?.length && rel.tag === d.release ? { notes: rel.notes } : {}) });
           return await unchanged();
         }
         // `tag` is the one a source may pin; the tag prefix and the file's name, learnt from the

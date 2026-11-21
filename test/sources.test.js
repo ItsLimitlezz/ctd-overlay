@@ -99,6 +99,12 @@ function fakeGithub({ rotate = false } = {}) {
       n++;
       repos.set(repo, [...(repos.get(repo) || []), { id: n, tag, assets, zipball, notes, etag: `"etag-${n}"` }]);
     },
+    // Edits a published release's notes: GitHub gives it a new ETag, the tag stays.
+    editNotes(repo, tag, notes) {
+      const r = release(repo, tag);
+      r.notes = notes;
+      r.etag = `"etag-${++n}"`;
+    },
     limit(on = true) { limited = on; },
   };
 }
@@ -225,6 +231,11 @@ test('following a repository: new releases install, overlays move when nothing b
   gh.publish('dprtmnt/sample', 'v1.1.0', { assets: [{ name: 'sample.skp', data: pkg('1.1.0') }], notes: '## Changes\n\n- New: a [darker](https://x.test) style\n- Fix: long names wrap' });
   [r] = await d.sources.check();
   assert.deepEqual([d.sources.get('dprtmnt/sample').data.notes, d.sources.get('dprtmnt/sample').data.notesVersion], [['Changes', 'New: a darker style', 'Fix: long names wrap'], '1.1.0']);
+  // The release's notes edited on GitHub (same tag, new ETag): the new notes are kept, nothing reinstalled.
+  gh.editNotes('dprtmnt/sample', 'v1.1.0', '- Fix: long names wrap\n- Fix: the clock in 12 h');
+  const [edited] = await d.sources.check();
+  assert.equal(edited.unchanged, true);
+  assert.deepEqual(d.sources.get('dprtmnt/sample').data.notes, ['Fix: long names wrap', 'Fix: the clock in 12 h']);
   assert.deepEqual(r.upgraded.map((u) => `${u.overlay} ${u.from}→${u.to}`), ['main 1.0.0→1.1.0', 'other 1.0.0→1.1.0']);
   assert.deepEqual(r.waiting, []);
   assert.equal(d.overlays.resolve('main').doc.data.template.version, '1.1.0');
