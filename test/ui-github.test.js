@@ -159,3 +159,78 @@ test('installing a release with "Install its new releases" ticked lets the repos
   await platform.sources.check(undefined, { force: true });
   assert.ok(platform.templates.get(ID, '1.1.0'), '1.1.0 installed from the followed repository');
 });
+
+test('one repository with two templates: Install fills the tag prefix in from the release picked, Follow takes one, and the list shows each', opts, async (t) => {
+  const KIT = 'ItsLimitlezz/DPRTMNT-stream-Kit';
+  const gh = await startFakeGithub();
+  defer(t, () => gh.close());
+  const skp = (id, version) => packTemplate(DIAG_DIR, { manifest: { id, name: id, version } });
+  gh.repo(KIT);
+  gh.release(KIT, 'takeover-v1.3.0', { assets: [{ name: 'dprtmnt-takeover-1.3.0.skp', data: skp('com.dprtmnt.show', '1.3.0') }] });
+  gh.release(KIT, 'gta-v1.0.0', { assets: [{ name: 'dprtmnt-gta-1.0.0.skp', data: skp('com.dprtmnt.gta', '1.0.0') }] });
+  const root = tempDir(t);
+  const config = loadConfig({ argv: ['--port', '0'], env: { SKP_DATA_DIR: path.join(root, 'data'), SKP_CONFIG_DIR: path.join(root, 'config') } });
+  const platform = await startPlatform(config, { log: memoryLogger().log, scrypt: { N: 1024 }, fetch: gh.fetch, lookup: gh.lookup });
+  defer(t, () => platform.stop());
+  const made = await fetch(`${platform.url}/api/v1/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: platform.auth.setupCode, username: 'juan', password: PASSWORD }) });
+  assert.equal(made.status, 201);
+  const browser = await launchBrowser(t);
+  const page = await browser.open(`${platform.url}/#/login`, { width: 1280, height: 900 });
+  await page.waitFor('document.querySelector("input[name=username]")', 15000);
+  await page.eval(`(() => {
+    document.querySelector('input[name=username]').value = 'juan';
+    document.querySelector('input[name=password]').value = ${JSON.stringify(PASSWORD)};
+    document.querySelector('form').requestSubmit();
+  })()`);
+  await page.waitFor('location.hash.startsWith("#/live") && document.querySelector("[data-view] h1")', 15000);
+  await page.eval('location.hash = "#/templates"');
+  await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent.trim() === "Install template")', 15000);
+
+  // Install → Test: the newest release (GTA's) is picked; ticking "Install its new
+  // releases" shows the prefix, filled in from it, and picking the show's release changes it.
+  await click(page, '[data-view] button', 'Install template');
+  await page.waitFor('document.querySelector("dialog[open] [role=tab]")', 5000);
+  await click(page, 'dialog[open] [role=tab]', 'From GitHub or a link');
+  await type(page, 'dialog[open] input[name=url]', KIT);
+  await click(page, 'dialog[open] button', 'Test');
+  await page.waitFor('document.querySelectorAll("dialog[open] input[type=radio]:checked").length === 2', 10000);
+  const prefixShown = () => page.eval('(() => { const i = document.querySelector("dialog[open] input[name=tagPrefix]"); return i && !i.closest("[hidden]") ? i.value : null; })()');
+  assert.equal(await prefixShown(), null, 'hidden until following is ticked');
+  await page.eval('[...document.querySelectorAll("dialog[open] input[type=checkbox]")].find((c) => /new releases/i.test(c.closest("label")?.textContent || "")).click()');
+  assert.equal(await prefixShown(), 'gta-v');
+  await page.eval('document.querySelector("dialog[open] input[type=radio][value=\'takeover-v1.3.0\']").click()');
+  await page.waitFor('document.querySelector("dialog[open] input[type=radio][value=\'dprtmnt-takeover-1.3.0.skp\']")?.checked', 5000);
+  assert.equal(await prefixShown(), 'takeover-v');
+  await sleep(50);
+  await click(page, 'dialog[open] button', 'Install');
+  await page.waitFor('!document.querySelector("dialog[open]")', 15000);
+  const until = async (fn, ms, what) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) throw new Error(`timed out: ${what}`); await sleep(50); } };
+  // Installed, followed, then on the template's page: only then back to the gallery.
+  await page.waitFor('location.hash === "#/templates/com.dprtmnt.show"', 15000);
+  await until(() => platform.sources.list().length === 1, 10000, 'the show followed');
+  assert.deepEqual(platform.sources.list().map((s) => [s.data.label, s.data.tagPrefix, s.data.claim]), [[`github:${KIT}#takeover-v`, 'takeover-v', 'com.dprtmnt.show']]);
+
+  // Automatic updates → Follow a repository: the same repository, GTA's prefix.
+  await page.eval('location.hash = "#/templates"');
+  await page.waitFor('[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent.trim() === "Follow a repository")', 15000);
+  const followWith = async (prefix) => {
+    await click(page, '[data-view] button', 'Follow a repository');
+    await page.waitFor('document.querySelector("dialog[open] input[name=tagPrefix]")', 5000);
+    await type(page, 'dialog[open] input[name=source]', KIT);
+    await type(page, 'dialog[open] input[name=tagPrefix]', prefix);
+    await click(page, 'dialog[open] button', 'Follow');
+  };
+  await followWith('gta-v');
+  await page.waitFor('!document.querySelector("dialog[open]") && document.querySelectorAll("[data-view] section.card ul.list > li").length === 2', 15000);
+  const listed = await text(page, '[data-view] section.card ul.list > li strong');
+  assert.match(listed, new RegExp(`${KIT} · releases takeover-v…`));
+  assert.match(listed, new RegExp(`${KIT} · releases gta-v…`));
+  assert.match(await text(page, '[data-view] section.card ul.list'), /Tag prefix gta-v/);
+  assert.ok(platform.templates.get('com.dprtmnt.gta', '1.0.0'), 'its first check installed GTA');
+  // The same prefix again: refused, in the dialog.
+  await followWith('gta-v');
+  await page.waitFor('[...document.querySelectorAll("dialog[open] .notice.danger")].some((n) => /#gta-v is already followed/.test(n.textContent))', 10000);
+  await click(page, 'dialog[open] button', 'Cancel');
+  assert.equal(platform.sources.list().length, 2);
+  assert.deepEqual(page.problems.filter((p) => !p.startsWith('network:')), []);
+});

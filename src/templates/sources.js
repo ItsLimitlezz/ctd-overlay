@@ -20,6 +20,13 @@
 // whose releases carry a tag prefix (overlay-v1.0.0: "overlay-v") follows only releases with
 // that prefix, so a repository that releases other things too can be followed.
 //
+// One repository can hold several templates, each released under its own tag prefix
+// (takeover-v1.3.0, gta-v1.0.0): it is followed once per prefix, and a source is named by its
+// repository and prefix ("github:owner/name#takeover-v"; owner/name alone while it is followed
+// once). A source with no prefix takes no release whose tag starts with another source's prefix,
+// and where a prefix is the start of a longer one (takeover-v, takeover-vertical-v) the longer
+// one's source takes the tags that start with it.
+//
 // Trust: what a source installs is code from whoever controls it (04 §4.1). The first release
 // fixes the template id a source may install; a later one with another id is refused, so a
 // repository can't take over another template's overlays. A GitHub token (the one saved in
@@ -119,9 +126,35 @@ export function parseSource(input) {
   return { kind: 'url', url: url.href };
 }
 
-// How a source is shown and matched: github:owner/repo[@tag], or the URL.
+// What names a source to follow or a followed one: a source (parseSource) and, after "#", a tag
+// prefix ("owner/name#takeover-v"; "owner/name#" names the one with none). { source, tagPrefix? }.
+// A tag pinned with @ keeps any "#" in it, and a URL's "#" is the URL's.
+export function parseSourceRef(input) {
+  const s = String(input ?? '').trim();
+  const hash = s.includes('://') ? -1 : s.indexOf('#');
+  if (hash < 0 || s.slice(0, hash).includes('@')) return { source: parseSource(s) };
+  const source = parseSource(s.slice(0, hash));
+  const tagPrefix = s.slice(hash + 1);
+  if (tagPrefix && !TAG.test(tagPrefix)) throw new SourceError(`"${tagPrefix}" is not the start of a release tag.`, 'bad-source');
+  return { source, tagPrefix };
+}
+
+// How a source is shown and matched: github:owner/repo[@tag][#prefix], or the URL. A prefix is
+// part of it for a repository followed for its new releases (not one pinned to a tag).
 export function describeSource(source) {
-  return source.kind === 'github' ? `github:${source.repo}${source.tag !== undefined ? `@${source.tag}` : ''}` : source.url;
+  if (source.kind !== 'github') return source.url;
+  if (source.tag !== undefined) return `github:${source.repo}@${source.tag}`;
+  return `github:${source.repo}${source.tagPrefix ? `#${source.tagPrefix}` : ''}`;
+}
+
+// Whether a release tag is for the source with this tag prefix ('' for none), beside the other
+// sources of the same repository (their prefixes): it starts with the prefix, and with no other
+// source's longer one (takeover-v and takeover-vertical-v: takeover-vertical-v1.0.0 is the
+// second's). With no prefix, every tag but those of the others.
+export function ownsTag(prefix, tag, others = []) {
+  const p = prefix || '';
+  const t = String(tag);
+  return t.startsWith(p) && !others.some((q) => q && q !== p && q.length > p.length && t.startsWith(q));
 }
 
 // Addresses a download must never reach unless the owner allows it (07 §7.11): this machine,
@@ -267,14 +300,15 @@ async function readable(fetchFn, repo, { auth, signal, max, net }) {
   }
 }
 
-// The release a GitHub source points at: its tag; else, with a tag prefix, the newest published
-// release whose tag has it; else the latest published one. { unchanged } when the ETag says
-// nothing changed, else { tag, etag, download: { name, url, size, accept } }. The file: the one
+// The release a GitHub source points at: its tag; else, with a tag prefix or other sources of
+// the same repository (others: their prefixes), the newest published release whose tag is this
+// source's (ownsTag); else the latest published one. { unchanged } when the ETag says nothing
+// changed, else { tag, etag, download: { name, url, size, accept } }. The file: the one
 // source.asset names, else one named like `pattern` (assetPattern of what was installed before),
 // else the .skp, else a .zip, else the source zip.
-async function githubRelease(fetchFn, source, { auth = { from: 'none' }, etag, pattern, tagPrefix, signal, max = SOURCE_LIMITS, net }) {
+async function githubRelease(fetchFn, source, { auth = { from: 'none' }, etag, pattern, tagPrefix, others = [], signal, max = SOURCE_LIMITS, net }) {
   const token = auth.token;
-  const listed = source.tag === undefined && tagPrefix;
+  const listed = source.tag === undefined && Boolean(tagPrefix || others.length);
   const url = source.tag !== undefined
     ? `${API}/repos/${source.repo}/releases/tags/${encodeURIComponent(source.tag)}`
     : listed ? `${API}/repos/${source.repo}/releases?per_page=30` : `${API}/repos/${source.repo}/releases/latest`;
@@ -292,8 +326,14 @@ async function githubRelease(fetchFn, source, { auth = { from: 'none' }, etag, p
   if (listed) {
     const list = await readJson(res, deadline, max, LIST_BYTES(max));
     if (!Array.isArray(list)) throw new SourceError('GitHub\'s answer has no releases in it.', 'bad-response');
-    body = list.find((r) => r && !r.draft && !r.prerelease && typeof r.tag_name === 'string' && r.tag_name.startsWith(tagPrefix));
-    if (!body) throw new SourceError(`${source.repo} has no published release whose tag starts with "${tagPrefix}".`, 'no-release');
+    body = list.find((r) => r && !r.draft && !r.prerelease && typeof r.tag_name === 'string' && ownsTag(tagPrefix, r.tag_name, others));
+    if (!body) {
+      const theirs = others.filter((q) => q !== tagPrefix && q.length > (tagPrefix || '').length && q.startsWith(tagPrefix || ''));
+      const besides = theirs.length ? ` but those of ${theirs.map((q) => `"${q}"`).join(', ')}, which other sources follow` : '';
+      throw new SourceError(tagPrefix
+        ? `${source.repo} has no published release whose tag starts with "${tagPrefix}"${besides}.`
+        : `${source.repo} has no published release but those of the other sources that follow it (tags starting with ${others.map((q) => `"${q}"`).join(', ')}).`, 'no-release');
+    }
   } else {
     body = await readJson(res, deadline, max);
   }
@@ -455,39 +495,107 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     }
   }
 
-  // By id, or by what was followed (owner/repo, github:owner/repo, the URL).
+  // A repository's name, as GitHub matches it (any case).
+  const sameRepo = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+  // Where a source reads from, without its tag prefix: the same repository and pinned tag (or
+  // none), or the same URL.
+  const sameWhere = (a, b) => a.kind === b.kind && (a.kind === 'github' ? sameRepo(a.repo, b.repo) && a.tag === b.tag : a.url === b.url);
+  // The other sources that follow new releases of the repository `d` follows (none for a pinned
+  // tag or a URL), and their tag prefixes: the releases `d` leaves to them.
+  const siblings = (d, id) => (d.kind === 'github' && d.tag === undefined
+    ? [...all()].filter((o) => o.id !== id && o.data.kind === 'github' && o.data.tag === undefined && sameRepo(o.data.repo, d.repo))
+    : []);
+  const prefixesBeside = (d, id) => siblings(d, id).map((o) => o.data.tagPrefix).filter(Boolean);
+  // How to name a source on the command line or in a request: owner/name#prefix ("#" alone: the
+  // one with none) for a repository followed more than once.
+  const refOf = (d) => (d.kind === 'github' && d.tag === undefined ? `${d.repo}#${d.tagPrefix || ''}` : describeSource(d));
+
+  // By id, or by what was followed (owner/repo, github:owner/repo, the URL), with "#prefix" for
+  // one of the sources of a repository followed once per tag prefix. owner/repo alone names the
+  // source of it while there is one; with several it is ambiguous, and says how to name each.
   function find(ref) {
     const byId = typeof ref === 'string' && ref.startsWith('src_') ? store.get(COLLECTION, ref) : undefined;
     if (byId) return byId;
-    let label;
-    try { label = describeSource(parseSource(ref)); } catch { return undefined; }
-    return [...all()].find((d) => d.data.label === label);
+    let named;
+    try { named = parseSourceRef(ref); } catch { return undefined; }
+    const { source, tagPrefix } = named;
+    const found = [...all()].filter((o) => sameWhere(o.data, source)
+      && (tagPrefix === undefined || source.kind !== 'github' || source.tag !== undefined || (o.data.tagPrefix || '') === tagPrefix));
+    if (found.length > 1) {
+      throw new SourceError(`${String(ref).trim()} is followed ${found.length} times, once per tag prefix: name one, as ${found.map((o) => refOf(o.data)).join(' or ')} (or by its id).`, 'ambiguous');
+    }
+    return found[0];
+  }
+
+  // A warning to show on a source, or undefined: one with no tag prefix, of a repository other
+  // sources follow with two or more prefixes, takes only the releases none of them take. That
+  // is rarely what was meant; it is said, and nothing is refused for it.
+  function warningOf(doc) {
+    const d = doc.data;
+    if (d.kind !== 'github' || d.tag !== undefined || d.tagPrefix) return undefined;
+    const others = prefixesBeside(d, doc.id);
+    if (others.length < 2) return undefined;
+    return {
+      code: 'no-tag-prefix',
+      message: `${d.repo} is followed once per template, with the tag prefixes ${others.map((q) => `"${q}"`).join(', ')}; this source has none, so it installs only releases whose tags start with none of them. To have it follow one template, stop following it and follow ${d.repo} again with that template's tag prefix.`,
+    };
+  }
+
+  // A source as clients see it: its record, its tag prefix (null for none) and any warning.
+  function view(doc) {
+    const warning = warningOf(doc);
+    return { id: doc.id, ...doc.data, tagPrefix: doc.data.tagPrefix ?? null, ...(warning ? { warning } : {}) };
   }
 
   // claim: a template id this source may take over although it is installed from elsewhere (the
   // operator's own choice: `follow … --template <id>`). tagPrefix: follow only releases whose tag
-  // starts with it ("overlay-v"); left out, it comes from the newest version already installed
-  // from this repository (installed from overlay-v1.0.0: "overlay-v"), else from the first
-  // release this source installs. Its file's name, without the version, is remembered the same
-  // way, for picking the file of later releases.
+  // starts with it ("overlay-v"; also owner/name#overlay-v); left out, it comes from the newest
+  // version already installed from this repository (installed from overlay-v1.0.0: "overlay-v")
+  // that isn't another source's (claim: of that template), else from the first release this
+  // source installs. Its file's name, without the version, is remembered the same way, for
+  // picking the file of later releases. A repository is followed once per tag prefix: following
+  // it again with the same prefix (or none again) is "exists".
   function add(input, { autoUpgrade = 'safe', actor = 'cli', claim, tagPrefix } = {}) {
     if (!AUTO_UPGRADE.includes(autoUpgrade)) throw new SourceError(`autoUpgrade must be one of ${AUTO_UPGRADE.join(', ')}.`, 'bad-option');
     if (claim !== undefined && (typeof claim !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+){2,}$/.test(claim))) throw new SourceError(`"${claim}" is not a template id.`, 'bad-option');
+    if (tagPrefix === '' || tagPrefix === null) tagPrefix = undefined;
     if (tagPrefix !== undefined && (typeof tagPrefix !== 'string' || !TAG.test(tagPrefix))) throw new SourceError('tagPrefix is the start of a release tag, like "overlay-v".', 'bad-option');
-    const source = parseSource(input);
-    const label = describeSource(source);
-    if (find(label)) throw new SourceError(`${label} is already followed.`, 'exists');
+    const { source, tagPrefix: named } = parseSourceRef(input);
+    if (named && tagPrefix !== undefined && named !== tagPrefix) throw new SourceError(`Two tag prefixes were given ("${named}" and "${tagPrefix}"); give one.`, 'bad-option');
+    const given = tagPrefix ?? (named || undefined);
+    if (given !== undefined && (source.kind !== 'github' || source.tag !== undefined)) {
+      throw new SourceError('A tag prefix picks among a GitHub repository\'s new releases; a link or a source pinned to one tag has none.', 'bad-option');
+    }
     const { asset, ...where } = source;
     const known = {};
     if (source.kind === 'github') {
       if (asset !== undefined) known.assetPattern = assetPattern(asset);
-      const before = templates.list().filter((t) => t.receipt?.source?.kind === 'github' && t.receipt.source.repo === source.repo)
-        .sort((a, b) => compareVersions(b.version, a.version))[0]?.receipt.source;
+      // What is installed from this repository, newest first: with a prefix, what it releases;
+      // without, what no other source of it follows; with a claim, that template only.
+      const others = source.tag === undefined ? siblings(source) : [];
+      const theirs = new Set(others.map((o) => o.data.templateId).filter(Boolean));
+      const prefixes = others.map((o) => o.data.tagPrefix).filter(Boolean);
+      const before = templates.list().filter((t) => {
+        const from = t.receipt?.source;
+        if (from?.kind !== 'github' || !sameRepo(from.repo, source.repo)) return false;
+        if (claim !== undefined) return t.id === claim && (given === undefined || ownsTag(given, from.tag, prefixes));
+        if (source.tag !== undefined) return true;
+        return !theirs.has(t.id) && ownsTag(given, from.tag, prefixes);
+      }).sort((a, b) => compareVersions(b.version, a.version))[0]?.receipt.source;
       if (source.tag === undefined) {
-        const prefix = tagPrefix || tagPrefixOf(before?.tag);
+        const prefix = given || tagPrefixOf(before?.tag);
         if (prefix) known.tagPrefix = prefix;
       }
       if (!known.assetPattern && before?.asset && before.asset !== 'source zip') known.assetPattern = assetPattern(before.asset);
+    }
+    const record = { ...where, ...known };
+    const label = describeSource(record);
+    const taken = [...all()].find((o) => sameWhere(o.data, record) && (record.kind !== 'github' || record.tag !== undefined || (o.data.tagPrefix || '') === (record.tagPrefix || '')));
+    if (taken) {
+      const again = record.kind === 'github' && record.tag === undefined
+        ? ` To follow another template released from ${record.repo}, give its release tag prefix (like "takeover-v" for takeover-v1.3.0).`
+        : '';
+      throw new SourceError(`${taken.data.label} is already followed.${again}`, 'exists');
     }
     return store.put(COLLECTION, newId('src'), { label, ...where, ...(asset !== undefined ? { asset } : {}), ...known, autoUpgrade, ...(claim ? { claim } : {}), addedAt: new Date().toISOString(), actor });
   }
@@ -509,8 +617,13 @@ export function createTemplateSources({ store, templates, overlays, log, github,
 
   // Where an installed version came from, and whether that is this source (the same repository
   // or URL, whatever tag it pins).
-  const sameOrigin = (from, d) => !!from && ((from.kind === 'github' && d.kind === 'github' && from.repo === d.repo) || (from.kind === 'url' && d.kind === 'url' && from.url === d.url));
-  const sameSource = (a, b) => (a.kind === 'github' && b.kind === 'github' && a.repo === b.repo) || (a.kind === 'url' && b.kind === 'url' && a.url === b.url);
+  const sameOrigin = (from, d) => !!from && ((from.kind === 'github' && d.kind === 'github' && sameRepo(from.repo, d.repo)) || (from.kind === 'url' && d.kind === 'url' && from.url === d.url));
+  // Two sources that may both install one template: the same URL, or the same repository where
+  // one of them is pinned to a tag (owner/name@v1.2.0 followed, then owner/name for what comes
+  // after). Two that follow new releases of one repository do so with their own tag prefixes,
+  // for their own templates.
+  const shareTemplate = (a, b) => (a.kind === 'github' && b.kind === 'github' && sameRepo(a.repo, b.repo) && (a.tag !== undefined || b.tag !== undefined))
+    || (a.kind === 'url' && b.kind === 'url' && a.url === b.url);
   const originOf = (t) => {
     const s = t.receipt?.source;
     if (!s || templates.fromPlatform(t)) return 'the platform';
@@ -527,11 +640,21 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     const d = doc.data;
     const versions = templates.versions(id);
     if (versions.some((t) => templates.fromPlatform(t))) return `${id} ships with the platform; a source can't publish versions of it.`;
-    const other = [...all()].find((o) => o.id !== doc.id && o.data.templateId === id && !sameSource(o.data, d));
+    const other = [...all()].find((o) => o.id !== doc.id && o.data.templateId === id && !shareTemplate(o.data, d));
     if (other) return `${id} already comes from ${other.data.label}; one template has one source.`;
     if (d.claim === id) return undefined;
     const foreign = versions.find((t) => !sameOrigin(t.receipt?.source, d));
     if (foreign) return `${id} is already installed from ${originOf(foreign)}. To have this source update it, follow it with --template ${id}.`;
+    // From this repository, but from a release that isn't this source's (another tag prefix's,
+    // a longer sibling prefix's, or, for one with no prefix, a sibling's): another template's.
+    if (d.kind === 'github' && d.tag === undefined) {
+      const others = prefixesBeside(d, doc.id);
+      const elsewhere = versions.find((t) => typeof t.receipt?.source?.tag === 'string' && !ownsTag(d.tagPrefix, t.receipt.source.tag, others));
+      if (elsewhere) {
+        const whose = d.tagPrefix ? `which isn't one of this source's ("${d.tagPrefix}…")` : 'which another source of it follows';
+        return `${id} is installed from ${d.repo}'s release ${elsewhere.receipt.source.tag}, ${whose}. To have this source update it, follow it with --template ${id}.`;
+      }
+    }
     return undefined;
   }
 
@@ -561,12 +684,17 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     const checkedAt = new Date().toISOString();
     // A release that failed for good (it isn't a template, it claims another one, …) is what the
     // conditional request compares against, so it isn't fetched again until something changes.
-    const known = force ? {} : d.failed || { etag: d.etag, lastModified: d.lastModified, release: d.release };
+    // The other sources of this repository's tag prefixes: their releases aren't this one's.
+    const others = prefixesBeside(d, doc.id);
+    // A release that failed for good but is another source's now (followed since, with its own
+    // prefix) is no reason to skip what this one has.
+    const stale = d.failed?.release !== undefined && d.kind === 'github' && d.tag === undefined && !ownsTag(d.tagPrefix, d.failed.release, others);
+    const known = force ? {} : stale ? { release: d.release } : d.failed || { etag: d.etag, lastModified: d.lastModified, release: d.release };
     let seen = {};
     let file;
     const unchanged = async () => {
-      update(doc, { checkedAt, ...(d.failed ? {} : { error: undefined }) });
-      if (d.failed) return { ...result, tag: d.failed.release, unchanged: true, error: d.error };
+      update(doc, { checkedAt, ...(d.failed && !stale ? {} : { error: undefined, failed: undefined }) });
+      if (d.failed && !stale) return { ...result, tag: d.failed.release, unchanged: true, error: d.error };
       return { ...result, tag: d.release, unchanged: true, ...(await upgradeOverlays(doc, { pendingOnly: true })) };
     };
     try {
@@ -576,15 +704,19 @@ export function createTemplateSources({ store, templates, overlays, log, github,
       let label;
       if (d.kind === 'github') {
         const auth = authOf({ github, token });
-        const rel = await githubRelease(fetchFn, d, { auth, etag: known.etag, pattern: d.assetPattern, tagPrefix: d.tagPrefix, signal: stopping.signal, max, net });
-        if (rel.unchanged || (!force && rel.tag === known.release && (d.version || d.failed))) {
-          if (rel.etag && !d.failed) update(doc, { etag: rel.etag });
+        const rel = await githubRelease(fetchFn, d, { auth, etag: known.etag, pattern: d.assetPattern, tagPrefix: d.tagPrefix, others, signal: stopping.signal, max, net });
+        if (rel.unchanged || (!force && rel.tag === known.release && (d.version || (d.failed && !stale)))) {
+          if (rel.etag && (!d.failed || stale)) update(doc, { etag: rel.etag });
           return await unchanged();
         }
         // `tag` is the one a source may pin; the tag prefix and the file's name, learnt from the
         // first release, pick the releases and files after it.
         seen = { release: rel.tag, etag: rel.etag };
-        if (d.tag === undefined && !d.tagPrefix && tagPrefixOf(rel.tag)) seen.tagPrefix = tagPrefixOf(rel.tag);
+        if (d.tag === undefined && !d.tagPrefix && tagPrefixOf(rel.tag)) {
+          // Learnt: it is part of the source's name from now on (github:owner/name#overlay-v).
+          seen.tagPrefix = tagPrefixOf(rel.tag);
+          seen.label = describeSource({ ...d, tagPrefix: seen.tagPrefix });
+        }
         if (!d.assetPattern && rel.download.name !== 'source zip') seen.assetPattern = assetPattern(rel.download.name);
         result.tag = rel.tag;
         tooLarge(rel, max);
@@ -700,11 +832,22 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     return { upgraded, waiting };
   }
 
+  // Sources stored before a repository could be followed once per tag prefix are named without
+  // their prefix ("github:owner/name" for one that learnt "overlay-v"); the name is rewritten once,
+  // with the prefix. Nothing else about them changes. Not where the data is only looked at.
+  if (templates.downloadDir) {
+    for (const doc of [...all()]) {
+      const label = describeSource(doc.data);
+      if (doc.data.label !== label) update(doc, { label });
+    }
+  }
+
   return {
     add,
     remove,
     list: () => [...all()],
     get: find,
+    view,
     check,
     // Checks every source after firstCheckMs, then every `minutes` (0: never).
     start(minutes) {
