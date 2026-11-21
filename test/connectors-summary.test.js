@@ -97,6 +97,8 @@ test('the summary: versions per template, what waits for the operator and why, s
   assert.equal(t['com.ctd.bug'].update, 'major');
   assert.equal(t['com.ctd.bug'].problem, 'rate-limited', 'a code, never the message');
   assert.deepEqual(t['com.ctd.manual'].source, { kind: 'none' });
+  const multi = buildSummary({ templates: registry([['com.dprtmnt.tn', '1.0.0', 'TN']]), sources: [{ id: 'src_9', data: { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'tn-v', templateId: 'com.dprtmnt.tn', version: '1.0.0', release: 'tn-v1.0.0' } }, { id: 'src_8', data: { kind: 'github', repo: 'o/r', tagPrefix: 'bad prefix', templateId: 'x' } }] });
+  assert.deepEqual(multi.templates[0].source, { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'tn-v' }, 'one repository, one template per tag prefix');
   assert.equal(t['com.ctd.manual'].update, 'minor');
   assert.equal(t['com.ctd.unused'].update, 'none');
   const o = Object.fromEntries(s.overlays.map((x) => [x.slug, x]));

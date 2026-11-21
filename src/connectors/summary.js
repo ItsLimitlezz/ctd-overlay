@@ -19,6 +19,7 @@ const MAX_OVERLAYS = 500;
 const VERSION = /^v?\d+(\.\d+){0,2}([-+][0-9A-Za-z.-]+)?$/;
 const REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const CODE = /^[a-z0-9-]{1,40}$/;
+const TAG_PREFIX = /^[A-Za-z0-9._/-]{1,64}$/;
 
 const str = (v) => typeof v === 'string' && v.length > 0;
 const clip = (s, n) => {
@@ -76,7 +77,10 @@ export function buildSummary({ templates, sources = [], overlays = [], allOverla
     const out = { id: t.id, name: clip(t.manifest?.name || t.id, 120) || t.id, installed };
     if (used.length) out.oldestInUse = used[used.length - 1];
     if (d) {
-      out.source = { kind: d.kind === 'url' ? 'url' : 'github', ...(d.kind === 'github' && REPO.test(d.repo || '') ? { repo: d.repo } : {}), ...(d.tag !== undefined ? { pinned: true } : {}) };
+      // A repository can hold several templates, one per release tag prefix ("show-v", "tn-v"): the
+      // source is the repository and its prefix together.
+      const prefix = typeof d.tagPrefix === 'string' && TAG_PREFIX.test(d.tagPrefix) ? d.tagPrefix : undefined;
+      out.source = { kind: d.kind === 'url' ? 'url' : 'github', ...(d.kind === 'github' && REPO.test(d.repo || '') ? { repo: d.repo } : {}), ...(d.kind === 'github' && prefix ? { tagPrefix: prefix } : {}), ...(d.tag !== undefined ? { pinned: true } : {}) };
       out.latest = latest ?? null;
       out.auto = d.autoUpgrade !== 'off';
       out.checkedAt = str(d.checkedAt) ? d.checkedAt : null;
