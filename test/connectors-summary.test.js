@@ -99,6 +99,12 @@ test('the summary: versions per template, what waits for the operator and why, s
   assert.deepEqual(t['com.ctd.manual'].source, { kind: 'none' });
   const multi = buildSummary({ templates: registry([['com.dprtmnt.tn', '1.0.0', 'TN']]), sources: [{ id: 'src_9', data: { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'tn-v', templateId: 'com.dprtmnt.tn', version: '1.0.0', release: 'tn-v1.0.0' } }, { id: 'src_8', data: { kind: 'github', repo: 'o/r', tagPrefix: 'bad prefix', templateId: 'x' } }] });
   assert.deepEqual(multi.templates[0].source, { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'tn-v' }, 'one repository, one template per tag prefix');
+  const pinnedToo = buildSummary({ templates: registry([['com.dprtmnt.show', '1.3.0', 'Takeover - DPRTMNT']]), sources: [
+    { id: 'src_6', data: { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'takeover-v', templateId: 'com.dprtmnt.show', version: '1.3.0', release: 'takeover-v1.3.0', autoUpgrade: 'safe' } },
+    { id: 'src_7', data: { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tag: 'takeover-v1.2.0', templateId: 'com.dprtmnt.show', version: '1.2.0', release: 'takeover-v1.2.0', autoUpgrade: 'safe' } },
+  ] });
+  assert.deepEqual(pinnedToo.templates[0].source, { kind: 'github', repo: 'ItsLimitlezz/DPRTMNT-stream-Kit', tagPrefix: 'takeover-v' }, 'a pinned release beside the followed source: the followed one says what comes next');
+  assert.equal(pinnedToo.templates[0].latest, '1.3.0');
   assert.equal(t['com.ctd.manual'].update, 'minor');
   assert.equal(t['com.ctd.unused'].update, 'none');
   const o = Object.fromEntries(s.overlays.map((x) => [x.slug, x]));

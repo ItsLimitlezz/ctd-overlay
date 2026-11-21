@@ -56,7 +56,14 @@ export function buildSummary({ templates, sources = [], overlays = [], allOverla
     if (!cur || compareVersions(t.version, cur.version) > 0) newestOf.set(t.id, t);
   }
   const sourceOf = new Map();
-  for (const s of sources) if (str(s.data?.templateId)) sourceOf.set(s.data.templateId, s.data);
+  // One template has one source, but a source pinned to one release (owner/name@v1.2.0) may share
+  // it with the one that follows the repository's new releases: that one says what comes next.
+  for (const s of sources) {
+    const id = s.data?.templateId;
+    if (!str(id)) continue;
+    const cur = sourceOf.get(id);
+    if (!cur || (cur.tag !== undefined && s.data.tag === undefined)) sourceOf.set(id, s.data);
+  }
   const inUse = new Map();
   for (const o of allOverlays) {
     const pin = o.data?.template;
