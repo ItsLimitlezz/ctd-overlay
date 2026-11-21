@@ -446,15 +446,15 @@ each new release by itself.
   source installs (a bare `v` is no prefix). It then reads the repository's newest releases and
   takes the newest published one (no draft, no pre-release) with the prefix.
 - One repository **MAY** hold several templates, each released under its own tag prefix
-  (`show-v1.3.0`, `tn-v1.0.0`). A source is the repository **and** its tag prefix: the same
+  (`takeover-v1.3.0`, `gta-v1.0.0`). A source is the repository **and** its tag prefix: the same
   repository can be followed once per distinct prefix, and following it again with a prefix
   already followed (or with none, again) **MUST** be refused as `exists` (409). A source's name
-  carries its prefix (`github:owner/name#show-v`). `owner/name` names the source of a repository
-  followed once; for one followed more than once, it is ambiguous and a client names the source
-  as `owner/name#<prefix>` (`owner/name#` for the one with none) or by its id. A source with no
-  prefix **MUST NOT** take a release whose tag starts with another source's prefix (of the same
-  repository); where one prefix starts another (`show-v`, `show-vertical-v`), a tag that starts
-  with the longer one is that source's. While a repository is also followed with two or more
+  carries its prefix (`github:owner/name#takeover-v`). `owner/name` names the source of a
+  repository followed once; for one followed more than once, it is ambiguous and a client names
+  the source as `owner/name#<prefix>` (`owner/name#` for the one with none) or by its id. A
+  source with no prefix **MUST NOT** take a release whose tag starts with another source's
+  prefix (of the same repository); where one prefix starts another (`takeover-v`,
+  `takeover-vertical-v`), a tag that starts with the longer one is that source's. While a repository is also followed with two or more
   prefixes, a source of it with none carries a `warning` (`code` `no-tag-prefix`) saying so; its
   releases are not refused for it. The list of sources gives each one's `tagPrefix` (`null` for
   none) and any `warning`. Sources stored before this rule keep their behaviour; their names

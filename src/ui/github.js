@@ -37,8 +37,8 @@ export function repoOf(text) {
   return undefined;
 }
 
-// A release tag's prefix before its version ("show-v1.3.0" → "show-v"), when it says more than
-// "v" (templates/sources.js tagPrefixOf): the releases a source follows. '' for "v1.0.0".
+// A release tag's prefix before its version ("takeover-v1.3.0" → "takeover-v"), when it says more
+// than "v" (templates/sources.js tagPrefixOf): the releases a source follows. '' for "v1.0.0".
 export function tagPrefixOf(tag) {
   const m = /^(.*?)\d+\.\d+/.exec(String(tag ?? ''));
   return m && !/^v?$/i.test(m[1]) ? m[1] : '';

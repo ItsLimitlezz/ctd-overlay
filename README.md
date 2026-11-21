@@ -278,8 +278,8 @@ the package from `npm run skp -- template pack .`. With `template.json` at the r
 you can skip the attachment, and the release's own source zip is used.
 [docs/template-releases.md](docs/template-releases.md) has a workflow that attaches the package
 for you. One repository can hold several templates, each released under its own tag prefix
-(`show-v1.3.0`, `tn-v1.0.0`): follow it once per template with `--tag-prefix show-v`, and so on
-(see "Several templates in one repository" there).
+(`takeover-v1.3.0`, `gta-v1.0.0`): follow it once per template with `--tag-prefix takeover-v`,
+and so on (see "Several templates in one repository" there).
 
 ## Shows
 

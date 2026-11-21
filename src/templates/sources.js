@@ -21,11 +21,11 @@
 // that prefix, so a repository that releases other things too can be followed.
 //
 // One repository can hold several templates, each released under its own tag prefix
-// (show-v1.3.0, tn-v1.0.0): it is followed once per prefix, and a source is named by its
-// repository and prefix ("github:owner/name#show-v"; owner/name alone while it is followed once).
-// A source with no prefix takes no release whose tag starts with another source's prefix, and
-// where a prefix is the start of a longer one (show-v, show-vertical-v) the longer one's source
-// takes the tags that start with it.
+// (takeover-v1.3.0, gta-v1.0.0): it is followed once per prefix, and a source is named by its
+// repository and prefix ("github:owner/name#takeover-v"; owner/name alone while it is followed
+// once). A source with no prefix takes no release whose tag starts with another source's prefix,
+// and where a prefix is the start of a longer one (takeover-v, takeover-vertical-v) the longer
+// one's source takes the tags that start with it.
 //
 // Trust: what a source installs is code from whoever controls it (04 §4.1). The first release
 // fixes the template id a source may install; a later one with another id is refused, so a
@@ -127,7 +127,7 @@ export function parseSource(input) {
 }
 
 // What names a source to follow or a followed one: a source (parseSource) and, after "#", a tag
-// prefix ("owner/name#show-v"; "owner/name#" names the one with none). { source, tagPrefix? }.
+// prefix ("owner/name#takeover-v"; "owner/name#" names the one with none). { source, tagPrefix? }.
 // A tag pinned with @ keeps any "#" in it, and a URL's "#" is the URL's.
 export function parseSourceRef(input) {
   const s = String(input ?? '').trim();
@@ -149,8 +149,8 @@ export function describeSource(source) {
 
 // Whether a release tag is for the source with this tag prefix ('' for none), beside the other
 // sources of the same repository (their prefixes): it starts with the prefix, and with no other
-// source's longer one (show-v and show-vertical-v: show-vertical-v1.0.0 is the second's). With
-// no prefix, every tag but those of the others.
+// source's longer one (takeover-v and takeover-vertical-v: takeover-vertical-v1.0.0 is the
+// second's). With no prefix, every tag but those of the others.
 export function ownsTag(prefix, tag, others = []) {
   const p = prefix || '';
   const t = String(tag);
@@ -593,7 +593,7 @@ export function createTemplateSources({ store, templates, overlays, log, github,
     const taken = [...all()].find((o) => sameWhere(o.data, record) && (record.kind !== 'github' || record.tag !== undefined || (o.data.tagPrefix || '') === (record.tagPrefix || '')));
     if (taken) {
       const again = record.kind === 'github' && record.tag === undefined
-        ? ` To follow another template released from ${record.repo}, give its release tag prefix (like "show-v" for show-v1.3.0).`
+        ? ` To follow another template released from ${record.repo}, give its release tag prefix (like "takeover-v" for takeover-v1.3.0).`
         : '';
       throw new SourceError(`${taken.data.label} is already followed.${again}`, 'exists');
     }

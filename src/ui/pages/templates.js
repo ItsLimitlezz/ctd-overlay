@@ -296,8 +296,8 @@ export async function list(view, ctx) {
     // A GitHub repository: Test reads it (with the GitHub token, for a private one) and lists its
     // releases to pick one and its file from, instead of typing the tag.
     let choice;
-    // The tag prefix to follow: the chosen release's (show-v1.3.0 → show-v) until it is typed.
-    const prefix = h('input', { type: 'text', name: 'tagPrefix', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'show-v' });
+    // The tag prefix to follow: the chosen release's (takeover-v1.3.0 → takeover-v) until typed in.
+    const prefix = h('input', { type: 'text', name: 'tagPrefix', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'takeover-v' });
     let prefixTyped = false;
     prefix.addEventListener('input', () => { prefixTyped = true; });
     const tester = repoTest({
@@ -314,7 +314,7 @@ export async function list(view, ctx) {
     // The whole row a 44 px target, the box keeping its size when the words wrap.
     const followRow = h('label.field.check', followBox, h('span', 'Install its new releases by themselves', h('br'),
       h('span.hint', 'Follows the repository (Automatic updates, below the gallery), checked every hour.')));
-    const prefixRow = field('Release tag prefix (optional)', prefix, { hint: 'Only releases whose tag starts with it, for a repository that releases several templates: show-v for show-v1.3.0. Empty: every release.' });
+    const prefixRow = field('Release tag prefix (optional)', prefix, { hint: 'Only releases whose tag starts with it, for a repository that releases several templates: takeover-v for takeover-v1.3.0. Empty: every release.' });
     const update = () => {
       install.disabled = busy || (mode === 'file' ? !(file && passed) : !(choice || link.value.trim()));
       followRow.hidden = !repoOf(link.value);
@@ -540,7 +540,7 @@ export async function list(view, ctx) {
             { value: 'off', label: 'Stay where they are: I upgrade them myself' },
           ],
         },
-        { name: 'tagPrefix', label: 'Release tag prefix (optional)', placeholder: 'show-v', autocapitalize: 'none', spellcheck: 'false', hint: 'For a repository that releases several templates, each under its own tags: only releases whose tag starts with it, like show-v for show-v1.3.0. Follow the repository once per template, each with its prefix. Empty: every release (or the prefix of its first one).' },
+        { name: 'tagPrefix', label: 'Release tag prefix (optional)', placeholder: 'takeover-v', autocapitalize: 'none', spellcheck: 'false', hint: 'For a repository that releases several templates, each under its own tags: only releases whose tag starts with it, like takeover-v for takeover-v1.3.0. Follow the repository once per template, each with its prefix. Empty: every release (or the prefix of its first one).' },
         { name: 'template', label: 'Template it updates (optional)', autocapitalize: 'none', spellcheck: 'false', hint: 'Only when this template is already installed from a file or a link: its id, like com.example.lower-third. Leave empty otherwise.' },
       ],
       submitLabel: 'Follow',

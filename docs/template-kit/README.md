@@ -15,7 +15,7 @@ Everything to design overlay templates for CTD Overlay, or to have an AI assista
 - [../template-releases.md](../template-releases.md): publishing a template as GitHub releases that
   platforms install by themselves, including
   [several templates in one repository](../template-releases.md#several-templates-in-one-repository)
-  (a folder and a tag prefix each, `show-v1.3.0`, followed once per prefix).
+  (a folder and a tag prefix each, `takeover-v1.3.0`, followed once per prefix).
 
 The bundled templates are good smaller examples: `templates/chat`, `templates/alerts`,
 `templates/viewers`, and the full D/PRTMNT show package `templates/takeover`.

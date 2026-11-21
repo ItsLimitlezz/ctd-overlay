@@ -50,9 +50,9 @@ export const USAGE = `Usage: skp <command> [options]
   template follow <owner/name|url>        install its releases as they come out, and move
         [--auto-upgrade safe|off]         overlays to them when nothing breaks (default safe)
         [--template <id>]                 let it update a template installed from elsewhere
-        [--tag-prefix <prefix>]           only releases whose tag starts with it (show-v for
-                                          show-v1.3.0): a repository with several templates is
-                                          followed once per prefix
+        [--tag-prefix <prefix>]           only releases whose tag starts with it (takeover-v
+                                          for takeover-v1.3.0): a repository with several
+                                          templates is followed once per prefix
   template unfollow <source>              stop following (installed versions stay); a source is
                                           owner/name, or owner/name#<prefix> for a repository
                                           followed more than once, or a URL, or its id

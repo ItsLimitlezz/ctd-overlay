@@ -58,30 +58,30 @@ with it).
 
 ## Several templates in one repository
 
-One repository can hold several templates, each released on its own: D/PRTMNT's regular show
-(`com.dprtmnt.show`) and its special (`com.dprtmnt.tn`), say. Each template gets its own folder
-and its own **tag prefix**, and the operator follows the repository once per prefix. Each of those
-sources installs, and auto-updates, only its own template.
+One repository can hold several templates, each released on its own: D/PRTMNT's
+"Takeover - DPRTMNT" (`com.dprtmnt.show`) and "GTA - DPRTMNT" (`com.dprtmnt.gta`), say. Each
+template gets its own folder and its own **tag prefix**, and the operator follows the repository
+once per prefix. Each of those sources installs, and auto-updates, only its own template.
 
 ### Layout and tags
 
 ```
 templates/
-  dprtmnt-show/        template.json (id com.dprtmnt.show), index.html, …
-  dprtmnt-tn/          template.json (id com.dprtmnt.tn), …
+  dprtmnt-takeover/    template.json (id com.dprtmnt.show), index.html, …
+  dprtmnt-gta/         template.json (id com.dprtmnt.gta), …
 .github/workflows/release.yml
 ```
 
 | Template | Folder | Release tag | Attached file |
 | --- | --- | --- | --- |
-| `com.dprtmnt.show` | `templates/dprtmnt-show/` | `show-v1.3.0` | `dprtmnt-show-1.3.0.skp` |
-| `com.dprtmnt.tn` | `templates/dprtmnt-tn/` | `tn-v1.0.0` | `dprtmnt-tn-1.0.0.skp` |
+| `com.dprtmnt.show` | `templates/dprtmnt-takeover/` | `takeover-v1.3.0` | `dprtmnt-takeover-1.3.0.skp` |
+| `com.dprtmnt.gta` | `templates/dprtmnt-gta/` | `gta-v1.0.0` | `dprtmnt-gta-1.0.0.skp` |
 
 - A release is one template's: its tag is the template's prefix then the version in its
-  `template.json` (`show-v` + `1.3.0`). Release one template at a time.
+  `template.json` (`takeover-v` + `1.3.0`). Release one template at a time.
 - Pick prefixes that end before the version and that aren't the start of each other where you
-  can (`show-v` and `tn-v`). If one is (`show-v` and `show-vertical-v`), the longer one's source
-  takes the tags that start with it.
+  can (`takeover-v` and `gta-v`). If one is (`takeover-v` and `takeover-vertical-v`), the longer
+  one's source takes the tags that start with it.
 - A bare `v1.3.0` tag belongs to no prefix: keep it for a repository with one template.
 - GitHub's "latest release" is whichever template was released last. That's fine: a source
   with a prefix reads the repository's newest releases and takes the newest with its prefix.
@@ -118,11 +118,11 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           # One line per template: tag prefix, then folder name under templates/.
-          # A prefix that starts another one goes after it (show-vertical-v before show-v).
+          # A prefix that starts another one goes after it (takeover-vertical-v before takeover-v).
           case "$TAG" in
-            show-v*) prefix=show-v; name=dprtmnt-show ;;
-            tn-v*)   prefix=tn-v;   name=dprtmnt-tn ;;
-            *) echo "::error::$TAG has no known tag prefix (show-v, tn-v): nothing attached."; exit 1 ;;
+            takeover-v*) prefix=takeover-v; name=dprtmnt-takeover ;;
+            gta-v*)      prefix=gta-v;      name=dprtmnt-gta ;;
+            *) echo "::error::$TAG has no known tag prefix (takeover-v, gta-v): nothing attached."; exit 1 ;;
           esac
           version="${TAG#"$prefix"}"
           dir="repo/templates/$name"
@@ -144,18 +144,18 @@ jobs:
 The operator follows the repository once per template, each with its prefix:
 
 ```bash
-npm run skp -- template follow owner/name --tag-prefix show-v
-npm run skp -- template follow owner/name --tag-prefix tn-v
-npm run skp -- template sources     # each with its prefix: github:owner/name#show-v, …#tn-v
+npm run skp -- template follow owner/name --tag-prefix takeover-v
+npm run skp -- template follow owner/name --tag-prefix gta-v
+npm run skp -- template sources     # each with its prefix: github:owner/name#takeover-v, …#gta-v
 ```
 
 In the admin pages: **Templates → Automatic updates → Follow a repository**, the repository,
-**Release tag prefix** `show-v`, **Follow**; then again with `tn-v`. Installing a release from
+**Release tag prefix** `takeover-v`, **Follow**; then again with `gta-v`. Installing a release from
 **Install template → From GitHub or a link** with **Install its new releases by themselves**
-ticked fills the prefix in from the release picked (`show-v1.3.0` → `show-v`).
+ticked fills the prefix in from the release picked (`takeover-v1.3.0` → `takeover-v`).
 
 With the repository followed more than once, name a source with its prefix:
-`template update owner/name#tn-v`, `template unfollow owner/name#show-v` (`owner/name` alone is
+`template update owner/name#gta-v`, `template unfollow owner/name#takeover-v` (`owner/name` alone is
 ambiguous then, and says so). Following it again with a prefix already followed is refused.
 
 A source of the repository **without** a prefix (one followed before the templates were split,
