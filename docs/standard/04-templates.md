@@ -440,10 +440,25 @@ each new release by itself.
   attached `.zip`, else the release's source zip (which works when `template.json` is at the
   repository's root).
 - A source **MAY** follow only the releases whose tag starts with a prefix (`overlay-v`), for a
-  repository that releases other things too: the operator gives it when following, or it comes
-  from the tag of the newest version already installed from that repository, else from the
-  first release the source installs (a bare `v` is no prefix). It then reads the repository's
-  newest releases and takes the newest published one (no draft, no pre-release) with the prefix.
+  repository that releases other things too: the operator gives it when following (`tagPrefix`,
+  or `owner/name#overlay-v`), or it comes from the tag of the newest version already installed
+  from that repository that no other source of it follows, else from the first release the
+  source installs (a bare `v` is no prefix). It then reads the repository's newest releases and
+  takes the newest published one (no draft, no pre-release) with the prefix.
+- One repository **MAY** hold several templates, each released under its own tag prefix
+  (`show-v1.3.0`, `tn-v1.0.0`). A source is the repository **and** its tag prefix: the same
+  repository can be followed once per distinct prefix, and following it again with a prefix
+  already followed (or with none, again) **MUST** be refused as `exists` (409). A source's name
+  carries its prefix (`github:owner/name#show-v`). `owner/name` names the source of a repository
+  followed once; for one followed more than once, it is ambiguous and a client names the source
+  as `owner/name#<prefix>` (`owner/name#` for the one with none) or by its id. A source with no
+  prefix **MUST NOT** take a release whose tag starts with another source's prefix (of the same
+  repository); where one prefix starts another (`show-v`, `show-vertical-v`), a tag that starts
+  with the longer one is that source's. While a repository is also followed with two or more
+  prefixes, a source of it with none carries a `warning` (`code` `no-tag-prefix`) saying so; its
+  releases are not refused for it. The list of sources gives each one's `tagPrefix` (`null` for
+  none) and any `warning`. Sources stored before this rule keep their behaviour; their names
+  gain their prefix.
 - A private repository needs a GitHub token with read access. The owner saves one in the admin
   UI (Settings → Integrations → GitHub, by pasting a token or signing in with GitHub's device
   flow; 07 §7.7), else the server's `SKP_GITHUB_TOKEN` (10 §10.5) is used; with neither, only
@@ -469,9 +484,11 @@ each new release by itself.
   release that failed for good is not downloaded again until the source publishes another.
 - A source installs one template id, and a template has one source: the first release fixes
   the id, a later release with another id is refused, and a first release is refused when its
-  id ships with the platform, comes from another source, or is already installed from elsewhere
-  (a file, a URL), unless the operator names that id when following the source. So a repository
-  can't take over another template's overlays.
+  id ships with the platform, comes from another source (the sources of one repository's other
+  tag prefixes included), or is already installed from elsewhere (a file, a URL, or a release of
+  the same repository under another prefix), unless the operator names that id when following
+  the source. So a repository can't take over another template's overlays, and one of its
+  templates can't take over another's.
 - A new version is installed beside the others (§4.10). Overlays on an older version of it
   that this source installed **MAY** be moved to it automatically, but only when the upgrade
   needs no confirmation under §4.10: the same major version, nothing the operator set or a show

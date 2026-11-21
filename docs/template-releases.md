@@ -56,6 +56,113 @@ Without an attachment, the platform installs the release's source zip, which wor
 `template.json` is at the repository's root (every other file in the repository is installed
 with it).
 
+## Several templates in one repository
+
+One repository can hold several templates, each released on its own: D/PRTMNT's regular show
+(`com.dprtmnt.show`) and its special (`com.dprtmnt.tn`), say. Each template gets its own folder
+and its own **tag prefix**, and the operator follows the repository once per prefix. Each of those
+sources installs, and auto-updates, only its own template.
+
+### Layout and tags
+
+```
+templates/
+  dprtmnt-show/        template.json (id com.dprtmnt.show), index.html, …
+  dprtmnt-tn/          template.json (id com.dprtmnt.tn), …
+.github/workflows/release.yml
+```
+
+| Template | Folder | Release tag | Attached file |
+| --- | --- | --- | --- |
+| `com.dprtmnt.show` | `templates/dprtmnt-show/` | `show-v1.3.0` | `dprtmnt-show-1.3.0.skp` |
+| `com.dprtmnt.tn` | `templates/dprtmnt-tn/` | `tn-v1.0.0` | `dprtmnt-tn-1.0.0.skp` |
+
+- A release is one template's: its tag is the template's prefix then the version in its
+  `template.json` (`show-v` + `1.3.0`). Release one template at a time.
+- Pick prefixes that end before the version and that aren't the start of each other where you
+  can (`show-v` and `tn-v`). If one is (`show-v` and `show-vertical-v`), the longer one's source
+  takes the tags that start with it.
+- A bare `v1.3.0` tag belongs to no prefix: keep it for a repository with one template.
+- GitHub's "latest release" is whichever template was released last. That's fine: a source
+  with a prefix reads the repository's newest releases and takes the newest with its prefix.
+
+### Attaching the right package
+
+This `release.yml` packs the folder that matches the release's tag prefix with the platform's
+own `skp template pack` and attaches it as `<name>-<version>.skp`. It fails, attaching nothing,
+for a tag with no known prefix, a missing folder, or a version that isn't the template's:
+
+```yaml
+name: Attach the template package
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - uses: actions/checkout@v4
+        with:
+          repository: ItsLimitlezz/ctd-overlay
+          path: platform
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Pack the template this tag is for
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # One line per template: tag prefix, then folder name under templates/.
+          # A prefix that starts another one goes after it (show-vertical-v before show-v).
+          case "$TAG" in
+            show-v*) prefix=show-v; name=dprtmnt-show ;;
+            tn-v*)   prefix=tn-v;   name=dprtmnt-tn ;;
+            *) echo "::error::$TAG has no known tag prefix (show-v, tn-v): nothing attached."; exit 1 ;;
+          esac
+          version="${TAG#"$prefix"}"
+          dir="repo/templates/$name"
+          if [ ! -f "$dir/template.json" ]; then echo "::error::$dir/template.json is missing."; exit 1; fi
+          own="$(jq -r .version "$dir/template.json")"
+          if [ "$own" != "$version" ]; then echo "::error::$TAG is version $version, but $dir/template.json says $own."; exit 1; fi
+          node platform/src/main.js template pack "$dir" -o "$name-$version.skp"
+          echo "FILE=$name-$version.skp" >> "$GITHUB_ENV"
+      - run: gh release upload "$TAG" "$FILE" --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+```
+
+`template pack` validates as it packs, so a template that wouldn't install fails here too.
+
+### Following each one
+
+The operator follows the repository once per template, each with its prefix:
+
+```bash
+npm run skp -- template follow owner/name --tag-prefix show-v
+npm run skp -- template follow owner/name --tag-prefix tn-v
+npm run skp -- template sources     # each with its prefix: github:owner/name#show-v, …#tn-v
+```
+
+In the admin pages: **Templates → Automatic updates → Follow a repository**, the repository,
+**Release tag prefix** `show-v`, **Follow**; then again with `tn-v`. Installing a release from
+**Install template → From GitHub or a link** with **Install its new releases by themselves**
+ticked fills the prefix in from the release picked (`show-v1.3.0` → `show-v`).
+
+With the repository followed more than once, name a source with its prefix:
+`template update owner/name#tn-v`, `template unfollow owner/name#show-v` (`owner/name` alone is
+ambiguous then, and says so). Following it again with a prefix already followed is refused.
+
+A source of the repository **without** a prefix (one followed before the templates were split,
+say) installs only releases whose tags start with none of the others' prefixes. While the
+repository is also followed with two or more prefixes, that source shows a warning: unfollow it,
+and follow the repository with the prefix of the template it should update.
+
 ## Pinning
 
 `skp template follow owner/name@v1.2.0` follows one release only: nothing newer is installed.

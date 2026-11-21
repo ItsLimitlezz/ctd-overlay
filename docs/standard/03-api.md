@@ -99,7 +99,7 @@ It acts as the owner and is accepted only from a loopback address, never through
 | `DELETE /templates/{id}` | Uninstall every installed version, or one with `?version=` (refused while an overlay pins it; templates that ship with the platform can't be uninstalled) |
 | `POST /templates/validate` | Lint a package without installing (04 §4.11) |
 | `GET /templates/{id}/versions/{version}/previews/{path}` | A preview image: its path inside `previews/` (subfolders allowed), each part URL-encoded, as `GET /templates/{id}` lists it |
-| `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13); following takes `{ source, autoUpgrade?, template?, tagPrefix? }` |
+| `GET/POST /templates/sources` · `DELETE /templates/sources/{ref}` · `POST /templates/sources/check` | Followed repositories and URLs (04 §4.13); following takes `{ source, autoUpgrade?, template?, tagPrefix? }` (409 for a repository already followed with that prefix); each source lists its `tagPrefix` and any `warning`; `{ref}` is its id, `owner/name`, or `owner/name#prefix` |
 
 ### Integrations: GitHub (04 §4.13, 07 §7.7)
 | Method · Path | Purpose |

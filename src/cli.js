@@ -50,9 +50,15 @@ export const USAGE = `Usage: skp <command> [options]
   template follow <owner/name|url>        install its releases as they come out, and move
         [--auto-upgrade safe|off]         overlays to them when nothing breaks (default safe)
         [--template <id>]                 let it update a template installed from elsewhere
-  template unfollow <owner/name|url>      stop following (installed versions stay)
-  template sources                        followed sources and what they last installed
-  template update [<owner/name|url>]      check followed sources now (the running platform
+        [--tag-prefix <prefix>]           only releases whose tag starts with it (show-v for
+                                          show-v1.3.0): a repository with several templates is
+                                          followed once per prefix
+  template unfollow <source>              stop following (installed versions stay); a source is
+                                          owner/name, or owner/name#<prefix> for a repository
+                                          followed more than once, or a URL, or its id
+  template sources                        followed sources, their tag prefixes, and what they
+                                          last installed
+  template update [<source>]              check followed sources now (the running platform
                                           checks every SKP_TEMPLATE_CHECK_MINUTES, default 60)
   overlay upgrade <slug> --to <version>   move an overlay to a newer template version
         [--dry-run] [--yes]               show what would change / confirm it
@@ -136,7 +142,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       options: {
         json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' }, 'run-migrate': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, stop: { type: 'boolean' }, all: { type: 'boolean' }, replace: { type: 'boolean' },
         code: { type: 'string' }, username: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' }, 'expires-days': { type: 'string' }, ips: { type: 'string' }, limit: { type: 'string' }, slug: { type: 'string' },
-        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' },
+        to: { type: 'string' }, out: { type: 'string', short: 'o' }, name: { type: 'string' }, 'auto-upgrade': { type: 'string' }, template: { type: 'string' }, 'tag-prefix': { type: 'string' },
         ...Object.fromEntries([...CONFIG_FLAGS, ...SHOW_FLAGS].map((f) => [f, { type: 'string' }])),
       },
     });
@@ -282,15 +288,19 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length !== 1) return usage('template follow takes one source: owner/name or an https URL');
         const data = openFor('template follow');
         try {
-          const doc = data.sources.add(rest[0], { autoUpgrade: opts['auto-upgrade'] ?? 'safe', actor: 'cli', claim: opts.template });
-          data.record({ source: doc.data.label, autoUpgrade: doc.data.autoUpgrade });
+          const doc = data.sources.add(rest[0], { autoUpgrade: opts['auto-upgrade'] ?? 'safe', actor: 'cli', claim: opts.template, tagPrefix: opts['tag-prefix'] });
+          data.record({ source: doc.data.label, autoUpgrade: doc.data.autoUpgrade, ...(doc.data.tagPrefix ? { tagPrefix: doc.data.tagPrefix } : {}) });
           // The first check now, so a mistyped repository shows up while you're here.
           const results = await data.sources.check(doc.id);
-          if (opts.json) json({ source: doc.data.label, id: doc.id, autoUpgrade: doc.data.autoUpgrade, check: results[0] });
+          const now = data.sources.get(doc.id) || doc;
+          const warning = data.sources.view(now).warning;
+          if (opts.json) json({ source: now.data.label, id: doc.id, autoUpgrade: doc.data.autoUpgrade, tagPrefix: now.data.tagPrefix ?? null, ...(warning ? { warning } : {}), check: results[0] });
           else {
             out(`following ${doc.data.label} (${doc.data.autoUpgrade === 'safe' ? 'overlays move to new versions when nothing breaks' : 'new versions are installed; overlays stay until you upgrade them'})`);
             printChecks(out, results);
             if (results[0]?.error) out('It stays followed; the running platform tries again at every check.');
+            if (now.data.tagPrefix) out(`Its releases are those tagged "${now.data.tagPrefix}…"; name it ${now.data.repo}#${now.data.tagPrefix} (skp template update, unfollow).`);
+            if (warning) out(`warning: ${warning.message}`);
             out(NOTE);
           }
           return 0;
@@ -317,14 +327,19 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         if (rest.length) return usage('template sources takes no arguments');
         const data = openFor('template sources');
         try {
-          const rows = data.sources.list().map((d) => ({
-            id: d.id, source: d.data.label, autoUpgrade: d.data.autoUpgrade, template: d.data.templateId, version: d.data.version,
-            release: d.data.release, checkedAt: d.data.checkedAt, error: d.data.error,
-          }));
+          const rows = data.sources.list().map((doc) => {
+            const v = data.sources.view(doc);
+            return {
+              id: v.id, source: v.label, ...(v.kind === 'github' ? { repo: v.repo } : { url: v.url }), ...(v.tag !== undefined ? { tag: v.tag } : {}), tagPrefix: v.tagPrefix,
+              autoUpgrade: v.autoUpgrade, template: v.templateId, version: v.version, release: v.release, checkedAt: v.checkedAt, error: v.error, ...(v.warning ? { warning: v.warning } : {}),
+            };
+          });
           if (opts.json) json(rows);
           else {
             for (const r of rows) {
-              out(`${r.source}  ${r.template ? `${r.template}@${r.version}${r.release ? ` (release ${r.release})` : ''}` : 'nothing installed yet'}  auto-upgrade ${r.autoUpgrade}${r.checkedAt ? `  checked ${r.checkedAt}` : ''}`);
+              const prefix = r.repo && r.tag === undefined ? `  tag prefix ${r.tagPrefix ? `"${r.tagPrefix}"` : 'none'}` : '';
+              out(`${r.source}${prefix}  ${r.template ? `${r.template}@${r.version}${r.release ? ` (release ${r.release})` : ''}` : 'nothing installed yet'}  auto-upgrade ${r.autoUpgrade}${r.checkedAt ? `  checked ${r.checkedAt}` : ''}`);
+              if (r.warning) out(`  warning: ${r.warning.message}`);
               if (r.error) out(`  last check failed: ${r.error.message}`);
             }
             if (!rows.length) out('No template sources: skp template follow <owner/name>.');
