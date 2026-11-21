@@ -42,6 +42,7 @@ function fakeGithub({ rotate = false } = {}) {
   function releaseJson(repo, r) {
     return {
       tag_name: r.tag,
+      ...(r.notes !== undefined ? { body: r.notes } : {}),
       draft: false,
       prerelease: false,
       assets: r.assets.map((a, i) => ({
@@ -94,9 +95,9 @@ function fakeGithub({ rotate = false } = {}) {
     fetch,
     requests,
     // Publishes a release (the new latest): assets [{ name, data }] and/or a source zip.
-    publish(repo, tag, { assets = [], zipball } = {}) {
+    publish(repo, tag, { assets = [], zipball, notes } = {}) {
       n++;
-      repos.set(repo, [...(repos.get(repo) || []), { id: n, tag, assets, zipball, etag: `"etag-${n}"` }]);
+      repos.set(repo, [...(repos.get(repo) || []), { id: n, tag, assets, zipball, notes, etag: `"etag-${n}"` }]);
     },
     limit(on = true) { limited = on; },
   };
@@ -219,9 +220,11 @@ test('following a repository: new releases install, overlays move when nothing b
   assert.equal(gh.requests.length, before + 1);
   assert.equal(gh.requests.at(-1).headers['if-none-match'], d.sources.get('dprtmnt/sample').data.etag);
 
-  // A compatible minor release: installed, and both overlays move, settings kept.
-  gh.publish('dprtmnt/sample', 'v1.1.0', { assets: [{ name: 'sample.skp', data: pkg('1.1.0') }] });
+  // A compatible minor release: installed, and both overlays move, settings kept. Its notes are
+  // kept on the source, trimmed (for the OBS plugin's CTD Overlays dock).
+  gh.publish('dprtmnt/sample', 'v1.1.0', { assets: [{ name: 'sample.skp', data: pkg('1.1.0') }], notes: '## Changes\n\n- New: a [darker](https://x.test) style\n- Fix: long names wrap' });
   [r] = await d.sources.check();
+  assert.deepEqual([d.sources.get('dprtmnt/sample').data.notes, d.sources.get('dprtmnt/sample').data.notesVersion], [['Changes', 'New: a darker style', 'Fix: long names wrap'], '1.1.0']);
   assert.deepEqual(r.upgraded.map((u) => `${u.overlay} ${u.from}→${u.to}`), ['main 1.0.0→1.1.0', 'other 1.0.0→1.1.0']);
   assert.deepEqual(r.waiting, []);
   assert.equal(d.overlays.resolve('main').doc.data.template.version, '1.1.0');

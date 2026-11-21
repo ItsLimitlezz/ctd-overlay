@@ -29,6 +29,8 @@
 //   pairing: ms.pairings; ms.approve({ code?, profileId, scopes? }) → its token; ms.deny(); ms.expire();
 //            ms.pairingLimited = n (the next n POST /pairing get 429); ms.pairingInterval (s)
 //   hub: ms.apps (id → registration), ms.registrations [{ appId, body }], ms.heartbeats,
+//        ms.summaries [{ appId, body }] (PUT /apps/<id>/summary, its §9.5; ms.noSummaryRoute = true
+//        answers 404 there, a Relay without it),
 //        ms.messages (POST /messages bodies), ms.ownApp(id) (registered by another token),
 //        ms.injectMessage({ from, to, type, profileId, data }) → the message id (an app.message)
 //   ms.legacy = true     answers as before v1.2: no profiles, pairing or hub
@@ -107,6 +109,7 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     pairingLimited: 0,
     apps: new Map(), // id → { id, owner, profileId, …registration }
     registrations: [],
+    summaries: [],
     heartbeats: [],
     messages: [],
     clock: { offsetMs: undefined, samples: [], advance: null, fps: 30, missing: false },
@@ -409,6 +412,20 @@ export async function startFakeMultistream({ heartbeatMs = 200, pairingInterval 
     if (path === '/api/v1/apps' && req.method === 'GET') {
       if (needs('apps:read')) return undefined;
       return json200({ items: [...ms.apps.values()].map(({ owner: _o, ...a }) => a) });
+    }
+    const sum = /^\/api\/v1\/apps\/([^/]+)\/summary$/.exec(path);
+    if (sum && req.method === 'PUT') {
+      if (ms.noSummaryRoute) return problem(res, 404, 'not_found', 'Unknown path');
+      if (needs('apps:write')) return undefined;
+      const id = decodeURIComponent(sum[1]);
+      const had = ms.apps.get(id);
+      if (!had) return problem(res, 404, 'not_found', 'Not registered');
+      if (had.owner !== tok.key) return problem(res, 409, 'app_owned', `The app "${id}" was registered by another token.`);
+      if (body.length > 64 * 1024) return problem(res, 413, 'invalid', 'Body over 64 KB');
+      if (json?.schema !== 'ctd-overlay-summary/1') return problem(res, 400, 'invalid', 'schema');
+      ms.summaries.push({ appId: id, body: json, at: Date.now() });
+      res.writeHead(204);
+      return res.end();
     }
     const app = /^\/api\/v1\/apps\/([^/]+)(\/heartbeat)?$/.exec(path);
     if (app) {
