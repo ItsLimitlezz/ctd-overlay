@@ -1,6 +1,6 @@
 {
   "name": "ctd-overlay",
-  "version": "0.10.0",
+  "version": "0.15.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Self-hosted live-stream overlay platform implementing the Stream Kit Platform Standard (skp/1).",

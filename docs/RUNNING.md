@@ -130,6 +130,47 @@ overlays of different profiles the same **Role in OBS** (overlay page → Settin
 has two overlays from the same template; the plugin uses it to switch its sources between
 profiles.
 
+### OBS outside your network: the public address
+
+With only `SKP_HOSTS`, the plugin adds overlays at the LAN address, which OBS on another network
+can't open. Give CTD Overlay its public HTTPS address (the one your reverse proxy serves it at) as
+well, and it shares **both**: the plugin's docks then offer **Address: Local network** or **Public
+(internet)** for Add to scene, Copy URL and Open, and can switch existing browser sources.
+
+On TrueNAS, open **Apps → Installed → ctd-overlay → Edit**, and add or change these environment
+variables (keep `SKP_HOSTS` as it is):
+
+| Variable | Value |
+| --- | --- |
+| `SKP_PUBLIC_URL` | `https://overlay.example.com` (your proxy's address for CTD Overlay: `https://`, no path) |
+| `SKP_EXPOSURE` | `public` |
+| `SKP_TRUST_PROXY` | the IP address the reverse proxy's requests come from, like `192.168.1.60` (a proxy running as another app on the same NAS reaches the container from the Docker network, like `172.16.0.1`) |
+
+Save; the app restarts. An app installed via YAML opens its YAML in Edit: the same lines go under
+`environment:`:
+
+```yaml
+      SKP_EXPOSURE: public
+      SKP_HOSTS: "192.168.1.50:4850"
+      SKP_PUBLIC_URL: "https://overlay.example.com"
+      SKP_TRUST_PROXY: "192.168.1.60"
+```
+
+Then check:
+
+- **Settings → Security** lists **Overlays on your network** (`http://192.168.1.50:4850`) and
+  **Overlays on the internet** (`https://overlay.example.com`), with **default for apps** on the
+  public one. The CTD Relay connection's card says the same under **Shared with the OBS plugin**.
+- From the LAN, OBS keeps working over plain HTTP at the LAN address; from outside, only HTTPS
+  through the proxy is answered. Turn on **two-factor** for the owner (Settings → Account).
+
+The default: an app that knows one address (an older CTD OBS plugin) is given the **public** one
+once `SKP_PUBLIC_URL` is set, as it was before both were shared, so nothing it already added
+changes. The newer plugin picks **Local network** unless you choose Public, per CTD Relay profile.
+`SKP_PUBLIC_URL` must be `https://`: CTD Overlay doesn't start with an `http://` one, and never
+shares a public address over plain HTTP (a public IP address in `SKP_HOSTS` is not used as the
+local one).
+
 ### Follow OBS scenes
 
 The show's graphics can follow OBS: switch to **BRB** in OBS and the overlays take Be Right Back.
@@ -394,6 +435,7 @@ The **Alerts** card on **Live** shows what is on screen and what is waiting:
 | Signing in fails with "This can only be requested from the platform's own pages… at the platform's own address" | The address in the browser isn't one the platform knows (common in a container). Add it, with its port if that isn't 4848, to `SKP_HOSTS` and restart. |
 | The connection says the token was refused | Press **Connect again** on the connection's page and approve the code in CTD Relay (or paste a new token). |
 | "Another CTD Relay token already registered the app…" | An older connection (or token) registered it. In CTD Relay → Settings → API, delete that old **CTD Overlay** app; it registers again within 30 s. |
+| The OBS plugin's **Public (internet)** address is grayed out | CTD Overlay has no public address: set `SKP_PUBLIC_URL` (see [OBS outside your network](#obs-outside-your-network-the-public-address)). |
 | "The OBS plugin sees no overlay URLs" | Set `SKP_HOSTS` to the address OBS reaches CTD Overlay at (on the PC, start with `--exposure lan --hosts <PC address>:4848`). |
 | The connection is "Reconnecting" | CTD Relay isn't reachable at that address. Open `<address>/status` in a browser on the same machine. |
 | Chat shows in the admin page but not in OBS | Check the browser source's URL (copy it again) and size. Then in OBS: right-click the source → Refresh. |

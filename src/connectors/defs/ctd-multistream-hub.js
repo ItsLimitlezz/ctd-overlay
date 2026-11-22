@@ -4,7 +4,13 @@
 //
 // - Registration: PUT /apps/<appId> with every overlay bound to this connection ("all" counts),
 //   one resource per canvas: its URL for OBS (absolute, key included), size, and meta { canvas:
-//   landscape | vertical, slot, transparent, scenes? }. scenes: [{ id, name, core?, url }], the scenes
+//   landscape | vertical, slot, transparent, addresses?, scenes? }. addresses: { local?, public?,
+//   default }, the origins the platform is reached at (app.js shareBase): local, its LAN address
+//   (http://192.168.1.50:4850); public, SKP_PUBLIC_URL (always https://); default, the one url and
+//   the scene URLs use (public when there is one, as before both were shared, so an older OBS
+//   plugin adds what it always did). Every URL is <origin><path>: the OBS plugin swaps the origin
+//   for the other address, so each URL is sent once (two origins, about 100 bytes, per resource;
+//   CTD Relay keeps meta as sent, so no newer CTD Relay is needed). scenes: [{ id, name, core?, url }], the scenes
 //   of its template a browser source can stay on: url is the resource's URL with scene=<id> (04
 //   §4.9: that page shows only that scene and never follows the show or OBS). Only with two or
 //   more, never a scene that returns by itself; at most 50, cut so meta stays within 4096 bytes, and left out
@@ -78,11 +84,24 @@ function withScenes(meta, scenes, url) {
   return list.length ? { ...meta, scenes: list } : meta;
 }
 
+// meta.addresses for a resource whose URL is url: only http(s) origins, public only https://, and
+// only when url is at the default one (so the plugin can swap it); else nothing.
+export function addressesFor(addresses, url) {
+  if (!addresses || typeof addresses !== 'object') return {};
+  const origin = (u, scheme) => { try { const x = new URL(u); return scheme.test(x.protocol) && x.origin === u ? u : undefined; } catch { return undefined; } };
+  const local = origin(addresses.local, /^https?:$/);
+  const pub = origin(addresses.public, /^https:$/);
+  const def = addresses.default === 'public' ? pub : addresses.default === 'local' ? local : undefined;
+  if (!def || !str(url) || !url.startsWith(`${def}/`)) return {};
+  return { addresses: { ...(local ? { local } : {}), ...(pub ? { public: pub } : {}), default: addresses.default } };
+}
+
 // One overlay's resources, one per canvas that has a URL, assigned to profileId. tag: the profile,
 // in the id ("<overlay id>:<canvas id>:<profile id>"), when the connection follows every profile
 // (the same overlay may be registered for several). meta.scenes: the overlay's scenes (item.scenes),
 // [{ id, name, core?, url }], unless scenes: false.
-export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
+// addresses: ctx.overlays.addresses, put on each resource's meta (see the top).
+export function resourcesOf(item, profileId, { tag, scenes = true, addresses } = {}) {
   const base = item.role || tidy(shortName(item.template?.id), 54) || 'overlay';
   const canvases = (item.canvases || []).filter((c) => str(c.url));
   const labels = canvases.map((c) => c.label || c.kind);
@@ -99,7 +118,7 @@ export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
       url: c.url,
       width: c.width,
       height: c.height,
-      meta: withScenes({ canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true }, scenes ? item.scenes : undefined, c.url),
+      meta: withScenes({ canvas: c.kind, slot: `${base}-${c.kind}${n > 1 ? `-${n}` : ''}`.slice(0, 64).replace(/-+$/, ''), transparent: true, ...addressesFor(addresses, c.url) }, scenes ? item.scenes : undefined, c.url),
     };
   });
 }
@@ -124,11 +143,11 @@ export function fitSummary(summary, max = SUMMARY_MAX) {
 // overlays by profileId, GET /profiles/{id}/overlays, never the unassigned ones): bound to some of
 // its profiles, those; bound to the whole connection (or "all"), every profile it follows now
 // (profiles). The same URL, canvas and slot for each.
-export function resourcesFor(items, { every, profileId, profiles = [], scenes = true }) {
+export function resourcesFor(items, { every, profileId, profiles = [], scenes = true, addresses }) {
   return items.flatMap((item) => {
-    if (!every) return resourcesOf(item, profileId, { scenes });
+    if (!every) return resourcesOf(item, profileId, { scenes, addresses });
     const list = Array.isArray(item.profiles) ? item.profiles : profiles;
-    return list.flatMap((p) => resourcesOf(item, p, { tag: p, scenes }));
+    return list.flatMap((p) => resourcesOf(item, p, { tag: p, scenes, addresses }));
   });
 }
 
@@ -161,7 +180,7 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
   // ---- registration ----------------------------------------------------------------------------
   function payload() {
     const items = ctx.overlays.list();
-    const from = { every, profileId, profiles: profiles() };
+    const from = { every, profileId, profiles: profiles(), addresses: ctx.overlays.addresses };
     let all = resourcesFor(items, from);
     const body = (resources) => ({
       name: 'CTD Overlay', kind: 'ctd-overlay', version,
@@ -218,7 +237,8 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
     if (!ctx.overlays.baseUrl) notes.push(`The OBS plugin sees no overlay URLs: ${ctx.overlays.baseProblem}`);
     if (p.kept < p.total) notes.push(`Only ${p.kept} of ${p.total} overlay URLs are shared with the OBS plugin: CTD Relay takes ${MAX_RESOURCES} per app. Bind fewer overlays to this connection.`);
     if (p.noScenes) notes.push(refused ? 'The OBS plugin gets the overlays without their scenes: this CTD Relay refused them (update CTD Relay).' : `The OBS plugin gets the overlays without their scenes: with them they are more than CTD Relay takes per app (${MAX_BODY / 1024} KB). Bind fewer overlays to this connection.`);
-    show({ status: 'shared', overlays: p.overlays, resources: p.kept, at: new Date(ctx.now()).toISOString() }, notes[0]);
+    const addresses = ctx.overlays.addresses;
+    show({ status: 'shared', overlays: p.overlays, resources: p.kept, ...(addresses ? { addresses } : {}), at: new Date(ctx.now()).toISOString() }, notes[0]);
     await sendSummary();
   }
 

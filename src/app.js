@@ -3,6 +3,7 @@
 // Returns a handle with stop(). Installs no process-wide handlers, so tests can run several
 // instances.
 import { mkdirSync, readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { alertSpec, createAlertQueue } from './alerts/queue.js';
 import { alertRoutes } from './alerts/routes.js';
@@ -24,7 +25,7 @@ import { createMediaLibrary } from './media/library.js';
 import { createObsFollow } from './obs/follow.js';
 import { mediaApiRoutes } from './media/api.js';
 import { mediaRoutes } from './media/routes.js';
-import { isPrivateAddress, liveMachineNames, machineNames } from './net.js';
+import { isPrivateAddress, liveMachineNames, machineNames, normalizeIp } from './net.js';
 import { overlayApiRoutes } from './overlays/api.js';
 import { createOverlays } from './overlays/registry.js';
 import { overlayRoutes } from './overlays/routes.js';
@@ -240,12 +241,13 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
       ...mediaApiRoutes({ api, media, overlays, shows, timeline, audit, now: clock.now }),
       // Connections (06): their setup, sign-in, the OAuth callback and inbound webhooks.
       ...connectorRoutes({ api, host: connectors, auth, hosts, log: log.child('connectors') }),
-      ...systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version: VERSION, heartbeatMs, now: clock.now }),
+      ...systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version: VERSION, heartbeatMs, now: clock.now, addresses: () => shared }),
       ...routes,
     ],
   });
 
   let address;
+  let shared; // where OBS reaches the overlays (shareBase), once the port is known
   try {
     address = await listen(server, config.port, config.host);
   } catch (err) {
@@ -279,7 +281,7 @@ export async function startPlatform(config, { log, routes = [], heartbeatMs, tem
   connectors.setOrigin(`${scheme}://${host}:${address.port}`);
   // Where OBS reaches this platform from another machine, for the overlays connections share
   // with CTD Relay's hub (06 §6.11).
-  const shared = shareBase(config, { scheme, port: address.port });
+  shared = shareBase(config, { scheme, port: address.port });
   connectors.setShareBase(() => shared);
   connectors.start().catch((err) => log.error('connections could not start', { err }));
 
@@ -350,21 +352,52 @@ export function ownHosts(server, configuredHost, { exposure = 'local', extra = [
   return [...new Set([...hostPorts, ...bare, ...withPort, ...pub])];
 }
 
-// The address OBS on another machine opens this platform's overlays at: { url } or { problem }.
-// SKP_PUBLIC_URL when set; else, in lan and public modes, the first SKP_HOSTS name, with the port
-// it names or the one the platform listens on (the NAS sets SKP_HOSTS=192.168.1.50:4850 → http://
-// 192.168.1.50:4850). The machine's own addresses are never guessed: inside a container they
-// aren't the ones the network sees.
+// The addresses OBS on another machine opens this platform's overlays at (06 §6.11):
+// { url, addresses: { local?, public?, default }, localProblem? } or { problem }.
+// - public: SKP_PUBLIC_URL (always https://: config.js refuses anything else, and so does this).
+// - local: in lan and public modes, the first SKP_HOSTS name that is on the local network, with the
+//   port it names or the one the platform listens on (the NAS sets SKP_HOSTS=192.168.1.50:4850 →
+//   http://192.168.1.50:4850). A name that is a public IP address, or the public URL's host, is
+//   never shared as the local address: that would be a public http:// URL, keys in the clear.
+// - url (what apps that know one address use, like older CTD OBS plugins) is the public address
+//   when there is one, else the local one: what it was before both were shared, so no existing
+//   browser source changes. addresses.default says which it is.
+// The machine's own addresses are never guessed: inside a container they aren't the ones the
+// network sees.
 export function shareBase(config, { scheme, port }) {
-  if (config.publicUrl) return { url: config.publicUrl };
+  const pub = typeof config.publicUrl === 'string' && /^https:\/\//i.test(config.publicUrl) ? new URL(config.publicUrl).origin : undefined;
+  const local = localBase(config, { scheme, port, publicHost: pub ? new URL(pub).hostname : undefined });
+  if (!pub && !local.url) return { problem: local.problem };
+  return {
+    url: pub || local.url,
+    addresses: { ...(local.url ? { local: local.url } : {}), ...(pub ? { public: pub } : {}), default: pub ? 'public' : 'local' },
+    ...(local.problem ? { localProblem: local.problem } : {}),
+  };
+}
+
+// The local network address of shareBase: { url } or { problem }.
+function localBase(config, { scheme, port, publicHost }) {
   if (config.exposure === 'local') {
     return { problem: 'This platform answers on this computer only (SKP_EXPOSURE=local), so OBS on another machine can\'t open its overlays: set SKP_EXPOSURE=lan and SKP_HOSTS to this machine\'s address (like 192.168.1.50:4850).' };
   }
-  const first = config.hosts?.[0];
-  if (!first) return { problem: 'This platform doesn\'t know the address the network reaches it at: set SKP_HOSTS to it (like 192.168.1.50:4850), or SKP_PUBLIC_URL.' };
+  const hosts = config.hosts || [];
+  const first = hosts.find((h) => {
+    const name = hostOf(h);
+    return name && name !== publicHost && !(isIP(name) && !isPrivateAddress(name));
+  });
+  if (!first) {
+    return { problem: hosts.length
+      ? 'SKP_HOSTS names no address on the local network (a public one is never shared over plain http://): add this machine\'s LAN address (like 192.168.1.50:4850).'
+      : 'This platform doesn\'t know the address the network reaches it at: set SKP_HOSTS to it (like 192.168.1.50:4850), or SKP_PUBLIC_URL.' };
+  }
   const withPort = /:\d+$/.test(first) && !first.endsWith(']') ? first : `${first}:${port}`;
   const bare = (scheme === 'https' && withPort.endsWith(':443')) || (scheme === 'http' && withPort.endsWith(':80')) ? withPort.replace(/:\d+$/, '') : withPort;
   return { url: `${scheme}://${bare}` };
+}
+
+// "192.168.1.50:4850" → "192.168.1.50", "[fd00::1]:80" → "fd00::1", "nas.home.arpa" → itself.
+function hostOf(entry) {
+  try { return normalizeIp(new URL(`http://${entry}`).hostname); } catch { return undefined; }
 }
 
 // Which clients a mode serves (07 §7.8): lan, the local network only; public, anyone over HTTPS

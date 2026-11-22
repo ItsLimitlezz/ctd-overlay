@@ -3,7 +3,8 @@
 //   GET  /api/v1/openapi.json     this API, described (OpenAPI 3.1); no sign-in needed
 //   GET  /api/v1/system/health    status, with what is degraded, and every connection's status and
 //                                 viewer count (the Live strip: operators don't hold connections:read)
-//   GET  /api/v1/system/info      version, exposure, store, capabilities (ffmpeg …)
+//   GET  /api/v1/system/info      version, exposure, store, capabilities (ffmpeg …), and the
+//                                 addresses apps open overlays at (appAddresses)
 //   GET  /api/v1/events           Server-Sent Events of what the platform publishes (?types=alert.*,custom.*)
 //   POST /api/v1/events           { type, data }: publish a custom.* or x-<vendor>.* event (02 §2.7),
 //                                 60 a second per principal, a budget of its own (03 §3.5)
@@ -16,7 +17,17 @@ import { createSseWriter } from '../overlays/sse.js';
 
 export const PUBLISH_PER_SECOND = 60; // 03 §3.5
 
-export function systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version, heartbeatMs = 15000, now = Date.now }) {
+// system/info's appAddresses: the addresses apps (the CTD OBS plugin, through CTD Relay) are given
+// for the overlays, { local?, public?, default?, localProblem?, problem? }: origins, no keys.
+function shareInfo(shared) {
+  if (!shared || typeof shared !== 'object') return {};
+  const { addresses, localProblem, problem } = shared;
+  if (!addresses) return problem ? { appAddresses: { problem } } : {};
+  return { appAddresses: { ...addresses, ...(localProblem ? { localProblem } : {}) } };
+}
+
+// addresses(): where OBS on another machine opens the overlays (app.js shareBase), once listening.
+export function systemRoutes({ api, bus, store, media, templates, overlays, shows, connectors, config, version, heartbeatMs = 15000, now = Date.now, addresses = () => undefined }) {
   const started = now();
   const streams = new Set();
   const r = (def) => api.route({ tag: 'System', ...def });
@@ -29,6 +40,7 @@ export function systemRoutes({ api, bus, store, media, templates, overlays, show
       exposure: config.exposure,
       ...(config.allowPlainInternet ? { plainInternet: true } : {}),
       ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
+      ...shareInfo(addresses()),
       store: { kind: store.kind, schemaVersion: store.schemaVersion },
       capabilities: { ffmpeg: Boolean(ffmpeg?.available), ...(ffmpeg?.version ? { ffmpegVersion: ffmpeg.version } : {}), tls: Boolean(config.tlsCert) },
       counts: { overlays: overlays.list().length, shows: shows.list().length, templates: new Set(templates.list().map((t) => t.id)).size },
