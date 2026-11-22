@@ -41,6 +41,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { newId } from '../ids.js';
 import { isPrivateAddress, pinnedFetch } from '../net.js';
+import { trimNotes } from './notes.js';
 import { compareVersions, TemplateError, validateTemplate } from './registry.js';
 import { ZipError } from './zip.js';
 
@@ -359,7 +360,7 @@ async function githubRelease(fetchFn, source, { auth = { from: 'none' }, etag, p
     if (typeof body.zipball_url !== 'string') throw new SourceError('The release has no .skp or .zip attached and no source zip.', 'bad-response');
     download = { name: 'source zip', url: body.zipball_url };
   }
-  return { tag: body.tag_name, etag: res.headers.get('etag') || undefined, download };
+  return { tag: body.tag_name, etag: res.headers.get('etag') || undefined, download, notes: trimNotes(typeof body.body === 'string' ? body.body : '') };
 }
 
 // A repository's releases, newest first, for choosing one to install (and a check that the token
@@ -706,12 +707,14 @@ export function createTemplateSources({ store, templates, overlays, log, github,
         const auth = authOf({ github, token });
         const rel = await githubRelease(fetchFn, d, { auth, etag: known.etag, pattern: d.assetPattern, tagPrefix: d.tagPrefix, others, signal: stopping.signal, max, net });
         if (rel.unchanged || (!force && rel.tag === known.release && (d.version || (d.failed && !stale)))) {
-          if (rel.etag && (!d.failed || stale)) update(doc, { etag: rel.etag });
+          // The same release, its notes edited since (a new ETag): keep the new notes.
+          if (rel.etag && (!d.failed || stale)) update(doc, { etag: rel.etag, ...(rel.notes?.length && rel.tag === d.release ? { notes: rel.notes } : {}) });
           return await unchanged();
         }
         // `tag` is the one a source may pin; the tag prefix and the file's name, learnt from the
         // first release, pick the releases and files after it.
-        seen = { release: rel.tag, etag: rel.etag };
+        // notes: the release's, trimmed (notes.js), for the OBS plugin's CTD Overlays dock.
+        seen = { release: rel.tag, etag: rel.etag, notes: rel.notes.length ? rel.notes : undefined };
         if (d.tag === undefined && !d.tagPrefix && tagPrefixOf(rel.tag)) {
           // Learnt: it is part of the source's name from now on (github:owner/name#overlay-v).
           seen.tagPrefix = tagPrefixOf(rel.tag);
@@ -760,7 +763,7 @@ export function createTemplateSources({ store, templates, overlays, log, github,
       // Only a version that is new to this source moves overlays; the same one again (a URL with
       // no validators, a new tag on the same package) never undoes an operator's revert.
       const fresh = version !== d.version;
-      const saved = update(doc, { templateId: id, version, checkedAt, error: undefined, failed: undefined, ...seen });
+      const saved = update(doc, { templateId: id, version, checkedAt, error: undefined, failed: undefined, ...seen, ...(seen.release ? { notesVersion: version } : {}) });
       Object.assign(result, await upgradeOverlays(saved, { pendingOnly: !fresh, announce: fresh }));
     } catch (err) {
       if (!(err instanceof SourceError || err instanceof TemplateError)) log.error('checking a template source failed', { source: d.label, err });

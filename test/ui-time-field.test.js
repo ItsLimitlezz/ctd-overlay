@@ -78,6 +78,8 @@ test('in a browser: the lineup and Details save the times typed; a time that can
   const browser = await launchBrowser(t);
   const page = await browser.open(`${platform.url}/#/login`, { width: 1280, height: 900 });
   await page.send('Emulation.setLocaleOverride', { locale: 'en-US' });
+  // The show's own time zone: a browser elsewhere (a CI runner in UTC) adds "(America/Toronto time)" to the hints.
+  await page.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Toronto' });
   await page.send('Emulation.setFocusEmulationEnabled', { enabled: true });
   await page.goto(`${platform.url}/?l=1#/login`);
   await page.waitFor('document.querySelector("input[name=username]")', 15000);

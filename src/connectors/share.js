@@ -13,6 +13,7 @@
 //                              there are two or more), profiles: null (bound whole) | [the profile
 //                              ids it is bound to] }; one whose template can't run is left out
 //   ctx.overlays.onChange(fn)  fn() after an overlay is made, deleted, renamed, re-keyed, re-bound…
+//   ctx.overlays.summary()     the overlay summary of the overlays bound to it (summary.js)
 //   ctx.overlays.create({ template, canvas?, slugBase?, from, profile? })   an overlay bound to this
 //                              connection only ("<connection>/<profile>" with a profile), recorded
 //                              in the audit log as made by app:<from>; throws an Error whose
@@ -23,6 +24,8 @@
 import { feedKey } from '../bus/owners.js';
 import { pinnableScenes, scopeOf } from '../overlays/registry.js';
 import { compareVersions } from '../templates/registry.js';
+import { VERSION } from '../version.js';
+import { buildSummary } from './summary.js';
 
 const SLUG_CHARS = 56; // room for "-99" under the 63 a slug may have
 
@@ -39,7 +42,8 @@ export function canvasKind(canvases, c) {
 // The last part of a template id, as a slug: com.dprtmnt.takeover → takeover.
 export const shortName = (id) => String(id || '').split('.').pop().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'overlay';
 
-export function createShare({ overlays, templates, audit, log, base = () => undefined }) {
+// summaryParts(): { sources, shows } once the platform has them (app.js), for summary().
+export function createShare({ overlays, templates, audit, log, base = () => undefined, summaryParts = () => ({}) }) {
   // The newest installed version of each template.
   function latest() {
     const by = new Map();
@@ -110,6 +114,21 @@ export function createShare({ overlays, templates, audit, log, base = () => unde
             .filter(Boolean).sort((a, b) => (a.slug < b.slug ? -1 : 1));
         },
         onChange: (fn) => overlays.onChange(fn),
+        // The overlay summary (summary.js) of the overlays bound to this connection: versions,
+        // template updates, overlays waiting for the operator, trimmed release notes.
+        summary() {
+          const { sources, shows } = summaryParts();
+          const mine = overlays.list().filter((d) => scope(d) !== undefined);
+          return buildSummary({
+            templates,
+            sources: sources ? sources.list() : [],
+            overlays: mine,
+            allOverlays: overlays.list(),
+            shows: shows ? shows.list() : [],
+            ui: base().url,
+            serverVersion: VERSION,
+          });
+        },
         create({ template, canvas, slugBase, from, profile }) {
           if (canvas !== undefined && canvas !== null && canvas !== 'landscape' && canvas !== 'vertical') throw new Error('"canvas" is "landscape" or "vertical" (or left out for every canvas).');
           const t = templateOf(template);

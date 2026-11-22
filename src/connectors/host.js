@@ -55,6 +55,8 @@ export function createConnectorHost({
   const pairings = new Map(); // connection id → a pairing in progress
   // Where OBS reaches this platform, for the overlays a connection shares (setShareBase).
   let shareBase = () => ({ problem: 'The platform hasn\'t started listening yet.' });
+  // The template sources and shows, for the overlay summary (setSummaryParts).
+  let summaryParts = {};
   const outcomes = new Map(); // connection id → { flow, status, detail?, at }
   const lastTest = new Map();
   const authorizeCounts = new Map(); // connection id → [times]
@@ -84,7 +86,7 @@ export function createConnectorHost({
     bus, records, registry, log, now, timers, fetch, lookup, allowHttp, random, holdMs, endpointsOf, oauthOf, post, publicUrl,
     publish: (type, data) => bus.publish(type, data),
     inboundUrl: (def, id) => (publicUrl && def.inbound ? `${publicUrl}/hooks/${def.id}/${id}` : undefined),
-    share: overlays && templates ? createShare({ overlays, templates, audit, log, base: () => shareBase() }) : undefined,
+    share: overlays && templates ? createShare({ overlays, templates, audit, log, base: () => shareBase(), summaryParts: () => summaryParts }) : undefined,
     suggestName,
   };
   // A request client of the platform's own, outside any connection's instance (pairing, retire).
@@ -252,6 +254,8 @@ export function createConnectorHost({
     // fn() → { url } where OBS reaches this platform, or { problem } saying what to set, for the
     // overlays connections share (app.js works it out once it listens).
     setShareBase(fn) { shareBase = fn; },
+    // { sources, shows }: what the overlay summary a connection shares reads (connectors/summary.js).
+    setSummaryParts(parts) { summaryParts = { ...parts }; },
 
     async start() {
       if (started) return;

@@ -12,6 +12,10 @@ publish one:
      bump counts as major.)
 2. Make a GitHub release whose tag names that version (`v1.3.0`), with the package attached.
 
+The CTD OBS plugin's **CTD Overlays** dock (Updates) shows each template's installed version next
+to the newest release, whether the update moves overlays by itself or waits, and the first lines of
+the release's notes: write the notes so their first lines say what changed in plain words.
+
 Validation runs on every install: a release that doesn't pass is not installed, and the error
 shows on the operator's `skp template sources`.
 

@@ -244,6 +244,7 @@ function overlaysFor(runner, gen, live, env) {
     get baseUrl() { return share.baseUrl; },
     get baseProblem() { return share.baseProblem; },
     list: () => share.list(),
+    summary: () => share.summary(),
     onChange(fn) {
       if (!live()) return () => {};
       const off = share.onChange(() => {

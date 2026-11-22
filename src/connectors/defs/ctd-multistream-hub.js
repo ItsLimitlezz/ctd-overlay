@@ -31,6 +31,12 @@
 //   broadcasts and replies are never answered. At most 10 overlays a minute, and 100 answers (the
 //   hub takes 120 a minute per token); each message is handled once, across restarts too.
 //
+// - Summary (its docs/API.md §9.5): after each registration, PUT /apps/<appId>/summary with the
+//   overlay summary of this connection's overlays (connectors/summary.js: versions, template
+//   updates, overlays waiting for the operator, trimmed release notes) for the OBS plugin's CTD
+//   Overlays dock; only when it changed, or every 5 minutes (CTD Relay keeps it in memory). At most
+//   60 KB (release notes go first). A CTD Relay without the route (404) is asked again in an hour.
+//
 // The URLs carry the overlays' keys: they go to this hub only, which the owner set up on their
 // network for exactly this (07 §7.6).
 import { shortName } from '../share.js';
@@ -46,6 +52,9 @@ const REPLIES_PER_MINUTE = 100;
 const MAKES_PER_MINUTE = 10;
 const HANDLED_KEEP = 50;
 const QUEUE_MAX = 100;
+const SUMMARY_EVERY_MS = 5 * 60000;
+const SUMMARY_MAX = 60 * 1024;
+const SUMMARY_RETRY_MS = 60 * 60000;
 
 const str = (v) => typeof v === 'string' && v.length > 0;
 const tidy = (s, n) => String(s || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, n).replace(/-+$/, '');
@@ -95,6 +104,18 @@ export function resourcesOf(item, profileId, { tag, scenes = true } = {}) {
   });
 }
 
+// The summary within SUMMARY_MAX bytes: release notes go first, then the overlays and templates
+// past what fits.
+export function fitSummary(summary, max = SUMMARY_MAX) {
+  const size = (x) => Buffer.byteLength(JSON.stringify(x));
+  if (size(summary) <= max) return summary;
+  let out = { ...summary, templates: summary.templates.map(({ notes: _notes, ...t }) => t) };
+  while (size(out) > max && (out.overlays.length || out.templates.length)) {
+    out = { ...out, overlays: out.overlays.slice(0, Math.floor(out.overlays.length * 0.9)), templates: out.templates.slice(0, Math.floor(out.templates.length * 0.9)) };
+  }
+  return out;
+}
+
 // request: the connector's (token, address, TLS pin); onChange(): its health and info changed;
 // reauth(): the token was refused; isOld(env): a message replayed after being away too long.
 // The resources a connection registers for the overlays it feeds (ctx.overlays.list() items):
@@ -122,6 +143,9 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
   let soonTimer = null;
   let off = null;
   let stopped = false;
+  let summarySent = ''; // the summary CTD Relay last took, as JSON
+  let summaryAt = 0;
+  let summaryPause = 0; // not before (a CTD Relay without the route, or one that refused it)
   const queue = []; // answers waiting for room under the hub's limit
   const sent = []; // when the last minute's answers went
   const made = []; // when the last minute's overlays were made
@@ -195,6 +219,40 @@ export function createHub(ctx, { request, appId, profileId, profileSlug, every =
     if (p.kept < p.total) notes.push(`Only ${p.kept} of ${p.total} overlay URLs are shared with the OBS plugin: CTD Relay takes ${MAX_RESOURCES} per app. Bind fewer overlays to this connection.`);
     if (p.noScenes) notes.push(refused ? 'The OBS plugin gets the overlays without their scenes: this CTD Relay refused them (update CTD Relay).' : `The OBS plugin gets the overlays without their scenes: with them they are more than CTD Relay takes per app (${MAX_BODY / 1024} KB). Bind fewer overlays to this connection.`);
     show({ status: 'shared', overlays: p.overlays, resources: p.kept, at: new Date(ctx.now()).toISOString() }, notes[0]);
+    await sendSummary();
+  }
+
+  // ---- summary (for the OBS plugin's CTD Overlays dock) -------------------------------------------
+  async function sendSummary() {
+    if (stopped || typeof ctx.overlays.summary !== 'function' || ctx.now() < summaryPause) return;
+    let body;
+    try {
+      body = fitSummary(ctx.overlays.summary());
+    } catch (err) {
+      ctx.log.warn('the overlay summary could not be made', { err: err.message });
+      return;
+    }
+    const text = JSON.stringify(body);
+    if (text === summarySent && ctx.now() - summaryAt < SUMMARY_EVERY_MS) return;
+    let r;
+    try {
+      r = await request(`/apps/${appId}/summary`, { method: 'PUT', json: body, retries: 0, acceptStatus: (st) => st !== 401 && st < 500 });
+    } catch (err) {
+      if (err.status === 401) reauth();
+      return; // tried again with the next registration
+    }
+    if (stopped) return;
+    if (r.status === 404 || r.status === 405) {
+      summaryPause = ctx.now() + SUMMARY_RETRY_MS; // an older CTD Relay: no versions in the OBS plugin
+      return;
+    }
+    if (r.status >= 400) {
+      summaryPause = ctx.now() + SUMMARY_EVERY_MS;
+      ctx.log.warn('CTD Relay refused the overlay summary', { status: r.status, detail: typeof r.data?.detail === 'string' ? r.data.detail.slice(0, 200) : undefined });
+      return;
+    }
+    summarySent = text;
+    summaryAt = ctx.now();
   }
 
   // Registers now; a call while one is under way runs once more after it, so what it sends is

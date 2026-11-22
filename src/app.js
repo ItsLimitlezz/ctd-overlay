@@ -151,6 +151,7 @@ export function openData(config, { log, templateDirs = [], purpose = 'platform',
       onAir: (overlayId) => shows.onAir(overlayId),
       record: (action, details) => audit.record({ action, actor: 'updater', ...details }),
     });
+    connectors.setSummaryParts?.({ sources, shows });
     return {
       lock, store, bus, secrets, audit, templates, overlays, media, shows, timeline, sources, connectors, alerts, github, obs,
       close() {
