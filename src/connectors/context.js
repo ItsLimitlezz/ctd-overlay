@@ -243,6 +243,7 @@ function overlaysFor(runner, gen, live, env) {
   return Object.freeze({
     get baseUrl() { return share.baseUrl; },
     get baseProblem() { return share.baseProblem; },
+    get addresses() { return share.addresses; },
     list: () => share.list(),
     summary: () => share.summary(),
     onChange(fn) {

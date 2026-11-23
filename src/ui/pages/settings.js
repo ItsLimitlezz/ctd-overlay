@@ -1116,6 +1116,18 @@ async function integrationsTab(panel, ctx, life) {
   return undefined;
 }
 
+// The addresses apps (the CTD OBS plugin, through CTD Relay) open the overlays at, and which one
+// they use unless told otherwise (system/info appAddresses: app.js shareBase).
+function appAddressRows(a) {
+  if (!a || typeof a !== 'object') return [];
+  if (a.problem) return [['Overlay address for apps', a.problem]];
+  const tag = (kind) => (a.default === kind ? [' ', badge('default for apps', 'ok')] : []);
+  return [
+    ['Overlays on your network', a.local ? [h('code', a.local), ...tag('local')] : a.localProblem || 'Not set (SKP_HOSTS)'],
+    ['Overlays on the internet', a.public ? [h('code', a.public), ...tag('public')] : 'Not set: set SKP_PUBLIC_URL (https://) for OBS outside your network'],
+  ];
+}
+
 // ---- Security & exposure (07 §7.8; read only) --------------------------------------------------
 async function securityTab(panel, ctx, life) {
   const info = await api.get('/api/v1/system/info');
@@ -1136,6 +1148,7 @@ async function securityTab(panel, ctx, life) {
       kv([
         ['Exposure', h('code', mode || 'unknown')],
         ['Public address', info?.publicUrl ? h('a', { href: info.publicUrl, rel: 'noopener' }, info.publicUrl) : 'Not set (only needed for the internet)'],
+        ...appAddressRows(info?.appAddresses),
         ['HTTPS', tls ? 'On: this platform has its own certificate' : mode === 'public' ? 'From the reverse proxy in front of it' : 'Off: traffic stays on this computer or your network'],
         ['This connection', `${https ? 'Encrypted (HTTPS)' : 'Not encrypted (HTTP)'} to ${location.host}`],
       ])),

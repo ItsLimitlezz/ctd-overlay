@@ -59,7 +59,7 @@ interface ConnectorContext {
   schedule(ms, fn): Cancel · every(ms, fn): Cancel · wrap(fn): fn  // a throw fails the instance
   setInfo(key, value): void           // what it tells about itself, on the connection (`info`)
   suggestName(name): void             // the connection's name, while nobody has named it
-  overlays?: { baseUrl?, list(), onChange(fn), create(spec) }  // sharesOverlays only (6.11)
+  overlays?: { baseUrl?, addresses?, list(), onChange(fn), create(spec) }  // sharesOverlays only (6.11)
 }
 ```
 
@@ -438,7 +438,7 @@ token limited to a profile and `ctd-overlay` for one that reads every profile: `
 Overlay", kind: "ctd-overlay", version, baseUrl, capabilities: ["overlays", "overlay.create"],
 resources }`. One resource per canvas: `{ type: "overlay", id: "<overlay id>:<canvas id>", name:
 "<slug> — <canvas>", profileId, url, width, height, meta: { canvas, slot, transparent: true,
-scenes? } }`.
+addresses?, scenes? } }`.
 `profileId` is the profile it follows. Following every profile, an overlay is registered once
 per profile it is fed by, assigned to it, id `<overlay id>:<canvas id>:<profile id>`, the same URL,
 canvas and slot each time: the profiles of its `"<connection>/<profile>"` bindings, or every
@@ -446,8 +446,16 @@ profile followed now when it is bound to the whole connection or to `"all"` (the
 a profile's overlays with `GET /profiles/{id}/overlays`, which leaves unassigned ones out). A
 profile made or deleted there registers them again.
 `url` is the overlay's URL for OBS, its key included, at `baseUrl`: `SKP_PUBLIC_URL`, else the
-first `SKP_HOSTS` name with its port (lan and public modes; `192.168.1.50:4850` →
+first `SKP_HOSTS` name on the local network with its port (lan and public modes; `192.168.1.50:4850` →
 `http://192.168.1.50:4850`); without one the connection warns and shares no URLs.
+`meta.addresses` (additive; an older plugin ignores it and adds `url`) is `{ local?, public?,
+default }`, every origin the overlays are reached at: `local` the LAN one just described (in lan
+and public modes; never a public IP address or the public URL's host: no public `http://` URL is
+ever shared), `public` `SKP_PUBLIC_URL` (always `https://`), and `default` the one `url`,
+`baseUrl` and the scene URLs are at: `public` when there is one, as before both were shared, else
+`local`. A reader that wants the other address replaces the origin of `url` (or of a scene's
+`url`) with it, the path and query unchanged, so each URL is sent once and the two origins add
+about 100 bytes to each resource's 4096 (scenes are cut first). Left out when no address is known.
 `meta.scenes` (additive; an older plugin ignores it) is `[{ id, name, core?, url }]`: the scenes
 of the overlay's template a browser source can stay on (`name` is the scene's label). A scene's
 `url` is the resource's `url` with `scene=<scene id>` added

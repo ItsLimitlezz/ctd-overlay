@@ -91,10 +91,24 @@ function feedValues(c) {
 function hubLine(c) {
   const hub = c.info?.hub;
   if (!hub || typeof hub !== 'object') return null;
-  if (hub.status === 'shared') return h('p.small', `Shared with the OBS plugin: ${hub.overlays} overlay${hub.overlays === 1 ? '' : 's'}${hub.resources !== hub.overlays ? ` (${hub.resources} canvases)` : ''}.`);
+  if (hub.status === 'shared') {
+    return h('div',
+      h('p.small', `Shared with the OBS plugin: ${hub.overlays} overlay${hub.overlays === 1 ? '' : 's'}${hub.resources !== hub.overlays ? ` (${hub.resources} canvases)` : ''}.`),
+      addressLine(hub.addresses));
+  }
   if (hub.status === 'starting') return h('p.small.muted', 'Sharing its overlays with the OBS plugin…');
   if (hub.status === 'failed') return h('p.small.muted', 'Not shared with the OBS plugin: see the warning.');
   return h('p.small.muted', `Not shared with the OBS plugin: ${hub.detail || 'off'}`);
+}
+
+// The addresses the OBS plugin can add the overlays at (CTD Overlay's SKP_HOSTS and
+// SKP_PUBLIC_URL), and which one it uses unless told otherwise.
+function addressLine(a) {
+  if (!a || typeof a !== 'object' || (!a.local && !a.public)) return null;
+  const one = (kind, label) => (a[kind] ? [`${label}: `, h('code', a[kind]), a.default === kind ? ' (default for apps)' : ''] : null);
+  const parts = [one('local', 'Local network'), one('public', 'Public (internet)')].filter(Boolean);
+  return h('p.small.muted', parts.flatMap((p, i) => (i ? [' · ', ...p] : p)),
+    a.public ? '' : '. No public address: set SKP_PUBLIC_URL for OBS outside your network.');
 }
 
 // A settings schema with the choices the running connection offers (x-skp-choices: a profile to

@@ -5,6 +5,9 @@
 //   ctx.overlays.baseUrl       where OBS reaches this platform: SKP_PUBLIC_URL, else the first
 //                              SKP_HOSTS name (lan and public modes) with the platform's port;
 //                              undefined when it isn't known (baseProblem says what to set)
+//   ctx.overlays.addresses     every address it is known at: { local?, public?, default } (app.js
+//                              shareBase), origins only: local http(s)://<LAN address>, public
+//                              always https://; default names the one baseUrl and the URLs use
 //   ctx.overlays.list()        the overlays bound to this connection ("all" counts, and a binding to
 //                              one of its profiles), by slug, each { id, slug, role?, template: {
 //                              id, version, name }, canvases: [{ id, label, kind: landscape |
@@ -107,6 +110,7 @@ export function createShare({ overlays, templates, audit, log, base = () => unde
       return {
         get baseUrl() { return base().url; },
         get baseProblem() { return base().problem; },
+        get addresses() { return base().addresses; },
         list() {
           const url = base().url;
           return overlays.list().map((d) => [d, scope(d)]).filter(([, s]) => s !== undefined)

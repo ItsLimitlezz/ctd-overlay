@@ -11,7 +11,7 @@ import path from 'node:path';
 import { shareBase, startPlatform } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { canvasKind } from '../src/connectors/share.js';
-import { appIdFor, createHub, resourcesOf } from '../src/connectors/defs/ctd-multistream-hub.js';
+import { addressesFor, appIdFor, createHub, resourcesOf } from '../src/connectors/defs/ctd-multistream-hub.js';
 import { fakeClock, until } from './connector-helpers.js';
 import { startFakeMultistream } from './fixtures/fake-multistream.mjs';
 import { defer, FIXTURE_TEMPLATES, memoryLogger, signedIn, tempDir, TESTBED } from './helpers.js';
@@ -204,8 +204,10 @@ test('the overlays it feeds are registered in the hub: a resource per canvas, ke
   // scene=<id>); never a scene that returns by itself (Event Intro, Headliner Intro).
   const SCENES = [['auto', 'Auto (countdown, then live)', 'auto'], ['starting', 'Starting Soon', 'starting'], ['program', 'Live · In-set', 'program'], ['brb', 'Be Right Back', 'brb'], ['lineup', 'Tonight\'s Lineup', 'lineup'], ['outro', 'Outro', 'outro'], ['bg', 'Animated Background', 'bg'], ['line', 'The Line'], ['pov', 'POV (glasses cam)']];
   const scenesAt = (url) => SCENES.map(([id, name, core]) => ({ id, name, ...(core ? { core } : {}), url: `${url}&scene=${id}` }));
-  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:h`), { type: 'overlay', id: `${tk.id}:h`, name: 'takeover — landscape', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover?key=${key}`, width: 1920, height: 1080, meta: { canvas: 'landscape', slot: 'takeover-landscape', transparent: true, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}`) } });
-  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:v`).meta, { canvas: 'vertical', slot: 'takeover-vertical', transparent: true, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}&canvas=v`) });
+  // meta.addresses: only the LAN one is known here (no SKP_PUBLIC_URL), and it is the default.
+  const addresses = { local: SHARED, default: 'local' };
+  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:h`), { type: 'overlay', id: `${tk.id}:h`, name: 'takeover — landscape', profileId: 'p-dprtmnt', url: `${SHARED}/o/takeover?key=${key}`, width: 1920, height: 1080, meta: { canvas: 'landscape', slot: 'takeover-landscape', transparent: true, addresses, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}`) } });
+  assert.deepEqual(body.resources.find((r) => r.id === `${tk.id}:v`).meta, { canvas: 'vertical', slot: 'takeover-vertical', transparent: true, addresses, scenes: scenesAt(`${SHARED}/o/takeover?key=${key}&canvas=v`) });
   assert.ok(Buffer.byteLength(JSON.stringify(body.resources.find((r) => r.id === `${tk.id}:v`).meta)) <= 4096, 'Takeover\'s scenes fit an older CTD Relay');
   // A template with one scene has none to pick: its URL is that scene.
   assert.ok(body.resources.filter((r) => r.name.startsWith('chat')).every((r) => !('scenes' in r.meta)));
@@ -213,7 +215,7 @@ test('the overlays it feeds are registered in the hub: a resource per canvas, ke
   // Chat's role in OBS; its tall "side" column is the landscape output's, its "v" the vertical one's.
   assert.deepEqual(body.resources.filter((r) => r.name.startsWith('chat')).map((r) => [r.width, r.height, r.meta.canvas, r.meta.slot]), [[560, 1000, 'landscape', 'chat-main-landscape'], [1080, 720, 'vertical', 'chat-main-vertical']]);
   assert.ok(!body.resources.some((r) => r.name.startsWith('elsewhere')), 'only what it feeds');
-  assert.deepEqual(get().info.hub, { appId: 'ctd-overlay-dprtmnt', status: 'shared', overlays: 2, resources: 4, at: get().info.hub.at });
+  assert.deepEqual(get().info.hub, { appId: 'ctd-overlay-dprtmnt', status: 'shared', overlays: 2, resources: 4, addresses: { local: SHARED, default: 'local' }, at: get().info.hub.at });
   assert.equal(ms.apps.get('ctd-overlay-dprtmnt').profileId, 'p-dprtmnt');
 
   // A change is registered within about a second: bound, re-keyed, a role given.
@@ -332,11 +334,26 @@ test('overlay.create from another app makes one, bound to this connection only a
 });
 
 test('where OBS reaches the platform; app ids; resources and canvases as the hub wants them', () => {
-  assert.deepEqual(shareBase({ hosts: ['192.168.1.50:4850'], exposure: 'lan' }, { scheme: 'http', port: 4848 }), { url: 'http://192.168.1.50:4850' });
-  assert.deepEqual(shareBase({ hosts: ['nas.home.arpa'], exposure: 'lan' }, { scheme: 'http', port: 4848 }), { url: 'http://nas.home.arpa:4848' });
-  assert.deepEqual(shareBase({ hosts: ['nas.home.arpa'], exposure: 'public', publicUrl: 'https://overlays.example.com' }, { scheme: 'http', port: 4848 }), { url: 'https://overlays.example.com' });
-  assert.match(shareBase({ hosts: [], exposure: 'lan' }, { scheme: 'http', port: 4848 }).problem, /SKP_HOSTS/);
-  assert.match(shareBase({ hosts: ['192.168.1.50:4850'], exposure: 'local' }, { scheme: 'http', port: 4848 }).problem, /SKP_EXPOSURE=lan/);
+  const at = (config) => shareBase(config, { scheme: 'http', port: 4848 });
+  assert.deepEqual(at({ hosts: ['192.168.1.50:4850'], exposure: 'lan' }), { url: 'http://192.168.1.50:4850', addresses: { local: 'http://192.168.1.50:4850', default: 'local' } });
+  assert.deepEqual(at({ hosts: ['nas.home.arpa'], exposure: 'lan' }), { url: 'http://nas.home.arpa:4848', addresses: { local: 'http://nas.home.arpa:4848', default: 'local' } });
+  // Both known: both shared; url (what older apps use) stays the public one, as before.
+  assert.deepEqual(at({ hosts: ['nas.home.arpa'], exposure: 'public', publicUrl: 'https://overlays.example.com' }), { url: 'https://overlays.example.com', addresses: { local: 'http://nas.home.arpa:4848', public: 'https://overlays.example.com', default: 'public' } });
+  assert.match(at({ hosts: [], exposure: 'lan' }).problem, /SKP_HOSTS/);
+  assert.match(at({ hosts: ['192.168.1.50:4850'], exposure: 'local' }).problem, /SKP_EXPOSURE=lan/);
+  // The public address only, when the platform answers on this computer only: said why not local.
+  const only = at({ hosts: ['192.168.1.50'], exposure: 'local', publicUrl: 'https://overlays.example.com' });
+  assert.deepEqual([only.url, only.addresses], ['https://overlays.example.com', { public: 'https://overlays.example.com', default: 'public' }]);
+  assert.match(only.localProblem, /SKP_EXPOSURE=lan/);
+  // Never a public http:// URL: a public IP address or the public URL's own host isn't "local"; the
+  // first LAN name is (IPv6 too).
+  assert.deepEqual(at({ hosts: ['overlays.example.com', '203.0.113.10:4850', '192.168.1.50:4850'], exposure: 'public', publicUrl: 'https://overlays.example.com' }).addresses, { local: 'http://192.168.1.50:4850', public: 'https://overlays.example.com', default: 'public' });
+  assert.deepEqual(at({ hosts: ['203.0.113.10:4850', '[fd00::5]:4850'], exposure: 'lan' }).url, 'http://[fd00::5]:4850');
+  assert.match(at({ hosts: ['203.0.113.10:4850'], exposure: 'lan' }).problem, /never shared over plain http/);
+  const noLan = at({ hosts: ['overlays.example.com'], exposure: 'public', publicUrl: 'https://overlays.example.com' });
+  assert.deepEqual(noLan.addresses, { public: 'https://overlays.example.com', default: 'public' });
+  assert.match(noLan.localProblem, /LAN address/);
+  assert.equal(at({ hosts: ['192.168.1.50'], exposure: 'lan', publicUrl: 'http://overlays.example.com' }).addresses.public, undefined, 'a public http:// URL is never shared (config.js refuses it too)');
   assert.deepEqual([appIdFor({ limited: true, slug: 'dprtmnt' }), appIdFor({ limited: false, slug: 'dprtmnt' }), appIdFor({ limited: true, slug: 'A Very Long Profile Slug That Goes On And On' })], ['ctd-overlay-dprtmnt', 'ctd-overlay', 'ctd-overlay-a-very-long-profile-slug-tha']);
   const square = [{ id: 'sq', width: 1080, height: 1080 }];
   assert.deepEqual([canvasKind(square, square[0]), canvasKind([{ id: 'tall', width: 500, height: 900 }], { id: 'tall', width: 500, height: 900 })], ['landscape', 'vertical']);
@@ -352,6 +369,50 @@ test('where OBS reaches the platform; app ids; resources and canvases as the hub
   const many = resourcesOf({ ...item, scenes: manyScenes() }, 'p1')[0].meta;
   assert.ok(many.scenes.length > 10 && many.scenes.length <= 50 && many.scenes[0].id === 's0');
   assert.ok(Buffer.byteLength(JSON.stringify(many)) <= 4096);
+});
+
+test('both addresses on each resource\'s meta, once: every URL is at the default origin, the other one is swapped in by the plugin; meta stays within 4 KB', () => {
+  const lan = 'http://192.168.1.50:4850';
+  const pub = 'https://overlays.example.com';
+  const addresses = { local: lan, public: pub, default: 'public' };
+  const item = { id: 'ovl_2', slug: 'y', template: { id: 'com.a.b' }, scenes: [{ id: 'brb', name: 'BRB' }, { id: 'pov', name: 'POV' }], canvases: [{ id: 'h', kind: 'landscape', width: 1920, height: 1080, url: `${pub}/o/y?key=k` }] };
+  const [r] = resourcesOf(item, 'p1', { addresses });
+  assert.equal(r.url, `${pub}/o/y?key=k`, 'url unchanged: what an older OBS plugin adds');
+  assert.deepEqual(r.meta.addresses, addresses);
+  assert.deepEqual(r.meta.scenes.map((x) => x.url), [`${pub}/o/y?key=k&scene=brb`, `${pub}/o/y?key=k&scene=pov`], 'scene URLs are not doubled');
+  assert.ok(!JSON.stringify(r).includes(`${lan}/`), 'no URL at the other address');
+  // The cost: the two origins, once per resource.
+  const [plain] = resourcesOf(item, 'p1');
+  assert.ok(Buffer.byteLength(JSON.stringify(r.meta)) - Buffer.byteLength(JSON.stringify(plain.meta)) < 120);
+  // Many scenes: the 4 KB still holds with the addresses in it (scenes are cut first).
+  const many = resourcesOf({ ...item, scenes: manyScenes() }, 'p1', { addresses })[0].meta;
+  assert.deepEqual(many.addresses, addresses);
+  assert.ok(many.scenes.length > 10 && Buffer.byteLength(JSON.stringify(many)) <= 4096);
+  // Left out when they don't fit what the URL is: a URL at neither origin, a public http:// one,
+  // anything that isn't an origin.
+  assert.equal(resourcesOf(item, 'p1', { addresses: { ...addresses, default: 'local' } })[0].meta.addresses, undefined);
+  assert.deepEqual(addressesFor({ local: lan, public: 'http://overlays.example.com', default: 'local' }, `${lan}/o/y`), { addresses: { local: lan, default: 'local' } });
+  assert.deepEqual(addressesFor({ local: lan, public: 'http://overlays.example.com', default: 'public' }, 'http://overlays.example.com/o/y'), {});
+  assert.deepEqual(addressesFor({ local: `${lan}/sub`, public: pub, default: 'public' }, `${pub}/o/y`), { addresses: { public: pub, default: 'public' } });
+  assert.deepEqual(addressesFor(undefined, `${pub}/o/y`), {});
+});
+
+test('with SKP_PUBLIC_URL and SKP_HOSTS both set, the hub gets both addresses, the public one as the URLs\' default; Settings and the connection say so', { timeout: 60000 }, async (t) => {
+  const ctx = await start(t, { env: { SKP_PUBLIC_URL: 'https://overlays.example.com' } });
+  const { ms, platform, api } = ctx;
+  platform.overlays.create({ slug: 'chat', template: CHAT, settings: {}, connections: 'all' });
+  const conn = await connect(ctx, { token: ms.addToken({ profileId: 'p-dprtmnt' }) });
+  const last = () => ms.registrations.filter((r) => r.appId === 'ctd-overlay-dprtmnt').at(-1)?.body;
+  await until(() => last()?.resources.length === 2 && platform.connectors.get(conn.id).info?.hub?.status === 'shared', 8000, 'registered');
+  const addresses = { local: SHARED, public: 'https://overlays.example.com', default: 'public' };
+  assert.equal(last().baseUrl, 'https://overlays.example.com');
+  for (const r of last().resources) {
+    assert.ok(r.url.startsWith('https://overlays.example.com/o/chat?key='), r.url);
+    assert.deepEqual(r.meta.addresses, addresses);
+  }
+  assert.deepEqual(platform.connectors.get(conn.id).info.hub.addresses, addresses);
+  const info = await api('GET', '/system/info');
+  assert.deepEqual(info.body.appAddresses, addresses);
 });
 
 const manyScenes = () => Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, name: `Scene ${i} ${'x'.repeat(60)}` }));

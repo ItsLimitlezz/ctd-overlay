@@ -142,7 +142,9 @@ OBS browser sources can't log in, so overlays use capability URLs.
   else), so the CTD OBS plugin connected to it can add them as browser sources. The hub is LAN
   infrastructure the owner set up and paired with, and it lists them only to tokens with
   `apps:read`; rotating a key re-registers the new URL at once. Turning the connection off, or
-  deleting it, unregisters them.
+  deleting it, unregisters them. With `SKP_PUBLIC_URL` set, the URLs (and the public origin the
+  plugin may use instead of the LAN one) are `https://`; a public address is never shared over
+  plain `http://`.
 
 ## 7.7 Secrets at rest
 
