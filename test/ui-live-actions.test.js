@@ -201,7 +201,9 @@ test('Live, who\'s on: with nobody picked, the act the lineup\'s times are in; N
   await page.waitFor('[...document.querySelectorAll(".toast span")].some((s) => /^Headliner DJ is on\\. \\d+ cues? still to come for Opener (was|were) skipped$/.test(s.textContent))', 8000);
   const cues = (await api('GET', `/shows/${id}/cues?limit=200`)).body.items;
   assert.ok(cues.filter((c) => c.label?.startsWith('Opener')).every((c) => c.status !== 'armed'), 'nothing of Opener\'s left to fire');
-  assert.match(await card('Timeline'), /Headliner DJ/);
+  // The Timeline card redraws when the skips reach it, a moment after the toast.
+  await page.waitFor(`[...document.querySelectorAll('[data-view] .card')].find((c) => c.querySelector('h2')?.textContent === 'Timeline')?.innerText.includes('Headliner DJ')`, 8000)
+    .catch(async () => assert.match(await card('Timeline'), /Headliner DJ/));
   // Nobody on: nobody, whatever the times say; Next act is the act whose set it is.
   await click(page, '[data-view] button', 'Nobody on');
   await toastSaid(page, 'Nobody is on now');
