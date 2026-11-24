@@ -24,8 +24,9 @@ The tag push starts **Container image** (`.github/workflows/image.yml`). It chec
 matches `package.json`, builds linux/amd64 + linux/arm64, smoke-tests the image (`/healthz`, then
 the media tests inside it) and pushes `:0.15.10`, `:0.15` and `:sha-<short>`.
 
-If no run shows up under Actions within a minute (in this repository GitHub has so far created
-runs only for "Run workflow", never for a push), start it by hand **on the tag**:
+If no run shows up under Actions within a minute, start it by hand **on the tag**. (Until
+2026-11-24 GitHub created runs in this repository only for "Run workflow"; #24 got the first run
+from a pull request, and a tag push is still to be seen.)
 
 ```bash
 gh workflow run image.yml --repo ItsLimitlezz/ctd-overlay --ref v0.15.10

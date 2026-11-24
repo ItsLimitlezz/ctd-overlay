@@ -35,7 +35,7 @@ No build step and no `npm install`. Non-Apple, so run on the **PC** (Node >= 24)
 - The hard rules in `docs/standard/11-hard-rules.md` are normative (e.g. overlay URLs are permanent, server owns the show, durable before visible, never show a wrong number). Don't break them.
 - Data (`/data`) and master key (`/config`) are separate on purpose; container runs as UID/GID 568.
 - Binds to 127.0.0.1 unless `SKP_EXPOSURE=lan|public`. Settings are `SKP_*` env vars.
-- `.github/workflows/ci.yml`: `npm test` on Ubuntu (Linux only), plus the media tests inside the built image (its own ffmpeg). It is set to run on PRs and pushes to `main`, but GitHub has only ever created runs here for "Run workflow" (as of 2026-11-24), so a Senior runs it by hand.
+- `.github/workflows/ci.yml`: `npm test` on Ubuntu (Linux only), plus the media tests inside the built image (its own ffmpeg). It is set to run on PRs and pushes to `main`, but until 2026-11-24 GitHub created runs here only for "Run workflow" (#24 got the first pull-request run); if a PR or push shows no run, a Senior runs it by hand.
 - The image pins Alpine (`node:24-alpine3.24`), which fixes the ffmpeg it ships (8.1.x). ffmpeg 7.1+ takes colour tags from the frames over the `-color_*` options: keep the `setparams` tags in `videoArgs`.
 - Depends on CTD Relay's API and is configured from the CTD OBS plugin: cross-repo changes go through the hub's AGENT-REQUESTS.md.
 
