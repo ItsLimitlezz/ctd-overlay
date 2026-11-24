@@ -1,7 +1,7 @@
 // A stand-in for ffmpeg in tests: `node fake-ffmpeg.mjs <ffmpeg args>`. What it does is chosen by
 // FAKE_FFMPEG: copy (the default: the input becomes the output), fail, partial (half an output,
 // then fails), empty (exits 0 having written nothing), grow (an output over its -fs cap),
-// nozscale (a build without the zscale filter: a tone-mapping run fails, others copy), hang.
+// nozscale (a build without the zscale filter: a run that uses it fails, others copy), hang.
 // FAKE_FFMPEG_DELAY waits first (ms); FAKE_FFMPEG_LOG gets one JSON line per run ({ pid, start,
 // end, args }); FAKE_FFMPEG_VERSION is what -version reports; FAKE_FFMPEG_STREAMS is what
 // `-i <file>` with no output lists (as ffmpeg prints it): video and audio unless set.

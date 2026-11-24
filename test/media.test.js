@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { openData, startPlatform } from '../src/app.js';
 import { run } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
-import { probeFfmpeg, runFfmpeg } from '../src/media/ffmpeg.js';
+import { BT709_TAGS, needsColorConversion, probeFfmpeg, runFfmpeg, streamColors, videoArgs } from '../src/media/ffmpeg.js';
 import { createMediaLibrary, MEDIA_LIMITS, MediaError, mediaName, mediaUrl } from '../src/media/library.js';
 import { parseRange } from '../src/media/routes.js';
 import { sniff } from '../src/media/sniff.js';
@@ -176,7 +176,7 @@ test('phone video is converted to H.264 MP4 with the rotation baked in and no me
   assert.ok(existsSync(path.join(root, doc.data.fileId, 'IMG_0042.mp4')));
   const [call] = conversions(logFile);
   const args = call.args.join(' ');
-  for (const want of ['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-map_metadata -1', '-movflags +faststart', '-nostdin', '-color_primaries bt709 -color_trc bt709 -colorspace bt709']) assert.ok(args.includes(want), `${want} in ${args}`);
+  for (const want of ['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-map_metadata -1', '-movflags +faststart', '-nostdin', '-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv', BT709_TAGS]) assert.ok(args.includes(want), `${want} in ${args}`);
   assert.ok(!call.args.includes('-noautorotate'), 'ffmpeg rotates on decode by default; that must stay on');
   assert.ok(!args.includes('zscale'), 'an SDR clip isn\'t tone-mapped');
   assert.equal(call.args[call.args.indexOf('-fs') + 1], String(600 * 1024 * 1024), 'the output stops at the upload cap');
@@ -230,7 +230,55 @@ test('iPhone HDR video is tone-mapped to SDR; without the zscale filter it is co
   assert.ok(runs[0].args.join(' ').includes('tonemap=hable'));
   assert.ok(!runs[1].args.join(' ').includes('zscale'));
   assert.ok(runs[1].args.join(' ').includes('-color_trc bt709'));
+  assert.ok(runs[1].args.join(' ').includes(BT709_TAGS), 'tagged BT.709 on the frames as well');
   assert.ok(entries.some((e) => /can't tone-map HDR/.test(e.msg)));
+});
+
+// ffmpeg's listing of a stream says what colours it is in, the same way on ffmpeg 6, 7 and 8.
+test('a clip\'s colours are read from ffmpeg\'s listing; one not in BT.709 is converted, not only tagged', () => {
+  const line = (pix) => `  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), ${pix}, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps`;
+  const cases = [
+    ['yuv420p(tv, bt709, progressive)', { pixFmt: 'yuv420p', range: 'tv', space: 'bt709', primaries: 'bt709', transfer: 'bt709' }, false],
+    ['yuv420p', { pixFmt: 'yuv420p' }, false], // says nothing: taken as BT.709, as players take it
+    ['yuvj420p(pc, bt470bg/bt470bg/smpte170m, progressive)', { pixFmt: 'yuvj420p', range: 'pc', space: 'bt470bg', primaries: 'bt470bg', transfer: 'smpte170m' }, true],
+    ['yuvj420p(pc, bt470bg/unknown/unknown)', { pixFmt: 'yuvj420p', range: 'pc', space: 'bt470bg', primaries: undefined, transfer: undefined }, true],
+    ['yuv420p(tv, bt709/smpte432/bt709)', { pixFmt: 'yuv420p', range: 'tv', space: 'bt709', primaries: 'smpte432', transfer: 'bt709' }, true], // P3
+    ['yuv420p10le(tv, bt2020nc/bt2020/bt2020-10)', { pixFmt: 'yuv420p10le', range: 'tv', space: 'bt2020nc', primaries: 'bt2020', transfer: 'bt2020-10' }, true], // BT.2020 SDR
+    ['yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67)', { pixFmt: 'yuv420p10le', range: 'tv', space: 'bt2020nc', primaries: 'bt2020', transfer: 'arib-std-b67' }, false], // HDR: tone-mapped instead
+    ['yuv420p(pc, bt709)', { pixFmt: 'yuv420p', range: 'pc', space: 'bt709', primaries: 'bt709', transfer: 'bt709' }, false], // full range: the scaler converts it
+    ['rgb24(pc, gbr/unknown/unknown, progressive)', { pixFmt: 'rgb24', range: 'pc', space: 'gbr', primaries: undefined, transfer: undefined }, false],
+  ];
+  for (const [pix, colors, convert] of cases) {
+    assert.deepEqual(streamColors(line(pix)), colors, pix);
+    assert.equal(needsColorConversion(colors), convert, pix);
+  }
+  assert.deepEqual(streamColors('  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo'), {});
+  // BT.601 full range: zscale converts what the file names (and only that) to BT.709, limited.
+  const args = videoArgs('in.mp4', 'out.mp4', { colors: streamColors(line('yuvj420p(pc, bt470bg/unknown/unknown)')) });
+  const vf = args[args.indexOf('-vf') + 1];
+  assert.match(vf, /^zscale=min=bt470bg:pin=bt709:tin=bt709:rin=pc:m=bt709:p=bt709:t=bt709:r=tv,scale=/);
+  assert.ok(vf.endsWith(`format=yuv420p,${BT709_TAGS}`), vf);
+  assert.match(vf, /out_color_matrix=bt709:out_range=tv/, 'an RGB clip is made YUV with BT.709\'s matrix');
+  // Without zscale: no conversion, still tagged.
+  const plain = videoArgs('in.mp4', 'out.mp4', { colors: streamColors(line('yuvj420p(pc, bt470bg/unknown/unknown)')), zscale: false });
+  assert.ok(!plain.join(' ').includes('zscale') && plain.join(' ').includes(BT709_TAGS));
+});
+
+test('a BT.601 clip is converted to BT.709 where zscale is; without it, converted and tagged all the same', async (t) => {
+  const dir = tempDir(t);
+  const logFile = path.join(dir, 'ffmpeg.log');
+  fake(t, 'nozscale', { logFile });
+  const saved = process.env.FAKE_FFMPEG_STREAMS;
+  process.env.FAKE_FFMPEG_STREAMS = '  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/bt470bg/smpte170m, progressive), 1280x720, 30 fps\n';
+  defer(t, () => { if (saved === undefined) delete process.env.FAKE_FFMPEG_STREAMS; else process.env.FAKE_FFMPEG_STREAMS = saved; });
+  const { media, entries } = library(t);
+  const doc = await media.add(SAMPLES.mp4, { name: 'android.mp4' });
+  assert.equal(doc.data.converted, true);
+  const runs = conversions(logFile);
+  assert.equal(runs.length, 2, 'converted with zscale, then (none here) without');
+  assert.ok(runs[0].args.join(' ').includes('zscale=min=bt470bg:pin=bt470bg:tin=smpte170m:rin=pc'));
+  assert.ok(!runs[1].args.join(' ').includes('zscale') && runs[1].args.join(' ').includes(BT709_TAGS));
+  assert.ok(entries.some((e) => /can't convert the clip's colours/.test(e.msg)));
 });
 
 test('an MP4 with only sound is kept as audio, and one with neither picture nor sound is refused', async (t) => {
@@ -772,17 +820,22 @@ test('a real ffmpeg converts a clip to H.264 MP4', async (t) => {
   const ff = (...args) => spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { encoding: 'utf8' });
   // ffprobe comes with ffmpeg; without it nothing here could be checked, so it is required.
   const probe = (file, stream = 'v:0') => {
-    const r = spawnSync('ffprobe', ['-v', 'error', '-select_streams', stream, '-show_entries', 'stream=codec_name,pix_fmt,width,height,color_transfer,channels:stream_side_data:format_tags', '-of', 'json', file], { encoding: 'utf8' });
+    const r = spawnSync('ffprobe', ['-v', 'error', '-select_streams', stream, '-show_entries', 'stream=codec_name,pix_fmt,width,height,color_range,color_space,color_primaries,color_transfer,channels:stream_side_data:format_tags', '-of', 'json', file], { encoding: 'utf8' });
     assert.equal(r.status, 0, `ffprobe ${file}: ${r.error?.message || r.stderr}`);
     return JSON.parse(r.stdout);
   };
+  const colours = (s) => [s.color_space, s.color_primaries, s.color_transfer, s.color_range];
   const { media, root } = library(t, { ffmpeg: ['ffmpeg'] });
+  // Every converted clip says it is BT.709, limited range: matrix, primaries, transfer and range
+  // each (ffmpeg 8 dropped the primaries and transfer when only the encoder was told them).
   const converted = async (file) => {
     const doc = await media.add(file);
     assert.equal(doc.data.converted, true, doc.data.note);
     const out = path.join(root, doc.data.fileId, doc.data.name);
     assert.equal(readFileSync(out).toString('latin1', 4, 8), 'ftyp');
-    return { out, video: probe(out) };
+    const video = probe(out);
+    assert.deepEqual(colours(video.streams[0]), ['bt709', 'bt709', 'bt709', 'tv'], `${path.basename(file)} is tagged BT.709`);
+    return { out, video };
   };
 
   // A phone clip with a location: H.264, 8-bit 4:2:0, SDR, and the location gone. The input is
@@ -794,7 +847,6 @@ test('a real ffmpeg converts a clip to H.264 MP4', async (t) => {
   const { video: info } = await converted(plainClip);
   assert.equal(info.streams[0].codec_name, 'h264');
   assert.equal(info.streams[0].pix_fmt, 'yuv420p');
-  assert.equal(info.streams[0].color_transfer, 'bt709');
   assert.equal(info.format?.tags?.location, undefined, 'no location metadata');
   assert.equal(info.format?.tags?.make, undefined, 'no camera metadata');
 
@@ -823,10 +875,31 @@ test('a real ffmpeg converts a clip to H.264 MP4', async (t) => {
   assert.ok(o.streams[0].width % 2 === 0 && o.streams[0].height % 2 === 0, `${o.streams[0].width}x${o.streams[0].height}`);
 
   // iPhone HDR (10-bit HLG): tone-mapped to SDR where the build has zscale, tagged BT.709 always.
+  // The test clip's colours go on its frames (setparams): ffmpeg 8 ignores -color_trc alone.
   const hlg = path.join(dir, 'hlg.mp4');
-  if (ff('-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x180:rate=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p10le', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc', hlg).status === 0) {
+  if (ff('-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x180:rate=10', '-vf', 'setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv,format=yuv420p10le', '-c:v', 'libx264', hlg).status === 0) {
+    assert.deepEqual(colours(probe(hlg).streams[0]), ['bt2020nc', 'bt2020', 'arib-std-b67', 'tv'], 'the test clip is HLG');
     const { video: h } = await converted(hlg);
     assert.equal(h.streams[0].pix_fmt, 'yuv420p');
-    assert.equal(h.streams[0].color_transfer, 'bt709');
   } else t.diagnostic('this ffmpeg can\'t encode 10-bit H.264; HDR not checked');
+
+  // An older Android phone's clip: BT.601, full range. It is converted, not only tagged: its red
+  // (176, 48, 48) is still that red when read as BT.709, limited range (only tagged, it would read
+  // as about 196, 52, 35). The clip is written byte by byte and read back the same way, so no
+  // scaler (whose defaults differ between ffmpeg versions) stands between the test and the file;
+  // -color_range keeps ffmpeg 7.1 and later from making the clip limited range on the way in.
+  const [w, h] = [64, 64];
+  const frame = Buffer.concat([Buffer.alloc(w * h, 86), Buffer.alloc(w * h / 4, 106), Buffer.alloc(w * h / 4, 192)]); // Y Cb Cr, BT.601 full range
+  const raw = path.join(dir, 'bt601.yuv');
+  writeFileSync(raw, Buffer.concat(Array(5).fill(frame)));
+  const bt601 = path.join(dir, 'bt601.mkv');
+  assert.equal(ff('-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${w}x${h}`, '-r', '5', '-i', raw, '-vf', 'setparams=colorspace=bt470bg:color_primaries=bt709:color_trc=bt709:range=pc', '-c:v', 'ffv1', '-color_range', 'pc', bt601).status, 0);
+  assert.deepEqual(colours(probe(bt601).streams[0]), ['bt470bg', 'bt709', 'bt709', 'pc'], 'the test clip is BT.601, full range');
+  const { out: out601 } = await converted(bt601);
+  if (/ zscale /.test(spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout)) {
+    const px = spawnSync('ffmpeg', ['-v', 'error', '-i', out601, '-frames:v', '1', '-vf', 'crop=2:2:30:30', '-pix_fmt', 'yuv420p', '-f', 'rawvideo', 'pipe:1']).stdout;
+    const [y, cb, cr] = [px[0] - 16, px[4] - 128, px[5] - 128]; // 4 Y, then one Cb and one Cr
+    const rgb = [1.1644 * y + 1.7927 * cr, 1.1644 * y - 0.2132 * cb - 0.5329 * cr, 1.1644 * y + 2.1124 * cb].map(Math.round);
+    assert.ok(rgb.every((v, i) => Math.abs(v - [176, 48, 48][i]) <= 4), `read as BT.709: ${rgb}, wanted 176,48,48`);
+  } else t.diagnostic('this ffmpeg has no zscale filter; BT.601 colours tagged, not converted');
 });
