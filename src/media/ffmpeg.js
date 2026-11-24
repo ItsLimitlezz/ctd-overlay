@@ -5,10 +5,12 @@ import { spawn } from 'node:child_process';
 import { constants, setPriority } from 'node:os';
 
 export class FfmpegError extends Error {
-  constructor(message, code) {
+  // stderr: the tail of what ffmpeg printed, when it ran and failed (the message has its last lines).
+  constructor(message, code, stderr) {
     super(message);
     this.name = 'FfmpegError';
     this.code = code;
+    if (stderr) this.stderr = stderr;
   }
 }
 
@@ -51,8 +53,9 @@ function probeVersion(command, { timeoutMs = 10000 } = {}) {
   });
 }
 
-// What an input holds: { video, audio, hdr }, from ffmpeg's own reading of it (ffmpeg -i with no
-// output lists the streams and exits 1). hdr: an HLG or PQ transfer (iPhone HDR video).
+// What an input holds: { video, audio, hdr, colors }, from ffmpeg's own reading of it (ffmpeg -i
+// with no output lists the streams and exits 1). hdr: an HLG or PQ transfer (iPhone HDR video).
+// colors: the first video stream's, as streamColors() reads them.
 export async function inspect(command, input, { timeoutMs = 30000, onStart, lowerPriority } = {}) {
   let stderr = '';
   try {
@@ -65,7 +68,63 @@ export async function inspect(command, input, { timeoutMs = 30000, onStart, lowe
     video: video.length > 0,
     audio: /Stream #\d+:\d+.*: Audio:/.test(stderr),
     hdr: video.some((l) => /arib-std-b67|smpte2084/.test(l)),
+    colors: video.length ? streamColors(video[0]) : {},
   };
+}
+
+// The colours a video stream says its pictures are in, from ffmpeg's listing of it (the same on
+// ffmpeg 6, 7 and 8): "yuv420p(tv, bt709, progressive)" (all three BT.709), "yuvj420p(pc,
+// bt470bg/bt470bg/smpte170m)" (matrix/primaries/transfer), or "yuv420p" (it doesn't say).
+// { pixFmt, range, space (the YUV matrix), primaries, transfer }: each a name, or undefined.
+const ALL_THREE = new Set(['bt709', 'smpte170m', 'smpte240m', 'bt470bg']);
+export function streamColors(line) {
+  const m = /Video: [^,]*, ([a-z0-9_]+)(?:\(([^)]*)\))?/.exec(line || '');
+  if (!m) return {};
+  const out = { pixFmt: m[1] };
+  const named = (s) => (s && s !== 'unknown' && s !== 'reserved' ? s : undefined);
+  for (const item of (m[2] || '').split(', ')) {
+    if (item === 'tv' || item === 'pc') out.range = item;
+    else if (item.includes('/')) [out.space, out.primaries, out.transfer] = item.split('/').map(named);
+    else if (ALL_THREE.has(item)) out.space = out.primaries = out.transfer = item;
+  }
+  return out;
+}
+
+// What zscale converts from: the names it reads (zimg may still refuse an unusual pair, and the
+// caller then converts without it). A colour the file doesn't name is taken as BT.709's, as
+// players take it, so nothing the file doesn't say is changed.
+const ZSCALE = {
+  space: new Set(['gbr', 'bt709', 'fcc', 'bt470bg', 'smpte170m', 'smpte240m', 'ycgco', 'bt2020nc', 'bt2020c']),
+  primaries: new Set(['bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film', 'bt2020', 'smpte428', 'smpte431', 'smpte432', 'jedec-p22', 'ebu3213']),
+  transfer: new Set(['bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'linear', 'log100', 'log316', 'bt2020-10', 'bt2020-12', 'iec61966-2-4', 'iec61966-2-1']),
+};
+// BT.601 and BT.2020 (SDR) use BT.709's transfer curve.
+const BT709_CURVE = new Set(['bt709', 'smpte170m', 'bt2020-10', 'bt2020-12']);
+const RGB = /^(rgb|bgr|gbr|argb|abgr|0rgb|0bgr|x2rgb|x2bgr)/;
+function sourceColors(c = {}) {
+  const rgb = RGB.test(c.pixFmt || '');
+  const known = (kind) => (ZSCALE[kind].has(c[kind]) ? c[kind] : undefined);
+  return {
+    space: known('space') || (rgb ? 'gbr' : 'bt709'),
+    primaries: known('primaries') || 'bt709',
+    transfer: known('transfer') || 'bt709',
+    range: c.range || (rgb || /^yuvj/.test(c.pixFmt || '') ? 'pc' : 'tv'),
+  };
+}
+
+// Whether an SDR stream's pictures must be converted to be BT.709, not only tagged so: a matrix,
+// primaries or transfer it names that isn't BT.709's (an older Android phone's BT.601, a P3 or
+// BT.2020 SDR clip). HDR is tone-mapped instead; full range alone the scaler converts.
+export function needsColorConversion(colors) {
+  if (!colors || /arib-std-b67|smpte2084/.test(colors.transfer || '')) return false;
+  const s = sourceColors(colors);
+  return !['bt709', 'gbr'].includes(s.space) || s.primaries !== 'bt709' || !BT709_CURVE.has(s.transfer);
+}
+
+// zscale (libzimg) converting what the stream names to BT.709, limited range.
+export function toBt709(colors) {
+  const s = sourceColors(colors);
+  return `zscale=min=${s.space}:pin=${s.primaries}:tin=${s.transfer}:rin=${s.range}:m=bt709:p=bt709:t=bt709:r=tv`;
 }
 
 // Runs one ffmpeg job. Resolves when it exits 0; rejects with FfmpegError ('failed', 'timeout',
@@ -107,7 +166,7 @@ export function runFfmpeg(command, args, { timeoutMs, onStart, onStderr, lowerPr
       if (reason === 'timeout') reject(new FfmpegError(`ffmpeg took longer than ${Math.round(timeoutMs / 1000)} s and was stopped.`, 'timeout'));
       else if (reason === 'aborted') reject(new FfmpegError('ffmpeg was stopped (the platform is shutting down).', 'aborted'));
       else if (code === 0) resolve();
-      else reject(new FfmpegError(`ffmpeg failed (${signal || `exit ${code}`}): ${tail.trim().split('\n').slice(-3).join(' ') || 'no message'}`, 'failed'));
+      else reject(new FfmpegError(`ffmpeg failed (${signal || `exit ${code}`}): ${tail.trim().split('\n').slice(-3).join(' ') || 'no message'}`, 'failed', tail));
     });
   });
 }
@@ -116,22 +175,30 @@ export function runFfmpeg(command, args, { timeoutMs, onStart, onStderr, lowerPr
 // as a URL, a pipe or a pattern, whatever directory the data lives in.
 const IO = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file', '-y'];
 
-// Phone video to what OBS's browser plays (H12): 8-bit H.264 + AAC in MP4, tagged BT.709 (SDR),
-// the rotation flag baked into the frames (ffmpeg rotates on decode), at most 1920 on the long
-// side, even dimensions, faststart (playable before the whole file is read), and no metadata (a
-// phone writes where it was filmed). An HDR input (iPhone 12 and later film 10-bit HLG) is
-// tone-mapped to SDR first; that needs ffmpeg's zscale filter (libzimg), and tonemap: false
-// skips it for a build without one. maxBytes stops the output growing past the upload cap
-// (ffmpeg then stops, and the caller sees a file over the cap).
+// Phone video to what OBS's browser plays (H12): 8-bit H.264 + AAC in MP4, in BT.709 (SDR,
+// limited range) and tagged so, the rotation flag baked into the frames (ffmpeg rotates on
+// decode), at most 1920 on the long side, even dimensions, faststart (playable before the whole
+// file is read), and no metadata (a phone writes where it was filmed).
+// Colours: an HDR input (iPhone 12 and later film 10-bit HLG) is tone-mapped to SDR; an SDR one
+// in other colours (colors: what inspect() read) is converted; both need ffmpeg's zscale filter
+// (libzimg), and zscale: false converts without it, for a build without one (only tagged then).
+// RGB pictures and full range the scaler converts. The BT.709 tags go on the frames (setparams)
+// as well as on the encoder: ffmpeg 7.1 and later copy the frames' colours to the encoder over
+// -color_primaries and -color_trc, which on their own left a clip untagged on ffmpeg 8.
+// maxBytes stops the output growing past the upload cap (ffmpeg then stops, and the caller sees
+// a file over the cap).
 export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv';
-export function videoArgs(input, output, { maxBytes, hdr = false, tonemap = true } = {}) {
-  const fit = "scale=w='if(gt(iw,ih),min(1920,iw),-2)':h='if(gt(iw,ih),-2,min(1920,ih))',scale=trunc(iw/2)*2:trunc(ih/2)*2";
-  const filters = [hdr && tonemap ? TONEMAP : null, fit, 'format=yuv420p'].filter(Boolean).join(',');
+export const BT709_TAGS = 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv';
+export function videoArgs(input, output, { maxBytes, hdr = false, colors, zscale = true } = {}) {
+  const to709 = 'out_color_matrix=bt709:out_range=tv';
+  const fit = `scale=w='if(gt(iw,ih),min(1920,iw),-2)':h='if(gt(iw,ih),-2,min(1920,ih))':${to709},scale=trunc(iw/2)*2:trunc(ih/2)*2:${to709}`;
+  const convert = !zscale ? null : hdr ? TONEMAP : needsColorConversion(colors) ? toBt709(colors) : null;
+  const filters = [convert, fit, 'format=yuv420p', BT709_TAGS].filter(Boolean).join(',');
   return [
     ...IO, '-i', `file:${input}`,
     '-map', '0:v:0', '-map', '0:a:0?',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-vf', filters,
-    '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
+    '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv',
     '-c:a', 'aac', '-b:a', '160k', '-ac', '2',
     '-map_metadata', '-1', '-movflags', '+faststart',
     ...(maxBytes ? ['-fs', String(maxBytes)] : []),

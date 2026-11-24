@@ -82,6 +82,16 @@ if (typeof document !== 'undefined') {
 }
 const invokerNow = () => (document.activeElement && document.activeElement !== document.body ? document.activeElement : lastControl);
 
+// Whether the focus is in container, or would be but for run(): a button the user pressed is
+// disabled while it is busy, which leaves the focus on the body. The router asks this before it
+// focuses a page that has finished loading, so a button pressed before that keeps its claim (and
+// a dialog it opened gives the focus back to it, not to the page).
+export function holdsFocus(container) {
+  const a = document.activeElement;
+  if (a && a !== document.body) return container.contains(a);
+  return !!lastControl?.isConnected && lastControl !== container && container.contains(lastControl) && lastControl.getAttribute?.('aria-busy') === 'true';
+}
+
 // Where the focus goes back to when a dialog closes (WCAG 2.4.3): the control that opened it. A
 // button still busy with what the dialog started (run() disables it) gets it once it is enabled
 // again; an item of a closed menu, the menu's button; one that is gone (the page redrew), the

@@ -2,7 +2,7 @@
 > Team rules live in the hub: github.com/ItsLimitlezz/CTD-Software-Suite → AGENTS.md (read it first). This file is repo-specific.
 
 ## What this is
-**CTD Overlay** (package `ctd-overlay` v0.10.0): self-hosted stream-overlay platform for OBS browser sources: merged chat, alerts, scenes, timed shows and templates, fed by CTD Relay. Implements the Stream Kit Platform Standard (`skp/1`); successor to the D/PRTMNT Stream Kit (v0).
+**CTD Overlay** (package `ctd-overlay` v0.15.10): self-hosted stream-overlay platform for OBS browser sources: merged chat, alerts, scenes, timed shows and templates, fed by CTD Relay. Implements the Stream Kit Platform Standard (`skp/1`); successor to the D/PRTMNT Stream Kit (v0).
 Plain Node.js 24 server (no runtime npm dependencies, `node:sqlite`); runs on the PC that runs OBS or as a Linux container (TrueNAS). Public repo licensed **AGPL-3.0-only** (see `LICENSE`; same as CTD Relay, which Overlay will merge into later), so it is open-source under the hub's rule.
 
 ## Layout
@@ -27,7 +27,7 @@ No build step and no `npm install`. Non-Apple, so run on the **PC** (Node >= 24)
 - Cloud sessions can run `npm test` if Node 24 and ffmpeg are present; otherwise tag the PR `needs-build:pc`.
 
 ## Release
-**TBD (owner to confirm).** The repo is AGPL-3.0-only, so it is open-source and prod builds may use GitHub Actions (hub TEAM.md build policy). Current practice: `.github/workflows/image.yml` builds and pushes `ghcr.io/itslimitlezz/ctd-overlay` (`:latest` + `:sha-...` on every push to `main`; `:release-...` on `release/**`; `:X.Y.Z`, `:X.Y`, `:X` on tags `vX.Y.Z`), which TrueNAS pulls. Templates are released separately as GitHub releases: `docs/template-releases.md`. Do not run or edit these workflows without a Senior.
+[`docs/RELEASE.md`](./docs/RELEASE.md): CI green on `main`, tag `vX.Y.Z`, image `ghcr.io/itslimitlezz/ctd-overlay:X.Y.Z` (no `v`; also `:X.Y` and `:sha-...`) from `.github/workflows/image.yml` (on a `v*` tag, or run by hand: on a tag, on `main` for `:latest`, on `release/**` for `:release-...`), then the TrueNAS deploy (snapshot, image line on the Apps page, rollback). Notes per version in `CHANGELOG.md`. The repo is AGPL-3.0-only (open-source), so prod builds use GitHub Actions (hub TEAM.md build policy). Templates are released separately as GitHub releases: `docs/template-releases.md`. Do not run or edit these workflows without a Senior.
 
 ## Conventions & gotchas
 - Plain JavaScript ES modules, **no runtime npm packages** (docs/PLAN.md decision 8); dev-only tools are fine.
@@ -35,7 +35,8 @@ No build step and no `npm install`. Non-Apple, so run on the **PC** (Node >= 24)
 - The hard rules in `docs/standard/11-hard-rules.md` are normative (e.g. overlay URLs are permanent, server owns the show, durable before visible, never show a wrong number). Don't break them.
 - Data (`/data`) and master key (`/config`) are separate on purpose; container runs as UID/GID 568.
 - Binds to 127.0.0.1 unless `SKP_EXPOSURE=lan|public`. Settings are `SKP_*` env vars.
-- `.github/workflows/ci.yml` runs `npm test` on every PR and push to `main` (Linux only).
+- `.github/workflows/ci.yml`: `npm test` on Ubuntu (Linux only), plus the media tests inside the built image (its own ffmpeg). It is set to run on PRs and pushes to `main`, but until 2026-11-24 GitHub created runs here only for "Run workflow" (#24 got the first pull-request run); if a PR or push shows no run, a Senior runs it by hand.
+- The image pins Alpine (`node:24-alpine3.24`), which fixes the ffmpeg it ships (8.1.x). ffmpeg 7.1+ takes colour tags from the frames over the `-color_*` options: keep the `setparams` tags in `videoArgs`.
 - Depends on CTD Relay's API and is configured from the CTD OBS plugin: cross-repo changes go through the hub's AGENT-REQUESTS.md.
 
 ## Required reading

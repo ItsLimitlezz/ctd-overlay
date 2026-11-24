@@ -266,16 +266,19 @@ export function createMediaLibrary({ dataDir, store, log, ffmpeg = 'ffmpeg', lim
       } else {
         const streams = await inspect(command, staging, { lowerPriority, onStart: (j) => { jobs.push(j); running.add(j); } });
         if (!streams.video) return streams.audio ? { audio: true } : { empty: true };
-        const opts = { maxBytes: max.fileBytes, hdr: streams.hdr };
+        const opts = { maxBytes: max.fileBytes, hdr: streams.hdr, colors: streams.colors };
+        const args = videoArgs(staging, output, opts);
         try {
-          await run(videoArgs(staging, output, opts));
+          await run(args);
         } catch (err) {
-          // A build without zscale can't tone-map HDR: convert without it (flatter colours,
-          // still playable) rather than not at all.
-          if (!(streams.hdr && err.code === 'failed' && /zscale|tonemap/i.test(err.message))) throw err;
-          log.warn('this ffmpeg can\'t tone-map HDR video (no zscale filter); converting without it');
+          // A build without zscale (or a colour pair zimg refuses) can't tone-map HDR or convert
+          // the colours: convert without it (colours a little off, still playable and tagged
+          // BT.709) rather than not at all.
+          if (!(args.some((a) => a.includes('zscale')) && err.code === 'failed' && /zscale|tonemap/i.test(err.stderr || err.message))) throw err;
+          log.warn(streams.hdr ? 'this ffmpeg can\'t tone-map HDR video (no zscale filter); converting without it'
+            : 'this ffmpeg can\'t convert the clip\'s colours to BT.709 (no zscale filter, or zscale refused them); converting without it');
           rmSync(output, { force: true });
-          await run(videoArgs(staging, output, { ...opts, tonemap: false }));
+          await run(videoArgs(staging, output, { ...opts, zscale: false }));
         }
       }
     } finally {

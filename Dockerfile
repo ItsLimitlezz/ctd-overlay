@@ -1,7 +1,9 @@
 # CTD Overlay (the Stream Kit Platform) as a container (10 §10.3). No npm dependencies: Node's
 # own runtime and node:sqlite. ffmpeg converts phone video for OBS (H12); tzdata so shows run on
 # their own clocks. Runs as UID/GID 568, TrueNAS's "apps" user (docker run --user to change it).
-FROM node:24-alpine
+# The Alpine release is pinned: it decides which ffmpeg ships (3.24: 8.1.x), and a new one is a
+# change to review, not something a rebuild picks up. CI runs the media tests inside this image.
+FROM node:24-alpine3.24
 
 RUN apk add --no-cache ffmpeg tzdata \
  && mkdir -p /data /config \

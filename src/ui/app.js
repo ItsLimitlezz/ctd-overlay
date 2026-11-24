@@ -3,7 +3,7 @@
 // route, render(view, ctx), which may return a cleanup function (or a promise of one). A page with
 // edits not saved yet says so (ctx.guardLeave), and leaving it asks first.
 import * as api from './api.js';
-import { confirm, h, mount, q, toast } from './dom.js';
+import { confirm, h, holdsFocus, mount, q, toast } from './dom.js';
 
 const ROUTES = [
   { path: '/login', page: 'auth', fn: 'login', open: true, title: 'Sign in' },
@@ -387,9 +387,10 @@ async function render() {
         h('p', err?.message || String(err)),
         h('div.row', h('button.btn.primary', { type: 'button', onclick: () => render() }, 'Try again'), h('a.btn', { href: '#/live' }, 'Go to Live'))));
   }
-  // A new page starts at its top, and a screen reader starts reading it (unless it focused a field).
+  // A new page starts at its top, and a screen reader starts reading it (unless it focused a field,
+  // or the user already pressed one of its buttons, busy now, before it finished loading).
   window.scrollTo(0, 0);
-  if (!view.contains(document.activeElement)) view.focus({ preventScroll: true });
+  if (!holdsFocus(view)) view.focus({ preventScroll: true });
 }
 
 function wireShell() {
