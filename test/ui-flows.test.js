@@ -262,6 +262,28 @@ test('menus and dialogs by keyboard: arrow keys, the consequence read, the focus
   assert.deepEqual(problems(page), []);
 });
 
+// The flake earlier release checks saw under load, made certain: Shows finishes loading while
+// New show (pressed by keyboard) is busy opening its dialog, which leaves the focus on the body.
+// The page must not take the focus then, or closing the dialog gives it to the page.
+test('a button pressed before its page has loaded gets the focus back from the dialog it opened (U20)', opts, async (t) => {
+  const platform = await start(t);
+  await people(platform);
+  const { page } = await openPage(t, platform);
+  await signIn(page, 'juan', '/overlays');
+  await page.eval(`(() => {
+    const f = window.fetch;
+    window.fetch = (u, o) => (/\\/api\\/v1\\/(shows|overlays)/.test(String(u)) ? new Promise((r) => setTimeout(r, 1500)).then(() => f(u, o)) : f(u, o));
+  })()`);
+  await go(page, '/shows', '[...document.querySelectorAll("[data-view] button")].some((b) => b.textContent === "New show")');
+  await page.eval('[...document.querySelectorAll("[data-view] button")].find((b) => b.textContent === "New show").focus()');
+  await press(page, 'Enter');
+  await page.waitFor('document.querySelector("dialog[open]")', 10000);
+  await press(page, 'Escape');
+  await page.waitFor('!document.querySelector("dialog[open]")', 5000);
+  await page.waitFor('document.activeElement?.textContent === "New show"', 5000).catch(async () => assert.equal(await active(page), 'BUTTON New show'));
+  assert.deepEqual(problems(page), []);
+});
+
 test('on a phone every menu opens on the screen, and the targets are a finger wide (U6, U14)', opts, async (t) => {
   const platform = await start(t);
   const owner = await people(platform);
@@ -492,6 +514,9 @@ test('a list read before someone else changed it: users (C2), a show\'s members 
   });
   t.after(off);
   await go(page, `/shows/${show.body.id}?tab=timeline`, 'document.querySelector("[data-view] li details.menu")');
+  // The night has passed, so the clock marks the cue missed within a second: a new revision. The
+  // delete waits for the page to show that, or it would rightly be refused as made from a stale copy.
+  await page.waitFor('[...document.querySelectorAll("[data-view] li")].some((li) => li.textContent.includes("cue A") && li.textContent.includes("Missed"))', 15000);
   await choose(page, 'More for cue A', 'Delete');
   await page.waitFor('document.querySelector("dialog[open]")', 5000);
   await click(page, 'dialog[open] button', 'Delete cue');
