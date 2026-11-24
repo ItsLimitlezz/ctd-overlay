@@ -40,8 +40,10 @@ something OBS can play.
 ## B. On the NAS (TrueNAS SCALE, or any Docker host)
 
 The image is built by GitHub Actions from this public repository: `ghcr.io/itslimitlezz/ctd-overlay`.
-Pushes to `main` make `:latest`, and a `release/<name>` branch makes `:release-<name>`. The image is
-public: TrueNAS pulls it with no credentials.
+Each release is a tag of its own, `:0.15.10` (no `v`), built from the release's Git tag; `:latest`
+is a build of `main` made by hand. The image is public: TrueNAS pulls it with no credentials.
+Updating to a new release (snapshot first, image line only, how to roll back):
+[`RELEASE.md`](RELEASE.md).
 
 1. **Create two datasets**, owned by the `apps` user (568): one for data and one for config. The
    config dataset holds the master key, and keeping it separate means a backup of the data never

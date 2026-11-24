@@ -21,3 +21,15 @@ jobs:
       # A real ffmpeg, so phone-video conversion (H12) is tested end to end.
       - run: (command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)) && ffmpeg -version | head -1
       - run: npm test
+
+  # What ships: the media tests again, inside the image built from the Dockerfile, on its own
+  # ffmpeg and Node. Ubuntu's ffmpeg above is another build (and was another version: 8.0 there,
+  # 8.1 in the image), so a conversion that works there proves nothing about the image.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t ctd-overlay:ci .
+      - run: docker run --rm --entrypoint sh ctd-overlay:ci -c 'ffmpeg -version | head -1; node --version'
+      - run: docker run --rm -v "$PWD/test:/app/test:ro" --entrypoint node ctd-overlay:ci --test --test-timeout=180000 test/media.test.js

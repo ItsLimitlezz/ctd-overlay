@@ -1,11 +1,12 @@
 name: Container image
 
-# Builds the image and pushes it to GitHub Container Registry: ghcr.io/<owner>/<repo>.
-# main → :latest and :sha-…; a "release/…" branch → :release-… (a build to test before merging);
-# a tag v1.2.3 → :1.2.3, :1.2 and :1 (10 §10.7). TrueNAS pulls it; no local Docker needed.
+# Builds the image (linux/amd64 + linux/arm64) and pushes it to GitHub Container Registry:
+# ghcr.io/<owner>/<repo>. TrueNAS pulls it; no local Docker needed. Prod builds only (hub TEAM.md
+# build policy): a release tag, or a run started by hand. docs/RELEASE.md has the steps.
+#   tag v1.2.3 (pushed, or chosen as the run's ref) → :1.2.3, :1.2, :1 and :sha-… (10 §10.7; no "v")
+#   main, by hand → :latest and :sha-…;  a "release/…" branch, by hand → :release-… and :sha-…
 on:
   push:
-    branches: [main, 'release/**']
     tags: ['v*']
   workflow_dispatch:
 
@@ -17,6 +18,14 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # A release tag must name the version package.json has (v0.15.10 → 0.15.10), or no image.
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          have="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME#v}" != "$have" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but package.json says $have"
+            exit 1
+          fi
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -46,6 +55,8 @@ jobs:
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:4848/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:4848/healthz
           docker logs smoke 2>&1 | tail -20
+      # And its ffmpeg converts phone video as the tests expect (tagged BT.709, HDR tone-mapped).
+      - run: docker run --rm -v "$PWD/test:/app/test:ro" --entrypoint node ctd-overlay:test --test --test-timeout=180000 test/media.test.js
       - uses: docker/build-push-action@v6
         with:
           context: .
